@@ -212,7 +212,8 @@ class NewGame extends Command
   {
     // Install dependencies
     $this->output->writeln('<comment>Installing dependencies...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    if (false === `composer install --working-dir=$targetDirectory --ansi`) {
+    $installCommand = "composer install --working-dir=" . escapeshellarg($targetDirectory) . " --ansi";
+    if (false === shell_exec($installCommand)) {
       throw new RuntimeException('Unable to install dependencies');
     }
   }

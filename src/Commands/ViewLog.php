@@ -55,10 +55,15 @@ class ViewLog extends Command
       return Command::FAILURE;
     }
 
-    if (shell_exec('which multitail')) {
-      `multitail $logFilename`;
-    } else {
-      `tail $logFilename`;
+    $logCommand = "tail ";
+
+    if (shell_exec("which multitail")) {
+      $logCommand = "multitail ";
+    }
+
+    if (false === shell_exec($logCommand . escapeshellarg($logFilename))) {
+      $output->writeln("<error>Failed to open log file $logFilename.</error>");
+      return Command::FAILURE;
     }
 
     return Command::SUCCESS;
