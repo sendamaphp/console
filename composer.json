@@ -2,9 +2,6 @@
   "name": "sendamaphp/console",
   "type": "library",
   "description": "A simple CLI for creating and managing sendama-engine projects.",
-  "require-dev": {
-    "pestphp/pest": "^2.34"
-  },
   "license": "MIT",
   "autoload": {
     "psr-4": {
@@ -21,7 +18,7 @@
     }
   ],
   "require": {
-    "php": ">=8.3",
+    "php": "^8.4",
     "symfony/console": "^7.0",
     "amasiye/figlet": "^1.2",
     "vlucas/phpdotenv": "^5.6"
