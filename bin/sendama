@@ -1,6 +1,7 @@
 #!/usr/bin/env php
 <?php
 
+use Sendama\Console\Commands\EditGame;
 use Sendama\Console\Commands\GenerateEvent;
 use Sendama\Console\Commands\GeneratePrefab;
 use Sendama\Console\Commands\GenerateScene;
@@ -30,6 +31,7 @@ function bootstrap(): void
     $app->addCommands([
       new NewGame(),
       new PlayGame(),
+      new EditGame(),
       new GeneratePrefab(),
       new GenerateEvent(),
       new GenerateScene(),
