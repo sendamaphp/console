@@ -22,7 +22,7 @@ abstract class EditorState implements EditorStateInterface
      */
     public function enter(EditorStateContext $context): void
     {
-        // TODO: Implement enter() method.
+        // Do nothing. Will be overridden by each state.
     }
 
     /**
@@ -40,7 +40,7 @@ abstract class EditorState implements EditorStateInterface
      */
     public function exit(EditorStateContext $context): void
     {
-        // TODO: Implement exit() method.
+        // Do nothing. Will be overridden by each state.
     }
 
     /**
