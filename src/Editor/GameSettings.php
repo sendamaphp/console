@@ -34,7 +34,9 @@ readonly class GameSettings
     }
 
     /**
-     * @param string $directory
+     * Loads game settings from a specified directory. It looks for a 'sendama.json' file in the directory and parses its contents to create a GameSettings instance.
+     *
+     * @param string $directory The directory from which to load the game settings. It should contain a 'sendama.json' file with the appropriate structure.
      * @return self
      * @throws SendamaConsoleException
      */
@@ -59,7 +61,10 @@ readonly class GameSettings
     }
 
     /**
-     * @param array $data
+     * Creates a GameSettings instance from an associative array.
+     * The array should contain keys corresponding to the properties of GameSettings.
+     *
+     * @param array<string, mixed> $data The associative array containing game settings data.
      * @return self
      */
     public static function fromArray(array $data): self
