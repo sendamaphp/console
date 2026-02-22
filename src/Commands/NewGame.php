@@ -74,6 +74,7 @@ class NewGame extends Command
     // Create project structure
     $this->output->writeln('<info>Creating project structure...</info>', OutputInterface::VERBOSITY_VERBOSE);
 
+    $this->createConfigDirectory();
     $this->createLogsDirectory();
     $assetsDirectory = $this->createAssetsDirectory();
     $this->createAssetsScenesDirectory($assetsDirectory);
@@ -165,7 +166,7 @@ class NewGame extends Command
         'sendamaphp/engine' => '*'
       ],
       'require-dev' => [
-        'pestphp/pest' => '^2.34',
+        'pestphp/pest' => '^4.3',
         'phpstan/phpstan' => '^1.10',
       ],
       'autoload' => [
@@ -235,6 +236,15 @@ class NewGame extends Command
     $this->output->writeln('<comment>Creating package configuration</comment>', OutputInterface::VERBOSITY_VERBOSE);
     $projectName = strtolower(filter_string($projectName));
     $packageName = $this->getPackageName("sendama-engine/$projectName");
+
+    $targetConfigFilename = Path::join($this->targetDirectory, 'config', 'input.php');
+    // Get the config/input.php template
+    $sourceInputConfigFilename = Path::join(dirname(__DIR__, 2), 'templates', 'config', 'input.php');
+    $inputConfigContents = file_get_contents($sourceInputConfigFilename);
+    $inputConfigContents = str_replace('%PACKAGE_NAME%', $packageName, $inputConfigContents);
+    if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
+      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
+    }
 
     $targetConfigFilename = Path::join($this->targetDirectory, 'composer.json');
     if (false === file_put_contents($targetConfigFilename, $this->getComposerConfiguration($packageName))) {
@@ -427,6 +437,23 @@ class NewGame extends Command
 
     if (! mkdir($logsDirectory) && ! is_dir($logsDirectory)) {
       throw new RuntimeException(sprintf('Directory "%s" was not created', $logsDirectory));
+    }
+  }
+
+  /**
+   * Create the config directory.
+   * @return void
+   */
+  private function createConfigDirectory(): void
+  {
+    $configDirectory = Path::join($this->targetDirectory, 'config');
+    if (file_exists($configDirectory)) {
+      $this->output->writeln('<comment>Config directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+      return;
+    }
+
+    if (! mkdir($configDirectory) && ! is_dir($configDirectory)) {
+      throw new RuntimeException(sprintf('Directory "%s" was not created', $configDirectory));
     }
   }
 

@@ -208,3 +208,10 @@ if (! function_exists('write_console_error') ) {
     write_console_log($messages, $output, 'error');
   }
 }
+
+if (! function_exists('clamp') ) {
+    function clamp(float $value, float $min, float $max): float
+    {
+        return max($min, min($max, $value));
+    }
+}

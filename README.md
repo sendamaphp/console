@@ -1,3 +1,7 @@
+<div align="center" style="margin: 32px">
+    <img src="logo.png" alt="Sendama 2d Game Engine" width="128" height="128" align="center">    
+</div>
+
 # Sendama CLI &mdash; Console Application for the Sendama 2D Game Engine
 by amasiye313@gmail.com
 

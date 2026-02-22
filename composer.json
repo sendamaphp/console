@@ -2,13 +2,11 @@
   "name": "sendamaphp/console",
   "type": "library",
   "description": "A simple CLI for creating and managing sendama-engine projects.",
-  "require-dev": {
-    "pestphp/pest": "^2.34"
-  },
   "license": "MIT",
   "autoload": {
     "psr-4": {
-      "Sendama\\Console\\": "src/"
+      "Sendama\\Console\\": "src/",
+      "Atatusoft\\Termutil\\": "/home/amasiye/development/atatusoft/projects/external/termutil/src/"
     },
     "files": [
       "src/Util/Functions.php"
@@ -21,10 +19,11 @@
     }
   ],
   "require": {
-    "php": ">=8.3",
+    "php": "^8.4",
     "symfony/console": "^7.0",
     "amasiye/figlet": "^1.2",
-    "vlucas/phpdotenv": "^5.6"
+    "vlucas/phpdotenv": "^5.6",
+    "atatusoft-ltd/termutil": "^1.1"
   },
   "config": {
     "allow-plugins": {
