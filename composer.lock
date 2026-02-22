@@ -113,16 +113,16 @@
         },
         {
             "name": "atatusoft-ltd/termutil",
-            "version": "1.1.3",
+            "version": "1.1.12",
             "source": {
                 "type": "git",
                 "url": "https://github.com/atatusoft-ltd/termutil.git",
-                "reference": "de84b326c8507781f0dd130462238b32cb1f1b66"
+                "reference": "d38fc06d218526453dbe6cac261ab96ac1012421"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/atatusoft-ltd/termutil/zipball/de84b326c8507781f0dd130462238b32cb1f1b66",
-                "reference": "de84b326c8507781f0dd130462238b32cb1f1b66",
+                "url": "https://api.github.com/repos/atatusoft-ltd/termutil/zipball/d38fc06d218526453dbe6cac261ab96ac1012421",
+                "reference": "d38fc06d218526453dbe6cac261ab96ac1012421",
                 "shasum": ""
             },
             "require": {
@@ -136,7 +136,8 @@
             "type": "library",
             "autoload": {
                 "files": [
-                    "src/Constants.php"
+                    "src/Constants.php",
+                    "src/Functions.php"
                 ],
                 "psr-4": {
                     "Atatusoft\\Termutil\\": "src/"
@@ -155,9 +156,9 @@
             "description": "A collection of utilities to help control ANSI powered terminals.",
             "support": {
                 "issues": "https://github.com/atatusoft-ltd/termutil/issues",
-                "source": "https://github.com/atatusoft-ltd/termutil/tree/1.1.3"
+                "source": "https://github.com/atatusoft-ltd/termutil/tree/1.1.12"
             },
-            "time": "2026-02-14T14:19:06+00:00"
+            "time": "2026-02-21T21:44:50+00:00"
         },
         {
             "name": "graham-campbell/result-type",

@@ -5,7 +5,8 @@
   "license": "MIT",
   "autoload": {
     "psr-4": {
-      "Sendama\\Console\\": "src/"
+      "Sendama\\Console\\": "src/",
+      "Atatusoft\\Termutil\\": "/home/amasiye/development/atatusoft/projects/external/termutil/src/"
     },
     "files": [
       "src/Util/Functions.php"
