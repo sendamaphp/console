@@ -186,7 +186,7 @@ class Time implements StaticObserverInterface
     /**
      * @inheritDoc
      */
-    public static function onNotify(ObservableInterface $observable, Event $event): void
+    public static function onNotify(ObservableInterface|null $observable, Event $event): void
     {
         switch ($event->type)
         {

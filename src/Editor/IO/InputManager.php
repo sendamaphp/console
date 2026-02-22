@@ -32,6 +32,7 @@ class InputManager implements StaticObservableInterface
     public static function init(): void
     {
         self::$previousKeyPress = self::$keyPress = "";
+        self::initializeObservers();
     }
 
     /**

@@ -24,57 +24,32 @@ final readonly class SplashScreen
     public function show(): void
     {
         $image = <<<SPLASH
-       ++                                                                                     +     
-        ++++                                                                              ++++      
-         +++++++                                                                       ++++++       
-          +++++++                                                                    +++++++        
-            +++++                                                                    ++++++         
-               ++++                                                                 +++++           
-                  ++                                                              ++                
-                    ++                                                          ++                  
-                      ++                                                      +++                   
-                       +++                                                  +++                     
-                         +++                                               ++                       
-                           ++                                            ++                         
-                             ++                                        ++                           
-                              +++                                    +++                            
-                                +++                                 ++                              
-                                  ++                              ++                                
-                                    ++                          ++                                  
-                                     +++                      +++                  ++++             
-                                       +++                   ++                  ++++ +++           
-                                         ++                ++                   +++     +++         
-     ++++++++++++++++++                    ++            ++                   +++         +++       
-   +++                +++                    ++        +++                  +++             +++     
-  +++                   ++                    ++      ++                  +++                +++    
-+++                      +++                    ++  ++                  +++                    +++  
- ++                     +++                       ++                  +++                        +++
-  +++                  ++                        +  ++                 +++                      +++ 
-    +++              +++                       ++    ++                  +++                  +++   
-      +++          +++                       ++        ++                  +++              ++++    
-       +++       +++                       ++            ++                  +++           +++      
-         +++    +++                       ++               ++                  +++       +++        
-           ++++++                       ++                  +++                 ++++   +++          
-            +++                       ++                      ++                  ++++++            
-                                    ++                          ++                  ++              
-                                  +++                            +++                                
-                                +++                                +++                              
-                               ++                                    ++                             
-                             ++                   *                    ++                           
-                           +++                   ++++                   +++                         
-                          ++                    +++++                     +++                       
-                        ++                     +++  +++                     ++                      
-                      ++                      +++    +++                      ++                    
-                    +++                      +++      +++                       ++                  
-                   ++                       +++        +++                       +++                
-                 ++                        ++           +++                        ++               
-               ++                         +++            +++                         ++             
-             +++                         ++               +++                          ++++++       
-        +++++++                         ++                 +++                         ++++++++     
-      +++++++++                        ++                   +++                        +++++++++    
-     ++++++++                        +++++++++++++++++++++++++++                         ++++++++   
-    ++++++++                                                                               +++++++  
-      ++                                                                                       +    
+    ++                                        +++  
+     ++++                                  ++++    
+      +++                                  +++     
+         ++                              ++        
+           ++                          ++          
+             ++                      ++            
+               +                    ++             
+                ++                ++               
+                  ++            ++         +       
+                    ++        ++         +++++     
+  ++++++++++          +      ++        +++    ++   
++++         ++         ++  ++        +++       ++  
+++          ++           ++         ++           ++
+  ++       +           ++  ++        ++         ++ 
+    +    ++           ++     +         ++     ++   
+     ++++           ++        ++         ++ +++    
+       +          ++            ++        +++      
+                ++                ++               
+               ++                   +              
+             ++          +++         ++            
+           ++          ++  +           ++          
+         ++           ++    ++           ++        
+        ++           ++      ++            +       
+    ++++            ++        ++            ++++   
+  +++++            ++          ++           +++++  
+  ++++                                          +  
 SPLASH;
 
         Console::clear();
@@ -82,7 +57,15 @@ SPLASH;
         $terminalHeight = $this->settings->height;
 
         $imageRows = explode("\n", $image);
-        $imageWidth = array_reduce($imageRows, function (string $a, string $b): int {
+        $imageWidth = array_reduce($imageRows, function (?string $a, ?string $b): int {
+            if (!$a) {
+                return strlen($b ?? '');
+            }
+
+            if (!$b) {
+                return strlen($a);
+            }
+
             $lengthA = strlen($a);
             $lengthB = strlen($b);
             return ($lengthA > $lengthB) ? $lengthA : $lengthB;
@@ -93,7 +76,7 @@ SPLASH;
         $topMargin = max(0, (($terminalHeight / 2) - ($imageHeight / 2)));
 
         foreach ($imageRows as $index => $imageRow) {
-            $this->cursor->moveTo($leftMargin, $topMargin + $index);
+            $this->cursor->moveTo((int)$leftMargin, (int)($topMargin + $index));
             $this->output->write($imageRow);
         }
 
