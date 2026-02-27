@@ -25,6 +25,7 @@ use Sendama\Console\Editor\Widgets\InspectorPanel;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
+use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Throwable;
 
@@ -198,6 +199,8 @@ final class Editor implements ObservableInterface
 
         Console::cursor()->hide();
 
+        Console::enableMouseReporting();
+
         InputManager::disableEcho();
 
         InputManager::enableNonBlockingMode();
@@ -227,13 +230,15 @@ final class Editor implements ObservableInterface
 
         InputManager::enableEcho();
 
-        Console::cursor()->show();
+        Console::disableMouseReporting();
 
-        $this->removeObservers(...$this->observers, ...$this->staticObservers);
+        Console::cursor()->show();
 
         $this->isRunning = false;
 
         $this->notify(new EditorEvent(EventType::EDITOR_STOPPED->value, $this));
+
+        $this->removeObservers(...$this->observers, ...$this->staticObservers);
 
         Debug::info("Editor stopped");
     }
