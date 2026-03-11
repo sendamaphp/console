@@ -46,3 +46,54 @@ test('widget can store and resolve directional siblings', function () {
     expect($hierarchy->getSibling('bottom'))->toBe($assets);
     expect($hierarchy->getSibling('left'))->toBeNull();
 });
+
+test('widget safely renders long border labels in narrow windows', function () {
+    $widget = new class extends Widget {
+        public function __construct()
+        {
+            parent::__construct(
+                'Very Long Title',
+                'This help text is far too long for the window',
+                ['x' => 1, 'y' => 1],
+                12,
+                5,
+            );
+            $this->content = ['content'];
+        }
+
+        public function update(): void
+        {
+        }
+    };
+
+    ob_start();
+    $widget->renderAt();
+    $output = ob_get_clean();
+
+    expect($output)->not->toBeFalse();
+    expect($output)->toBeString();
+    expect($output)->not->toBe('');
+});
+
+test('widget clips long content lines to the available window width', function () {
+    $widget = new class extends Widget {
+        public function __construct()
+        {
+            parent::__construct('Inspector', '', ['x' => 1, 'y' => 1], 20, 6);
+            $this->content = ['Texture: Textures/bullet.texture'];
+        }
+
+        public function update(): void
+        {
+        }
+    };
+
+    $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
+    $buildRenderedContentLines->setAccessible(true);
+    $lines = $buildRenderedContentLines->invoke($widget);
+
+    expect($lines)->toHaveCount(4);
+    expect($lines[0])->toBe('│ Texture: Texture │');
+    expect(mb_strlen($lines[0]))->toBe(20);
+    expect(mb_substr($lines[0], -1))->toBe('│');
+});

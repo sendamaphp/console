@@ -129,6 +129,7 @@ final class Editor implements ObservableInterface
     protected int $terminalHeight = DEFAULT_TERMINAL_HEIGHT;
     protected PanelListModal $panelListModal;
     protected bool $shouldRefreshBackgroundUnderModal = false;
+    protected bool $didRenderOverlayLastFrame = false;
 
     /**
      * @param string $name
@@ -325,6 +326,12 @@ final class Editor implements ObservableInterface
         $this->editorState?->exit($context);
         $this->editorState = $editorState;
         $this->editorState->enter($context);
+        $this->syncPlayModeState();
+
+        if ($editorState instanceof PlayState) {
+            $this->mainPanel->selectTab('Game');
+            $this->setFocusedPanel($this->mainPanel);
+        }
     }
 
     /**
@@ -359,7 +366,7 @@ final class Editor implements ObservableInterface
             return;
         }
 
-        $this->consolePanel->setPlayModeActive($this->editorState instanceof PlayState);
+        $this->syncPlayModeState();
 
         foreach ($this->panels as $panel) {
             $panel->update();
@@ -374,6 +381,8 @@ final class Editor implements ObservableInterface
     {
         $this->frameCount++;
         if ($this->panelListModal->isVisible()) {
+            $this->didRenderOverlayLastFrame = true;
+
             if ($this->shouldRefreshBackgroundUnderModal) {
                 $this->renderEditorFrame();
             }
@@ -386,6 +395,26 @@ final class Editor implements ObservableInterface
 
             $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
             return;
+        }
+
+        if ($this->focusedPanel?->hasActiveModal()) {
+            $this->didRenderOverlayLastFrame = true;
+            $this->focusedPanel->syncModalLayout($this->terminalWidth, $this->terminalHeight);
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty()) {
+                $this->renderEditorFrame();
+                $this->focusedPanel->renderActiveModal();
+                $this->focusedPanel->markModalClean();
+                $this->shouldRefreshBackgroundUnderModal = false;
+            }
+
+            $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+            return;
+        }
+
+        if ($this->didRenderOverlayLastFrame) {
+            Console::clear();
+            $this->didRenderOverlayLastFrame = false;
         }
 
         $this->shouldRefreshBackgroundUnderModal = false;
@@ -486,6 +515,30 @@ final class Editor implements ObservableInterface
         $this->modalState = new ModalState($this);
 
         $this->setState($this->editState);
+    }
+
+    private function togglePlayMode(): void
+    {
+        if ($this->editorState instanceof PlayState) {
+            $this->setState($this->editState);
+        } else {
+            $this->setState($this->playState);
+        }
+
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function syncPlayModeState(): void
+    {
+        $isPlayModeActive = $this->editorState instanceof PlayState;
+
+        if (isset($this->consolePanel)) {
+            $this->consolePanel->setPlayModeActive($isPlayModeActive);
+        }
+
+        if (isset($this->mainPanel)) {
+            $this->mainPanel->setPlayModeActive($isPlayModeActive);
+        }
     }
 
     /**
@@ -589,6 +642,11 @@ final class Editor implements ObservableInterface
 
     private function handlePanelKeyboardWorkflow(): void
     {
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::PLAY_TOGGLE, false)) {
+            $this->togglePlayMode();
+            return;
+        }
+
         if ($this->panelListModal->isVisible()) {
             $this->handlePanelListModalInput();
             return;
@@ -596,6 +654,10 @@ final class Editor implements ObservableInterface
 
         if (Input::getCurrentInput() === '!') {
             $this->showPanelListModal();
+            return;
+        }
+
+        if ($this->focusedPanel?->hasActiveModal()) {
             return;
         }
 
@@ -653,7 +715,7 @@ final class Editor implements ObservableInterface
 
         $this->layoutPanels();
 
-        if ($this->panelListModal->isVisible()) {
+        if ($this->panelListModal->isVisible() || $this->focusedPanel?->hasActiveModal()) {
             $this->shouldRefreshBackgroundUnderModal = true;
         }
     }
@@ -687,6 +749,7 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->setDimensions($rightPanelWidth, $availableHeight);
 
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->focusedPanel?->syncModalLayout($this->terminalWidth, $this->terminalHeight);
     }
 
     private function configurePanelGraph(): void

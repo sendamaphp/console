@@ -9,6 +9,7 @@ use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Editor\Widgets\Controls\CompoundInputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
+use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
 use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
@@ -18,6 +19,8 @@ class InspectorPanel extends Widget
     private const string STATE_CONTROL_SELECTION = 'control_selection';
     private const string STATE_PROPERTY_SELECTION = 'property_selection';
     private const string STATE_CONTROL_EDIT = 'control_edit';
+    private const string STATE_PATH_INPUT_ACTION_SELECTION = 'path_input_action_selection';
+    private const string STATE_PATH_INPUT_FILE_DIALOG = 'path_input_file_dialog';
     private const string SECTION_ICON = '▼';
     private const string SECTION_HEADER_SEQUENCE = "\033[30;47m";
     private const string SELECTED_CONTROL_SEQUENCE = "\033[30;46m";
@@ -33,10 +36,13 @@ class InspectorPanel extends Widget
     protected array $lineStates = [];
     protected string $interactionState = self::STATE_CONTROL_SELECTION;
     protected InputControlFactory $inputControlFactory;
-    protected ?TextInputControl $rendererTextureControl = null;
+    protected ?PathInputControl $rendererTextureControl = null;
     protected ?VectorInputControl $rendererOffsetControl = null;
     protected ?VectorInputControl $rendererSizeControl = null;
     protected ?PreviewWindowControl $rendererPreviewControl = null;
+    protected OptionListModal $pathInputActionModal;
+    protected FileDialogModal $fileDialogModal;
+    protected ?PathInputControl $activePathInputControl = null;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -46,6 +52,8 @@ class InspectorPanel extends Widget
     {
         parent::__construct('Inspector', '', $position, $width, $height);
         $this->inputControlFactory = new InputControlFactory();
+        $this->pathInputActionModal = new OptionListModal(title: 'Path Input');
+        $this->fileDialogModal = new FileDialogModal();
     }
 
     public function inspectTarget(?array $target): void
@@ -59,6 +67,9 @@ class InspectorPanel extends Widget
         $this->rendererOffsetControl = null;
         $this->rendererSizeControl = null;
         $this->rendererPreviewControl = null;
+        $this->pathInputActionModal->hide();
+        $this->fileDialogModal->hide();
+        $this->activePathInputControl = null;
 
         if ($target === null) {
             $this->content = [];
@@ -104,6 +115,39 @@ class InspectorPanel extends Widget
         $this->refreshContent();
     }
 
+    public function hasActiveModal(): bool
+    {
+        return $this->pathInputActionModal->isVisible() || $this->fileDialogModal->isVisible();
+    }
+
+    public function isModalDirty(): bool
+    {
+        return $this->pathInputActionModal->isDirty() || $this->fileDialogModal->isDirty();
+    }
+
+    public function markModalClean(): void
+    {
+        $this->pathInputActionModal->markClean();
+        $this->fileDialogModal->markClean();
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+        $this->pathInputActionModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->fileDialogModal->syncLayout($terminalWidth, $terminalHeight);
+    }
+
+    public function renderActiveModal(): void
+    {
+        if ($this->pathInputActionModal->isVisible()) {
+            $this->pathInputActionModal->render();
+        }
+
+        if ($this->fileDialogModal->isVisible()) {
+            $this->fileDialogModal->render();
+        }
+    }
+
     public function cycleFocusForward(): bool
     {
         if ($this->interactionState !== self::STATE_CONTROL_SELECTION || $this->focusableControls === []) {
@@ -128,7 +172,21 @@ class InspectorPanel extends Widget
 
     public function update(): void
     {
-        if (!$this->hasFocus() || $this->selectedControlIndex === null) {
+        if (!$this->hasFocus()) {
+            return;
+        }
+
+        if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
+            $this->handlePathInputActionInput();
+            return;
+        }
+
+        if ($this->interactionState === self::STATE_PATH_INPUT_FILE_DIALOG) {
+            $this->handlePathInputFileDialogInput();
+            return;
+        }
+
+        if ($this->selectedControlIndex === null) {
             return;
         }
 
@@ -147,6 +205,11 @@ class InspectorPanel extends Widget
 
         $selectedControl->update();
         $this->refreshContent();
+    }
+
+    public function renderAt(?int $x = null, ?int $y = null): void
+    {
+        parent::renderAt($x, $y);
     }
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
@@ -257,7 +320,12 @@ class InspectorPanel extends Widget
         $offset = $this->normalizeVector($texture['position'] ?? null);
         $size = $this->normalizeVector($texture['size'] ?? null);
 
-        $this->rendererTextureControl = new TextInputControl('Texture', $texturePath, 1);
+        $this->rendererTextureControl = new PathInputControl(
+            'Texture',
+            $texturePath,
+            $this->resolveAssetsWorkingDirectory(),
+            1,
+        );
         $this->rendererOffsetControl = new VectorInputControl('Offset', $offset, 1);
         $this->rendererSizeControl = new VectorInputControl('Size', $size, 1);
         $this->rendererPreviewControl = new PreviewWindowControl(
@@ -358,7 +426,7 @@ class InspectorPanel extends Widget
     private function refreshDerivedControls(): void
     {
         if (
-            !$this->rendererTextureControl instanceof TextInputControl
+            !$this->rendererTextureControl instanceof PathInputControl
             || !$this->rendererOffsetControl instanceof VectorInputControl
             || !$this->rendererSizeControl instanceof VectorInputControl
             || !$this->rendererPreviewControl instanceof PreviewWindowControl
@@ -434,6 +502,11 @@ class InspectorPanel extends Widget
         }
 
         if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        if ($selectedControl instanceof PathInputControl) {
+            $this->showPathInputActionModal($selectedControl);
             return;
         }
 
@@ -525,6 +598,11 @@ class InspectorPanel extends Widget
         }
 
         $selectedControl->commitEdit();
+
+        if ($selectedControl instanceof PathInputControl) {
+            $this->activePathInputControl = null;
+        }
+
         $this->interactionState = self::STATE_CONTROL_SELECTION;
     }
 
@@ -537,11 +615,17 @@ class InspectorPanel extends Widget
         }
 
         $selectedControl->cancelEdit();
+
+        if ($selectedControl instanceof PathInputControl) {
+            $this->activePathInputControl = null;
+        }
+
         $this->interactionState = self::STATE_CONTROL_SELECTION;
     }
 
     private function resetInteractionState(): void
     {
+        $this->closePathInputModals();
         $selectedControl = $this->getSelectedControl();
 
         if ($selectedControl instanceof CompoundInputControl) {
@@ -555,6 +639,126 @@ class InspectorPanel extends Widget
         }
 
         $this->interactionState = self::STATE_CONTROL_SELECTION;
+    }
+
+    private function handlePathInputActionInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closePathInputModals();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->pathInputActionModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->pathInputActionModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selectedOption = $this->pathInputActionModal->getSelectedOption();
+
+        if ($selectedOption === 'Choose file') {
+            $this->pathInputActionModal->hide();
+
+            if ($this->activePathInputControl instanceof PathInputControl) {
+                $this->fileDialogModal->show(
+                    $this->activePathInputControl->getWorkingDirectory(),
+                    (string) $this->activePathInputControl->getValue(),
+                );
+                $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
+            }
+
+            return;
+        }
+
+        if ($selectedOption === 'Edit path' && $this->activePathInputControl instanceof PathInputControl) {
+            $this->pathInputActionModal->hide();
+
+            if ($this->activePathInputControl->enterEditMode()) {
+                $this->interactionState = self::STATE_CONTROL_EDIT;
+            } else {
+                $this->closePathInputModals();
+                $this->interactionState = self::STATE_CONTROL_SELECTION;
+            }
+        }
+    }
+
+    private function handlePathInputFileDialogInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->fileDialogModal->hide();
+
+            if ($this->activePathInputControl instanceof PathInputControl) {
+                $this->pathInputActionModal->show(['Choose file', 'Edit path'], 0);
+                $this->interactionState = self::STATE_PATH_INPUT_ACTION_SELECTION;
+            } else {
+                $this->interactionState = self::STATE_CONTROL_SELECTION;
+            }
+
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->fileDialogModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->fileDialogModal->moveSelection(1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::RIGHT)) {
+            $this->fileDialogModal->expandSelection();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::LEFT)) {
+            $this->fileDialogModal->collapseSelection();
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selectedPath = $this->fileDialogModal->submitSelection();
+
+        if ($selectedPath === null || !$this->activePathInputControl instanceof PathInputControl) {
+            return;
+        }
+
+        $this->activePathInputControl->setValueFromRelativePath($selectedPath);
+        $this->closePathInputModals();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
+    }
+
+    private function showPathInputActionModal(PathInputControl $control): void
+    {
+        $this->activePathInputControl = $control;
+        $this->pathInputActionModal->show(['Choose file', 'Edit path']);
+        $this->interactionState = self::STATE_PATH_INPUT_ACTION_SELECTION;
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
+    private function closePathInputModals(): void
+    {
+        $this->pathInputActionModal->hide();
+        $this->fileDialogModal->hide();
+        $this->activePathInputControl = null;
     }
 
     private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
@@ -732,4 +936,23 @@ class InspectorPanel extends Widget
 
         return ucwords(trim($spacedKey));
     }
+
+    private function resolveAssetsWorkingDirectory(): string
+    {
+        $workingDirectory = getcwd() ?: '.';
+        $assetRoots = [
+            $workingDirectory . '/Assets',
+            $workingDirectory . '/assets',
+            $workingDirectory,
+        ];
+
+        foreach ($assetRoots as $assetRoot) {
+            if (is_dir($assetRoot)) {
+                return $assetRoot;
+            }
+        }
+
+        return $workingDirectory;
+    }
+
 }

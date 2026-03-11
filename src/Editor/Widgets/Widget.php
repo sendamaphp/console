@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Atatusoft\Termutil\UI\Windows\Enumerations\HorizontalAlignment;
 use Atatusoft\Termutil\UI\Windows\Window;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\Interfaces\FocusableInterface;
@@ -116,6 +117,28 @@ abstract class Widget extends Window implements FocusableInterface
         return false;
     }
 
+    public function hasActiveModal(): bool
+    {
+        return false;
+    }
+
+    public function isModalDirty(): bool
+    {
+        return false;
+    }
+
+    public function markModalClean(): void
+    {
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+    }
+
+    public function renderActiveModal(): void
+    {
+    }
+
     public function setTopSibling(?Widget $widget): void
     {
         $this->topSibling = $widget;
@@ -217,10 +240,10 @@ abstract class Widget extends Window implements FocusableInterface
         $contentColor = $this->foregroundColor;
 
         $this->foregroundColor = null;
-        $topBorder = $this->topBorder;
-        $linesOfContent = $this->linesOfContent;
-        $bottomBorder = $this->bottomBorder;
+        $linesOfContent = $this->buildRenderedContentLines();
         $this->foregroundColor = $contentColor;
+        $topBorder = $this->buildBorderLine($this->title, true);
+        $bottomBorder = $this->buildBorderLine($this->help, false);
 
         if (!$linesOfContent) {
             $linesOfContent = [''];
@@ -267,6 +290,165 @@ abstract class Widget extends Window implements FocusableInterface
         return $this->wrapWithColor($leftBorder, $this->focusBorderColor)
             . $this->wrapWithColor($middle, $contentColor)
             . $this->wrapWithColor($rightBorder, $this->focusBorderColor);
+    }
+
+    protected function buildRenderedContentLines(): array
+    {
+        $innerWidth = max(1, $this->innerWidth);
+        $innerHeight = max(1, $this->innerHeight);
+        $blankLine = $this->borderPack->vertical . str_repeat(' ', $innerWidth) . $this->borderPack->vertical;
+        $lines = [];
+
+        for ($row = 0; $row < $this->padding->topPadding && count($lines) < $innerHeight; $row++) {
+            $lines[] = $blankLine;
+        }
+
+        $contentLineLimit = max(0, $innerHeight - $this->padding->bottomPadding);
+
+        foreach ($this->content as $lineOfContent) {
+            if (count($lines) >= $contentLineLimit) {
+                break;
+            }
+
+            $lines[] = $this->buildContentLine((string) $lineOfContent, $innerWidth);
+        }
+
+        while (count($lines) < $contentLineLimit) {
+            $lines[] = $blankLine;
+        }
+
+        while (count($lines) < $innerHeight) {
+            $lines[] = $blankLine;
+        }
+
+        return $lines;
+    }
+
+    protected function buildContentLine(string $content, int $innerWidth): string
+    {
+        $leftPadding = max(0, $this->padding->leftPadding);
+        $rightPadding = max(0, $this->padding->rightPadding);
+        $availableTextWidth = max(0, $innerWidth - $leftPadding - $rightPadding);
+        $visibleContent = $this->clipContentToWidth($content, $availableTextWidth);
+        $visibleLength = mb_strlen($visibleContent);
+
+        $contentArea = match ($this->alignment->horizontalAlignment) {
+            HorizontalAlignment::CENTER => $this->buildCenteredContentArea(
+                $visibleContent,
+                $visibleLength,
+                $innerWidth,
+                $leftPadding,
+                $rightPadding,
+            ),
+            HorizontalAlignment::RIGHT => $this->buildRightAlignedContentArea(
+                $visibleContent,
+                $visibleLength,
+                $innerWidth,
+                $rightPadding,
+            ),
+            default => $this->buildLeftAlignedContentArea(
+                $visibleContent,
+                $visibleLength,
+                $innerWidth,
+                $leftPadding,
+            ),
+        };
+
+        return $this->borderPack->vertical . $contentArea . $this->borderPack->vertical;
+    }
+
+    protected function buildLeftAlignedContentArea(
+        string $visibleContent,
+        int $visibleLength,
+        int $innerWidth,
+        int $leftPadding,
+    ): string
+    {
+        $contentArea = str_repeat(' ', min($leftPadding, $innerWidth)) . $visibleContent;
+
+        return $this->padContentArea($contentArea, $innerWidth, STR_PAD_RIGHT);
+    }
+
+    protected function buildCenteredContentArea(
+        string $visibleContent,
+        int $visibleLength,
+        int $innerWidth,
+        int $leftPadding,
+        int $rightPadding,
+    ): string
+    {
+        $availableWidth = max(0, $innerWidth - $leftPadding - $rightPadding);
+        $remainingWidth = max(0, $availableWidth - $visibleLength);
+        $leftExtraPadding = intdiv($remainingWidth, 2);
+        $rightExtraPadding = $remainingWidth - $leftExtraPadding;
+        $contentArea = str_repeat(' ', min($leftPadding + $leftExtraPadding, $innerWidth))
+            . $visibleContent
+            . str_repeat(' ', $rightPadding + $rightExtraPadding);
+
+        return $this->padContentArea($contentArea, $innerWidth, STR_PAD_BOTH);
+    }
+
+    protected function buildRightAlignedContentArea(
+        string $visibleContent,
+        int $visibleLength,
+        int $innerWidth,
+        int $rightPadding,
+    ): string
+    {
+        $leftSpace = max(0, $innerWidth - $rightPadding - $visibleLength);
+        $contentArea = str_repeat(' ', $leftSpace) . $visibleContent;
+
+        return $this->padContentArea($contentArea, $innerWidth, STR_PAD_RIGHT);
+    }
+
+    protected function padContentArea(string $contentArea, int $innerWidth, int $direction): string
+    {
+        $visibleArea = $this->clipContentToWidth($contentArea, $innerWidth);
+        $visibleLength = mb_strlen($visibleArea);
+
+        if ($visibleLength >= $innerWidth) {
+            return $visibleArea;
+        }
+
+        $paddingWidth = $innerWidth - $visibleLength;
+
+        return match ($direction) {
+            STR_PAD_LEFT => str_repeat(' ', $paddingWidth) . $visibleArea,
+            STR_PAD_BOTH => str_repeat(' ', intdiv($paddingWidth, 2))
+                . $visibleArea
+                . str_repeat(' ', $paddingWidth - intdiv($paddingWidth, 2)),
+            default => $visibleArea . str_repeat(' ', $paddingWidth),
+        };
+    }
+
+    protected function clipContentToWidth(string $content, int $maxWidth): string
+    {
+        if ($maxWidth <= 0) {
+            return '';
+        }
+
+        if (mb_strlen($content) <= $maxWidth) {
+            return $content;
+        }
+
+        return mb_substr($content, 0, $maxWidth);
+    }
+
+    protected function buildBorderLine(string $label, bool $isTopBorder): string
+    {
+        $availableLabelWidth = max(0, $this->width - 3);
+        $visibleLabel = mb_substr($label, 0, $availableLabelWidth);
+        $labelWidth = mb_strlen($visibleLabel);
+        $remainderWidth = max(0, $this->width - $labelWidth - 3);
+
+        $leftCorner = $isTopBorder ? $this->borderPack->topLeft : $this->borderPack->bottomLeft;
+        $rightCorner = $isTopBorder ? $this->borderPack->topRight : $this->borderPack->bottomRight;
+
+        return $leftCorner
+            . $this->borderPack->horizontal
+            . $visibleLabel
+            . str_repeat($this->borderPack->horizontal, $remainderWidth)
+            . $rightCorner;
     }
 
     protected function wrapWithColor(string $content, ?Color $color): string

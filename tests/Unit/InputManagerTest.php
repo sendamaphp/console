@@ -42,3 +42,10 @@ test('input manager normalizes shift left sequences', function () {
     expect($getKey->invoke(null, "\033[1;2D"))->toBe(KeyCode::SHIFT_LEFT->value);
     expect($getKey->invoke(null, "\033[d"))->toBe(KeyCode::SHIFT_LEFT->value);
 });
+
+test('input manager preserves the shift+5 play toggle input', function () {
+    $getKey = new ReflectionMethod(InputManager::class, 'getKey');
+    $getKey->setAccessible(true);
+
+    expect($getKey->invoke(null, '%'))->toBe(KeyCode::PLAY_TOGGLE->value);
+});

@@ -56,6 +56,7 @@ enum KeyCode: string
     case SELECT     = 'select';
     case PAGE_UP    = 'page_up';
     case PAGE_DOWN  = 'page_down';
+    case PLAY_TOGGLE = '%';
     case a          = 'a';
     case b          = 'b';
     case c          = 'c';

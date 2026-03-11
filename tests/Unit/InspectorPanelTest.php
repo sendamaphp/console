@@ -164,3 +164,64 @@ test('inspector panel keeps generic asset inspection simple', function () {
         'Name: Textures',
     ]);
 });
+
+test('inspector panel opens the path action modal for path controls', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-path-modal-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/player.texture', "x\n");
+    $originalWorkingDirectory = getcwd();
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    chdir($workspace);
+
+    try {
+        $panel->inspectTarget([
+            'context' => 'hierarchy',
+            'name' => 'Player',
+            'type' => 'GameObject',
+            'value' => [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'tag' => 'Player',
+                'position' => ['x' => 4, 'y' => 12],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ]);
+
+        $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+        $hasFocus->setAccessible(true);
+        $hasFocus->setValue($panel, true);
+
+        for ($index = 0; $index < 6; $index++) {
+            $panel->cycleFocusForward();
+        }
+
+        $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+        $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+        $keyPress->setAccessible(true);
+        $previousKeyPress->setAccessible(true);
+        $previousKeyPress->setValue('');
+        $keyPress->setValue("\n");
+
+        $panel->update();
+
+        expect($panel->hasActiveModal())->toBeTrue();
+        expect($panel->isModalDirty())->toBeTrue();
+
+        $panel->markModalClean();
+
+        expect($panel->isModalDirty())->toBeFalse();
+    } finally {
+        if ($originalWorkingDirectory !== false) {
+            chdir($originalWorkingDirectory);
+        }
+    }
+});
