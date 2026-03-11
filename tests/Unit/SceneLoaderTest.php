@@ -48,3 +48,45 @@ test('scene loader falls back to the first available scene when none is configur
     expect($scene->name)->toBe('alpha');
     expect($scene->hierarchy[0]['name'])->toBe('Alpha');
 });
+
+test('scene loader extracts hierarchy types from source when evaluation fails', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+
+    file_put_contents(
+        $workspace . '/Assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+use Sendama\Engine\UI\Label\Label;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'position' => ['x' => DEFAULT_SCREEN_WIDTH / 2, 'y' => 0],
+        ],
+        [
+            'type' => Label::class,
+            'name' => 'Score',
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->hierarchy[0])->toBe([
+        'name' => 'Player',
+        'type' => 'GameObject::class',
+    ]);
+    expect($scene->hierarchy[1])->toBe([
+        'name' => 'Score',
+        'type' => 'Label::class',
+    ]);
+});

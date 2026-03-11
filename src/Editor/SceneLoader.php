@@ -30,6 +30,7 @@ final class SceneLoader
             width: $sceneData['width'] ?? DEFAULT_TERMINAL_WIDTH,
             height: $sceneData['height'] ?? DEFAULT_TERMINAL_HEIGHT,
             environmentTileMapPath: $sceneData['environmentTileMapPath'] ?? 'Maps/example',
+            isDirty: $sceneData['isDirty'] ?? false,
             hierarchy: $sceneData['hierarchy'] ?? [],
         );
     }
@@ -171,12 +172,31 @@ final class SceneLoader
         }
 
         preg_match_all('/["\']name["\']\s*=>\s*["\']([^"\']+)["\']/', $source, $nameMatches);
+        preg_match_all(
+            '/["\']type["\']\s*=>\s*(?:"([^"]+)"|\'([^\']+)\'|([A-Za-z_\\\\][A-Za-z0-9_\\\\]*::class))/',
+            $source,
+            $typeMatches,
+            PREG_SET_ORDER
+        );
+
+        $names = $nameMatches[1] ?? [];
+        $types = array_map(function (array $match) {
+            return $match[1] ?: $match[2] ?: $match[3] ?: null;
+        }, $typeMatches);
+        $hierarchy = [];
+
+        foreach ($names as $index => $name) {
+            $entry = ['name' => $name];
+
+            if (isset($types[$index]) && is_string($types[$index]) && $types[$index] !== '') {
+                $entry['type'] = $types[$index];
+            }
+
+            $hierarchy[] = $entry;
+        }
 
         return [
-            'hierarchy' => array_map(
-                fn(string $name) => ['name' => $name],
-                $nameMatches[1] ?? [],
-            )
+            'hierarchy' => $hierarchy,
         ];
     }
 

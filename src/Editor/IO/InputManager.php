@@ -134,6 +134,7 @@ class InputManager implements StaticObservableInterface
             "\033[B" => KeyCode::DOWN->value,
             "\033[C" => KeyCode::RIGHT->value,
             "\033[D" => KeyCode::LEFT->value,
+            "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,
             "\010", "\177" => KeyCode::BACKSPACE->value,

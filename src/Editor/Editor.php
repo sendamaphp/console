@@ -353,9 +353,16 @@ final class Editor implements ObservableInterface
         $this->editorState->update();
         $this->handlePanelKeyboardWorkflow();
 
+        if ($this->panelListModal->isVisible()) {
+            $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
+            return;
+        }
+
         foreach ($this->panels as $panel) {
             $panel->update();
         }
+
+        $this->synchronizeInspectorPanel();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
     }
@@ -511,6 +518,8 @@ final class Editor implements ObservableInterface
         $this->panels = new ItemList(Widget::class);
         $this->panelListModal = new PanelListModal();
         $this->hierarchyPanel = new HierarchyPanel(
+            sceneName: $this->loadedScene?->name ?? 'Scene',
+            isSceneDirty: $this->loadedScene?->isDirty ?? false,
             hierarchy: $this->loadedScene?->hierarchy ?? [],
         );
         $this->assetsPanel = new AssetsPanel(
@@ -581,6 +590,11 @@ final class Editor implements ObservableInterface
 
         if (Input::getCurrentInput() === '!') {
             $this->showPanelListModal();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_TAB)) {
+            $this->focusPreviousPanel();
             return;
         }
 
@@ -660,6 +674,17 @@ final class Editor implements ObservableInterface
         $this->setFocusedPanel($panel);
     }
 
+    private function focusPreviousPanel(): void
+    {
+        $panels = $this->panels->toArray();
+        $panelIndex = $this->getFocusedPanelIndex();
+        $previousIndex = ($panelIndex - 1 + count($panels)) % count($panels);
+
+        /** @var Widget $panel */
+        $panel = $panels[$previousIndex];
+        $this->setFocusedPanel($panel);
+    }
+
     private function getFocusedPanelIndex(): int
     {
         foreach ($this->panels as $index => $panel) {
@@ -711,6 +736,18 @@ final class Editor implements ObservableInterface
             $panel = $panels[$selectedIndex];
             $this->setFocusedPanel($panel);
         }
+    }
+
+    private function synchronizeInspectorPanel(): void
+    {
+        $selectedItem = $this->hierarchyPanel->consumeInspectionRequest()
+            ?? $this->assetsPanel->consumeInspectionRequest();
+
+        if ($selectedItem === null) {
+            return;
+        }
+
+        $this->inspectorPanel->inspectTarget($selectedItem);
     }
 
     private function getPanelDisplayNames(): array

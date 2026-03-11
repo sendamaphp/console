@@ -152,14 +152,14 @@ abstract class Widget extends Window implements FocusableInterface
 
         foreach ($linesOfContent as $index => $line) {
             $this->cursor->moveTo($leftMargin, $topMargin + $index + 1);
-            echo $this->decorateContentLine($line, $contentColor);
+            echo $this->decorateContentLine($line, $contentColor, $index);
         }
 
         $this->cursor->moveTo($leftMargin, $topMargin + count($linesOfContent) + 1);
         echo $this->decorateBorderLine($bottomBorder, $contentColor);
     }
 
-    private function decorateBorderLine(string $line, ?Color $contentColor): string
+    protected function decorateBorderLine(string $line, ?Color $contentColor): string
     {
         $visibleLine = mb_substr($line, 0, $this->width);
         $borderColor = $this->hasFocus ? $this->focusBorderColor : $contentColor;
@@ -167,7 +167,7 @@ abstract class Widget extends Window implements FocusableInterface
         return $this->wrapWithColor($visibleLine, $borderColor);
     }
 
-    private function decorateContentLine(string $line, ?Color $contentColor): string
+    protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $visibleLine = mb_substr($line, 0, $this->width);
 
@@ -190,13 +190,18 @@ abstract class Widget extends Window implements FocusableInterface
             . $this->wrapWithColor($rightBorder, $this->focusBorderColor);
     }
 
-    private function wrapWithColor(string $content, ?Color $color): string
+    protected function wrapWithColor(string $content, ?Color $color): string
     {
-        if ($content === '' || $color === null) {
+        return $this->wrapWithSequence($content, $color?->value);
+    }
+
+    protected function wrapWithSequence(string $content, ?string $sequence): string
+    {
+        if ($content === '' || $sequence === null) {
             return $content;
         }
 
-        return $color->value . $content . Color::RESET->value;
+        return $sequence . $content . Color::RESET->value;
     }
 
     /**
