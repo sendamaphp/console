@@ -12,6 +12,7 @@ use Sendama\Console\Editor\Enumerations\ChronoUnit;
 use Sendama\Console\Editor\Events\EditorEvent;
 use Sendama\Console\Editor\Events\Enumerations\EventType;
 use Sendama\Console\Editor\Interfaces\EditorStateInterface;
+use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\States\EditorState;
 use Sendama\Console\Editor\States\EditorStateContext;
@@ -20,12 +21,14 @@ use Sendama\Console\Editor\States\ModalState;
 use Sendama\Console\Editor\States\PlayState;
 use Sendama\Console\Editor\States\ProjectBrowserState;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
+use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
+use Sendama\Console\Editor\Widgets\MainPanel;
+use Sendama\Console\Editor\Widgets\PanelListModal;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
-use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Throwable;
 
@@ -115,7 +118,16 @@ final class Editor implements ObservableInterface
     protected ItemList $panels;
     protected HierarchyPanel $hierarchyPanel;
     protected AssetsPanel $assetsPanel;
+    protected MainPanel $mainPanel;
+    protected ConsolePanel $consolePanel;
     protected InspectorPanel $inspectorPanel;
+    protected ?Widget $focusedPanel = null;
+    protected ?DTOs\SceneDTO $loadedScene = null;
+    protected ?string $assetsDirectoryPath = null;
+    protected int $terminalWidth = DEFAULT_TERMINAL_WIDTH;
+    protected int $terminalHeight = DEFAULT_TERMINAL_HEIGHT;
+    protected PanelListModal $panelListModal;
+    protected bool $shouldRefreshBackgroundUnderModal = false;
 
     /**
      * @param string $name
@@ -134,6 +146,8 @@ final class Editor implements ObservableInterface
             $this->initializeObservers();
             $this->configureErrorAndExceptionHandlers();
             $this->initializeSettings();
+            $this->initializeLoadedScene();
+            $this->refreshTerminalSize(force: true);
             $this->initializeManagers();
             $this->initializeConsole();
             $this->initializeWidgets();
@@ -195,7 +209,7 @@ final class Editor implements ObservableInterface
 
         Console::setName($this->gameSettings?->name ?? "Sendama Editor | Unknown Game");
 
-        Console::setSize($this->gameSettings?->width, $this->gameSettings?->height);
+        Console::setSize($this->terminalWidth, $this->terminalHeight);
 
         Console::cursor()->hide();
 
@@ -300,7 +314,10 @@ final class Editor implements ObservableInterface
             $this->gameSettings,
             [
                 'hierarchy' => $this->hierarchyPanel,
-                'assets' => $this->assetsPanel
+                'assets' => $this->assetsPanel,
+                'main' => $this->mainPanel,
+                'console' => $this->consolePanel,
+                'inspector' => $this->inspectorPanel,
             ]
         );
 
@@ -317,6 +334,7 @@ final class Editor implements ObservableInterface
     private function handleInput(): void
     {
         InputManager::handleInput();
+        $this->handlePanelFocus();
 
         $this->notify(new EditorEvent(EventType::EDITOR_INPUT_HANDLED->value, $this));
     }
@@ -328,7 +346,12 @@ final class Editor implements ObservableInterface
      */
     private function update(): void
     {
+        if ($this->frameCount % 10 === 0) {
+            $this->refreshTerminalSize();
+        }
+
         $this->editorState->update();
+        $this->handlePanelKeyboardWorkflow();
 
         foreach ($this->panels as $panel) {
             $panel->update();
@@ -340,13 +363,36 @@ final class Editor implements ObservableInterface
     private function render(): void
     {
         $this->frameCount++;
+        if ($this->panelListModal->isVisible()) {
+            if ($this->shouldRefreshBackgroundUnderModal) {
+                $this->renderEditorFrame();
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->panelListModal->isDirty()) {
+                $this->panelListModal->render();
+                $this->panelListModal->markClean();
+                $this->shouldRefreshBackgroundUnderModal = false;
+            }
+
+            $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+            return;
+        }
+
+        $this->shouldRefreshBackgroundUnderModal = false;
+        $this->renderEditorFrame();
+
+        $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+    }
+
+    private function renderEditorFrame(): void
+    {
         $this->editorState->render();
+
         foreach ($this->panels as $panel) {
             $panel->render();
         }
-        $this->renderDebugInfo();
 
-        $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+        $this->renderDebugInfo();
     }
 
     private function renderDebugInfo(): void
@@ -417,8 +463,8 @@ final class Editor implements ObservableInterface
     protected function initializeConsole(): void
     {
         Console::init([
-            "width" => $this->gameSettings?->width ?? DEFAULT_TERMINAL_WIDTH,
-            "height" => $this->gameSettings?->height ?? DEFAULT_TERMINAL_HEIGHT,
+            "width" => $this->terminalWidth,
+            "height" => $this->terminalHeight,
         ]);
     }
 
@@ -442,6 +488,13 @@ final class Editor implements ObservableInterface
         $this->gameSettings = GameSettings::loadFromDirectory($this->workingDirectory);
     }
 
+    private function initializeLoadedScene(): void
+    {
+        $sceneLoader = new SceneLoader($this->workingDirectory);
+        $this->assetsDirectoryPath = $sceneLoader->resolveAssetsDirectory();
+        $this->loadedScene = $sceneLoader->load($this->settings->scenes);
+    }
+
     /**
      * @return void
      */
@@ -456,15 +509,218 @@ final class Editor implements ObservableInterface
     private function initializeWidgets(): void
     {
         $this->panels = new ItemList(Widget::class);
-        $halfHeight = (int)(($this->settings->height - 1) / 2);
-        $this->hierarchyPanel = new HierarchyPanel(height: $halfHeight);
-        $this->assetsPanel = new AssetsPanel(position: ['x' => 1, 'y' => $halfHeight + 1], height: $halfHeight);
-        $centralPanelWidth = $this->settings->width - 2 - (35 * 2);
-
-        $this->inspectorPanel = new InspectorPanel(position: ['x' => ($centralPanelWidth + 35), 'y' => 1], height: $this->settings->height - 1);
+        $this->panelListModal = new PanelListModal();
+        $this->hierarchyPanel = new HierarchyPanel(
+            hierarchy: $this->loadedScene?->hierarchy ?? [],
+        );
+        $this->assetsPanel = new AssetsPanel(
+            assetsDirectoryPath: $this->assetsDirectoryPath,
+        );
+        $this->mainPanel = new MainPanel();
+        $this->consolePanel = new ConsolePanel();
+        $this->inspectorPanel = new InspectorPanel();
 
         $this->panels->add($this->hierarchyPanel);
         $this->panels->add($this->assetsPanel);
+        $this->panels->add($this->mainPanel);
+        $this->panels->add($this->consolePanel);
         $this->panels->add($this->inspectorPanel);
+
+        $this->layoutPanels();
+        $this->setFocusedPanel($this->mainPanel);
+    }
+
+    private function handlePanelFocus(): void
+    {
+        if (!Input::isLeftMouseButtonDown()) {
+            return;
+        }
+
+        $mouseEvent = Input::getMouseEvent();
+
+        if (!$mouseEvent) {
+            return;
+        }
+
+        foreach ($this->panels as $panel) {
+            if ($panel->containsPoint($mouseEvent->x, $mouseEvent->y)) {
+                $this->setFocusedPanel($panel);
+                $panel->handleMouseClick($mouseEvent->x, $mouseEvent->y);
+                return;
+            }
+        }
+    }
+
+    private function setFocusedPanel(Widget $panel): void
+    {
+        if ($this->focusedPanel === $panel) {
+            return;
+        }
+
+        $context = $this->createFocusTargetContext();
+
+        $this->focusedPanel?->blur($context);
+        $this->focusedPanel = $panel;
+        $this->focusedPanel->focus($context);
+    }
+
+    private function createFocusTargetContext(): FocusTargetContext
+    {
+        return new FocusTargetContext(
+            $this,
+            $this->gameSettings ?? new GameSettings(name: 'Untitled Game')
+        );
+    }
+
+    private function handlePanelKeyboardWorkflow(): void
+    {
+        if ($this->panelListModal->isVisible()) {
+            $this->handlePanelListModalInput();
+            return;
+        }
+
+        if (Input::getCurrentInput() === '!') {
+            $this->showPanelListModal();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::TAB)) {
+            $this->focusNextPanel();
+        }
+    }
+
+    private function refreshTerminalSize(bool $force = false): void
+    {
+        $terminalSize = get_max_terminal_size();
+        $newWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $newHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+
+        if (!$force && $newWidth === $this->terminalWidth && $newHeight === $this->terminalHeight) {
+            return;
+        }
+
+        $this->terminalWidth = $newWidth;
+        $this->terminalHeight = $newHeight;
+
+        if (!isset($this->panels)) {
+            return;
+        }
+
+        Console::init([
+            'width' => $this->terminalWidth,
+            'height' => $this->terminalHeight,
+        ]);
+
+        $this->layoutPanels();
+
+        if ($this->panelListModal->isVisible()) {
+            $this->shouldRefreshBackgroundUnderModal = true;
+        }
+    }
+
+    private function layoutPanels(): void
+    {
+        $leftPanelWidth = min(35, max(12, intdiv(max($this->terminalWidth - 2, 1), 4)));
+        $rightPanelWidth = $leftPanelWidth;
+        $availableHeight = max(6, $this->terminalHeight - 1);
+        $topLeftHeight = max(3, intdiv($availableHeight, 2));
+        $bottomLeftHeight = $availableHeight - $topLeftHeight;
+        $centralPanelX = $leftPanelWidth + 2;
+        $centralPanelWidth = max(12, $this->terminalWidth - ($leftPanelWidth * 2) - 2);
+        $consolePanelHeight = min(max(3, intdiv($availableHeight, 4)), $availableHeight - 3);
+        $mainPanelHeight = $availableHeight - $consolePanelHeight;
+        $inspectorPanelX = $centralPanelX + $centralPanelWidth + 1;
+
+        $this->hierarchyPanel->setPosition(1, 1);
+        $this->hierarchyPanel->setDimensions($leftPanelWidth, $topLeftHeight);
+
+        $this->assetsPanel->setPosition(1, $topLeftHeight + 1);
+        $this->assetsPanel->setDimensions($leftPanelWidth, $bottomLeftHeight);
+
+        $this->mainPanel->setPosition($centralPanelX, 1);
+        $this->mainPanel->setDimensions($centralPanelWidth, $mainPanelHeight);
+
+        $this->consolePanel->setPosition($centralPanelX, $mainPanelHeight + 1);
+        $this->consolePanel->setDimensions($centralPanelWidth, $consolePanelHeight);
+
+        $this->inspectorPanel->setPosition($inspectorPanelX, 1);
+        $this->inspectorPanel->setDimensions($rightPanelWidth, $availableHeight);
+
+        $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+    }
+
+    private function focusNextPanel(): void
+    {
+        $panels = $this->panels->toArray();
+        $panelIndex = $this->getFocusedPanelIndex();
+        $nextIndex = ($panelIndex + 1) % count($panels);
+
+        /** @var Widget $panel */
+        $panel = $panels[$nextIndex];
+        $this->setFocusedPanel($panel);
+    }
+
+    private function getFocusedPanelIndex(): int
+    {
+        foreach ($this->panels as $index => $panel) {
+            if ($panel === $this->focusedPanel) {
+                return $index;
+            }
+        }
+
+        return 0;
+    }
+
+    private function showPanelListModal(): void
+    {
+        $this->panelListModal->show(
+            $this->getPanelDisplayNames(),
+            $this->getFocusedPanelIndex()
+        );
+        $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function handlePanelListModalInput(): void
+    {
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::ESCAPE)) {
+            $this->panelListModal->hide();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::UP)) {
+            $this->panelListModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::DOWN)) {
+            $this->panelListModal->moveSelection(1);
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::ENTER)) {
+            $selectedIndex = $this->panelListModal->getSelectedIndex();
+            $this->panelListModal->hide();
+            $panels = $this->panels->toArray();
+
+            if (!isset($panels[$selectedIndex])) {
+                return;
+            }
+
+            /** @var Widget $panel */
+            $panel = $panels[$selectedIndex];
+            $this->setFocusedPanel($panel);
+        }
+    }
+
+    private function getPanelDisplayNames(): array
+    {
+        $names = [];
+
+        foreach ($this->panels as $panel) {
+            $names[] = $panel->getDisplayName();
+        }
+
+        return $names;
     }
 }

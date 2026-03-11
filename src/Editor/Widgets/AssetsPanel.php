@@ -15,6 +15,9 @@ use Sendama\Console\Util\Path;
  */
 class AssetsPanel extends Widget
 {
+    protected array $assetEntries = [];
+    protected ?int $selectedIndex = null;
+
     /**
      * AssetsPanel constructor.
      *
@@ -31,32 +34,24 @@ class AssetsPanel extends Widget
     )
     {
         parent::__construct('Assets', '', $position, $width, $height);
+        $this->loadAssetEntries();
+        $this->refreshContent();
+    }
 
-        if (!$this->assetsDirectoryPath) {
-            $this->assetsDirectoryPath = Path::getWorkingDirectoryAssetsPath();
+    public function handleMouseClick(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y)) {
+            return;
         }
 
-        if (! file_exists($this->assetsDirectoryPath) ) {
-            Debug::warn("Assets directory not found at {$this->assetsDirectoryPath}. Please create the directory and add your assets.");
-        } else {
-            $rootAssets = scandir($this->assetsDirectoryPath);
+        $index = $y - $this->getContentAreaTop();
 
-            if (false === $rootAssets) {
-                Debug::error("Failed to read contents of assets directory at {$this->assetsDirectoryPath}.");
-            } else {
-                $rootAssets = array_slice($rootAssets, 2);
-                $content = [];
-                foreach ($rootAssets as $asset) {
-                    $contentLine = "  $asset";
-                    if (is_dir(Path::join($this->assetsDirectoryPath, $asset))) {
-                        $contentLine = "► $asset";
-                    }
-
-                    $content[] = $contentLine;
-                }
-                $this->content = $content;
-            }
+        if (!isset($this->assetEntries[$index])) {
+            return;
         }
+
+        $this->selectedIndex = $index;
+        $this->refreshContent();
     }
 
     /**
@@ -65,5 +60,46 @@ class AssetsPanel extends Widget
     public function update(): void
     {
         // TODO: Implement update() method.
+    }
+
+    private function loadAssetEntries(): void
+    {
+        if (!$this->assetsDirectoryPath) {
+            $this->assetsDirectoryPath = Path::getWorkingDirectoryAssetsPath();
+        }
+
+        if (! file_exists($this->assetsDirectoryPath) ) {
+            Debug::warn("Assets directory not found at {$this->assetsDirectoryPath}. Please create the directory and add your assets.");
+            $this->assetEntries = [];
+        } else {
+            $rootAssets = scandir($this->assetsDirectoryPath);
+
+            if (false === $rootAssets) {
+                Debug::error("Failed to read contents of assets directory at {$this->assetsDirectoryPath}.");
+                $this->assetEntries = [];
+            } else {
+                $rootAssets = array_slice($rootAssets, 2);
+                $entries = [];
+                foreach ($rootAssets as $asset) {
+                    $entries[] = [
+                        'name' => $asset,
+                        'isDirectory' => is_dir(Path::join($this->assetsDirectoryPath, $asset)),
+                    ];
+                }
+                $this->assetEntries = $entries;
+            }
+        }
+    }
+
+    private function refreshContent(): void
+    {
+        $this->content = array_map(function (array $assetEntry, int $index) {
+            $name = $assetEntry['name'] ?? 'Unnamed Asset';
+            $icon = $index === $this->selectedIndex
+                ? '>'
+                : ($assetEntry['isDirectory'] ?? false ? '►' : ' ');
+
+            return "$icon $name";
+        }, $this->assetEntries, array_keys($this->assetEntries));
     }
 }

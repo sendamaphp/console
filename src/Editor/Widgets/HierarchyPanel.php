@@ -16,42 +16,57 @@ class HierarchyPanel extends Widget implements ObservableInterface
 {
     use ObservableTrait;
 
-    public array $hierarchy {
-        get {
-            return $this->hierarchy;
-        }
-
-        set {
-            $this->hierarchy = $value;
-            $this->notify(new EditorEvent(EventType::HIERARCHY_CHANGED->value, $this, ));
-        }
-    }
+    protected array $hierarchy = [];
+    protected ?int $selectedIndex = null;
 
     public function __construct(
         array $position = ['x' => 1, 'y' => 1],
         int $width = 35,
         int $height = 14,
-        array $hierarchy = [
-            [
-                "name" => "Level Manager"
-            ],
-            [
-                "name" => "Game Object"
-            ]
-        ]
+        array $hierarchy = []
     )
     {
         $this->initializeObservers();
-        $this->hierarchy = $hierarchy;
         parent::__construct('Hierarchy', '', $position, $width, $height);
+        $this->setHierarchy($hierarchy);
+    }
 
-        // Bind hierarchy to content for display
-        $this->content = array_map(function (array $item) {
-            $objectName = $item['name'] ?? 'Unnamed Object';
-            $icon = "►"; // TODO: Determine icon based on object type
-            // TODO: Add indentation based on hierarchy level
-            return "$icon $objectName";
-        }, $this->hierarchy);
+    public function getHierarchy(): array
+    {
+        return $this->hierarchy;
+    }
+
+    public function setHierarchy(array $hierarchy): void
+    {
+        $this->hierarchy = $hierarchy;
+        $this->refreshContent();
+
+        $this->notify(new EditorEvent(EventType::HIERARCHY_CHANGED->value, $this));
+    }
+
+    public function getSelectedHierarchyObject(): ?array
+    {
+        if ($this->selectedIndex === null) {
+            return null;
+        }
+
+        return $this->hierarchy[$this->selectedIndex] ?? null;
+    }
+
+    public function handleMouseClick(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y)) {
+            return;
+        }
+
+        $index = $y - $this->getContentAreaTop();
+
+        if (!isset($this->hierarchy[$index])) {
+            return;
+        }
+
+        $this->selectedIndex = $index;
+        $this->refreshContent();
     }
 
     /**
@@ -60,5 +75,14 @@ class HierarchyPanel extends Widget implements ObservableInterface
     public function update(): void
     {
         // TODO: Implement update() method.
+    }
+
+    private function refreshContent(): void
+    {
+        $this->content = array_map(function (array $item, int $index) {
+            $objectName = $item['name'] ?? 'Unnamed Object';
+            $icon = $index === $this->selectedIndex ? '>' : '►';
+            return "$icon $objectName";
+        }, $this->hierarchy, array_keys($this->hierarchy));
     }
 }
