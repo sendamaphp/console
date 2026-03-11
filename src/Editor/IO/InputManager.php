@@ -132,8 +132,12 @@ class InputManager implements StaticObservableInterface
         return match ($keyPress) {
             "\033[A" => KeyCode::UP->value,
             "\033[B" => KeyCode::DOWN->value,
+            "\033[1;2A", "\033[a" => KeyCode::SHIFT_UP->value,
+            "\033[1;2B", "\033[b" => KeyCode::SHIFT_DOWN->value,
             "\033[C" => KeyCode::RIGHT->value,
             "\033[D" => KeyCode::LEFT->value,
+            "\033[1;2C", "\033[c" => KeyCode::SHIFT_RIGHT->value,
+            "\033[1;2D", "\033[d" => KeyCode::SHIFT_LEFT->value,
             "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,

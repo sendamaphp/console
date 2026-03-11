@@ -12,6 +12,11 @@ use Sendama\Console\Editor\Interfaces\FocusableInterface;
  */
 abstract class Widget extends Window implements FocusableInterface
 {
+    protected ?Widget $topSibling = null;
+    protected ?Widget $rightSibling = null;
+    protected ?Widget $bottomSibling = null;
+    protected ?Widget $leftSibling = null;
+
     /**
      * @var int
      */
@@ -99,6 +104,80 @@ abstract class Widget extends Window implements FocusableInterface
 
     public function handleMouseClick(int $x, int $y): void
     {
+    }
+
+    public function cycleFocusForward(): bool
+    {
+        return false;
+    }
+
+    public function cycleFocusBackward(): bool
+    {
+        return false;
+    }
+
+    public function setTopSibling(?Widget $widget): void
+    {
+        $this->topSibling = $widget;
+    }
+
+    public function getTopSibling(): ?Widget
+    {
+        return $this->topSibling;
+    }
+
+    public function setRightSibling(?Widget $widget): void
+    {
+        $this->rightSibling = $widget;
+    }
+
+    public function getRightSibling(): ?Widget
+    {
+        return $this->rightSibling;
+    }
+
+    public function setBottomSibling(?Widget $widget): void
+    {
+        $this->bottomSibling = $widget;
+    }
+
+    public function getBottomSibling(): ?Widget
+    {
+        return $this->bottomSibling;
+    }
+
+    public function setLeftSibling(?Widget $widget): void
+    {
+        $this->leftSibling = $widget;
+    }
+
+    public function getLeftSibling(): ?Widget
+    {
+        return $this->leftSibling;
+    }
+
+    public function setSiblings(
+        ?Widget $top = null,
+        ?Widget $right = null,
+        ?Widget $bottom = null,
+        ?Widget $left = null,
+    ): void
+    {
+        $this->topSibling = $top;
+        $this->rightSibling = $right;
+        $this->bottomSibling = $bottom;
+        $this->leftSibling = $left;
+    }
+
+    public function getSibling(string $direction): ?Widget
+    {
+        return match ($direction) {
+            'top' => $this->topSibling,
+            'right' => $this->rightSibling,
+            'bottom' => $this->bottomSibling,
+            'left' => $this->leftSibling,
+            default => null,
+        };
     }
 
     protected function getContentAreaTop(): int

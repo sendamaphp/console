@@ -29,6 +29,7 @@ use Sendama\Console\Editor\Widgets\PanelListModal;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
+use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Throwable;
 
@@ -358,6 +359,8 @@ final class Editor implements ObservableInterface
             return;
         }
 
+        $this->consolePanel->setPlayModeActive($this->editorState instanceof PlayState);
+
         foreach ($this->panels as $panel) {
             $panel->update();
         }
@@ -526,7 +529,9 @@ final class Editor implements ObservableInterface
             assetsDirectoryPath: $this->assetsDirectoryPath,
         );
         $this->mainPanel = new MainPanel();
-        $this->consolePanel = new ConsolePanel();
+        $this->consolePanel = new ConsolePanel(
+            logFilePath: Path::join($this->workingDirectory, 'logs', 'debug.log'),
+        );
         $this->inspectorPanel = new InspectorPanel();
 
         $this->panels->add($this->hierarchyPanel);
@@ -536,6 +541,7 @@ final class Editor implements ObservableInterface
         $this->panels->add($this->inspectorPanel);
 
         $this->layoutPanels();
+        $this->configurePanelGraph();
         $this->setFocusedPanel($this->mainPanel);
     }
 
@@ -593,13 +599,33 @@ final class Editor implements ObservableInterface
             return;
         }
 
-        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_TAB)) {
-            $this->focusPreviousPanel();
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_UP)) {
+            $this->focusSiblingPanel('top');
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_RIGHT)) {
+            $this->focusSiblingPanel('right');
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_DOWN)) {
+            $this->focusSiblingPanel('bottom');
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_LEFT)) {
+            $this->focusSiblingPanel('left');
             return;
         }
 
         if (Input::isKeyDown(IO\Enumerations\KeyCode::TAB)) {
-            $this->focusNextPanel();
+            $this->focusedPanel?->cycleFocusForward();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_TAB)) {
+            $this->focusedPanel?->cycleFocusBackward();
         }
     }
 
@@ -661,6 +687,53 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->setDimensions($rightPanelWidth, $availableHeight);
 
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+    }
+
+    private function configurePanelGraph(): void
+    {
+        $this->hierarchyPanel->setSiblings(
+            top: null,
+            right: $this->mainPanel,
+            bottom: $this->assetsPanel,
+            left: null,
+        );
+
+        $this->assetsPanel->setSiblings(
+            top: $this->hierarchyPanel,
+            right: $this->consolePanel,
+            bottom: null,
+            left: null,
+        );
+
+        $this->consolePanel->setSiblings(
+            top: $this->mainPanel,
+            right: $this->inspectorPanel,
+            bottom: null,
+            left: $this->assetsPanel,
+        );
+
+        $this->mainPanel->setSiblings(
+            top: null,
+            right: $this->inspectorPanel,
+            bottom: $this->consolePanel,
+            left: $this->hierarchyPanel,
+        );
+
+        $this->inspectorPanel->setSiblings(
+            top: null,
+            right: null,
+            bottom: null,
+            left: $this->mainPanel,
+        );
+    }
+
+    private function focusSiblingPanel(string $direction): void
+    {
+        $targetPanel = $this->focusedPanel?->getSibling($direction);
+
+        if ($targetPanel instanceof Widget) {
+            $this->setFocusedPanel($targetPanel);
+        }
     }
 
     private function focusNextPanel(): void

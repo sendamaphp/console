@@ -13,6 +13,10 @@ enum KeyCode: string
     case SPACE      = 'space';
     case TAB        = 'tab';
     case SHIFT_TAB  = 'shift_tab';
+    case SHIFT_UP   = 'shift_up';
+    case SHIFT_RIGHT = 'shift_right';
+    case SHIFT_DOWN = 'shift_down';
+    case SHIFT_LEFT = 'shift_left';
     case BACKSPACE  = 'backspace';
     case ESCAPE     = 'escape';
     case DELETE     = 'delete';

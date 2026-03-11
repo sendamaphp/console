@@ -31,5 +31,6 @@ test('main panel highlights the active tab in the divider', function () {
     $panel->selectTab('Sprite');
 
     expect($panel->content[0])->toContain('Scene  Game  Sprite');
-    expect($panel->content[1])->toContain('======');
+    expect($panel->content[1])->toContain('■■■■■■');
+    expect(mb_strlen($panel->content[1]))->toBe($panel->innerWidth - 2);
 });
