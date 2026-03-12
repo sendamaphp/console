@@ -151,6 +151,12 @@ final class SceneLoader
 
     private function loadSceneData(string $scenePath): array
     {
+        $isolatedSceneData = $this->loadSceneDataInIsolatedProcess($scenePath);
+
+        if (is_array($isolatedSceneData)) {
+            return $isolatedSceneData;
+        }
+
         try {
             $sceneData = require $scenePath;
 
@@ -164,6 +170,83 @@ final class SceneLoader
         }
 
         return $this->extractSceneDataFromSource($scenePath);
+    }
+
+    private function loadSceneDataInIsolatedProcess(string $scenePath): ?array
+    {
+        $autoloadPath = Path::join($this->workingDirectory, 'vendor', 'autoload.php');
+        $script = <<<'PHP'
+$autoloadPath = $argv[1] ?? '';
+$scenePath = $argv[2] ?? '';
+
+if ($scenePath === '' || !is_file($scenePath)) {
+    fwrite(STDERR, "Scene file not found.\n");
+    exit(1);
+}
+
+ob_start();
+
+try {
+    if ($autoloadPath !== '' && is_file($autoloadPath)) {
+        require $autoloadPath;
+    }
+
+    $sceneData = require $scenePath;
+} finally {
+    ob_end_clean();
+}
+
+if (!is_array($sceneData ?? null)) {
+    fwrite(STDERR, "Scene metadata did not return an array.\n");
+    exit(2);
+}
+
+$encodedSceneData = json_encode($sceneData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+if (!is_string($encodedSceneData)) {
+    fwrite(STDERR, "Failed to encode scene metadata.\n");
+    exit(3);
+}
+
+echo $encodedSceneData;
+PHP;
+
+        $command = [PHP_BINARY, '-d', 'display_errors=stderr', '-r', $script, $autoloadPath, $scenePath];
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptors, $pipes, $this->workingDirectory);
+
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]) ?: '';
+        $stderr = stream_get_contents($pipes[2]) ?: '';
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            Debug::warn(
+                "Failed to load scene metadata in isolated process at {$scenePath}: " . trim($stderr)
+            );
+
+            return null;
+        }
+
+        $sceneData = json_decode($stdout, true);
+
+        if (!is_array($sceneData)) {
+            Debug::warn("Failed to decode isolated scene metadata at {$scenePath}.");
+            return null;
+        }
+
+        return $sceneData;
     }
 
     private function extractSceneDataFromSource(string $scenePath): array

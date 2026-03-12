@@ -97,8 +97,7 @@ final class SceneWriter
         }
 
         if (array_is_list($currentValue)) {
-            return count($sourceNode['items'] ?? []) === count($currentValue)
-                && count($currentValue) === count($originalValue);
+            return true;
         }
 
         return true;
@@ -123,17 +122,25 @@ final class SceneWriter
             foreach (array_keys($currentValue) as $index) {
                 $itemNode = $sourceNode['items'][$index] ?? null;
 
-                if (!is_array($itemNode) || !isset($itemNode['node'])) {
-                    return $this->exportArray($currentValue, $depth);
+                if (
+                    is_array($itemNode)
+                    && isset($itemNode['node'])
+                    && array_key_exists($index, $originalValue)
+                ) {
+                    $lines[] = $childIndent
+                        . $this->renderMergedValue(
+                            $currentValue[$index],
+                            $originalValue[$index],
+                            $itemNode['node'],
+                            $depth + 1
+                        )
+                        . ',';
+
+                    continue;
                 }
 
                 $lines[] = $childIndent
-                    . $this->renderMergedValue(
-                        $currentValue[$index],
-                        $originalValue[$index],
-                        $itemNode['node'],
-                        $depth + 1
-                    )
+                    . $this->exportValue($currentValue[$index], $depth + 1)
                     . ',';
             }
 
@@ -170,7 +177,7 @@ final class SceneWriter
                 continue;
             }
 
-            $lines[] = $childIndent . $valuePrefix . $itemNode['node']['source'] . ',';
+                $lines[] = $childIndent . $valuePrefix . $itemNode['node']['source'] . ',';
         }
 
         foreach ($currentValue as $key => $value) {
@@ -180,7 +187,7 @@ final class SceneWriter
 
             $lines[] = $childIndent
                 . $this->renderArrayKeyPrefix($key, null)
-                . $this->exportValue($value, $depth + 1)
+                . $this->exportValue($value, $depth + 1, is_string($key) ? $key : null)
                 . ',';
         }
 
@@ -219,10 +226,14 @@ final class SceneWriter
         return $trimmedKey;
     }
 
-    private function exportValue(mixed $value, int $depth = 0): string
+    private function exportValue(mixed $value, int $depth = 0, ?string $contextKey = null): string
     {
         if (is_array($value)) {
             return $this->exportArray($value, $depth);
+        }
+
+        if (is_string($value) && in_array($contextKey, ['type', 'class'], true)) {
+            return $this->exportClassReference($value);
         }
 
         return var_export($value, true);
@@ -243,9 +254,31 @@ final class SceneWriter
                 ? ''
                 : var_export($key, true) . ' => ';
 
-            $lines[] = $childIndent . $prefix . $this->exportValue($item, $depth + 1) . ',';
+            $lines[] = $childIndent
+                . $prefix
+                . $this->exportValue($item, $depth + 1, is_string($key) ? $key : null)
+                . ',';
         }
 
         return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+    }
+
+    private function exportClassReference(string $value): string
+    {
+        $normalizedValue = trim($value);
+
+        if ($normalizedValue === '') {
+            return var_export($value, true);
+        }
+
+        if (preg_match('/^[A-Za-z_\\\\][A-Za-z0-9_\\\\]*::class$/', $normalizedValue) === 1) {
+            return $normalizedValue;
+        }
+
+        if (preg_match('/^[A-Za-z_\\\\][A-Za-z0-9_\\\\]*$/', $normalizedValue) === 1) {
+            return '\\' . ltrim($normalizedValue, '\\') . '::class';
+        }
+
+        return var_export($value, true);
     }
 }

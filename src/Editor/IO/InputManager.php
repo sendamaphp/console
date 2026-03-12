@@ -81,7 +81,7 @@ class InputManager implements StaticObservableInterface
             }
         }
 
-        system('stty cbreak -echo -ixon -ixoff');
+        system('stty cbreak -echo -ixon -ixoff -isig');
     }
 
     /**
@@ -102,7 +102,7 @@ class InputManager implements StaticObservableInterface
             return;
         }
 
-        system('stty -cbreak echo ixon ixoff');
+        system('stty -cbreak echo ixon ixoff isig');
     }
 
     public static function handleInput(): void
@@ -156,6 +156,7 @@ class InputManager implements StaticObservableInterface
             "\033[1;2C", "\033[c" => KeyCode::SHIFT_RIGHT->value,
             "\033[1;2D", "\033[d" => KeyCode::SHIFT_LEFT->value,
             "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
+            "\x03" => KeyCode::CTRL_C->value,
             "\x13" => KeyCode::CTRL_S->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,

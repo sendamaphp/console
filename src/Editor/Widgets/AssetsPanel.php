@@ -15,6 +15,7 @@ use Sendama\Console\Util\Path;
  */
 class AssetsPanel extends Widget
 {
+    private const string DELETE_MODAL_CONFIRM = 'delete_confirm';
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
     private const string LEAF_ICON = '•';
@@ -26,6 +27,9 @@ class AssetsPanel extends Widget
     protected array $expandedPaths = [];
     protected ?string $selectedPath = null;
     protected ?array $pendingInspectionTarget = null;
+    protected ?array $pendingDeletionTarget = null;
+    protected OptionListModal $deleteConfirmModal;
+    protected ?string $modalState = null;
 
     public function __construct(
         array $position = ['x' => 1, 'y' => 15],
@@ -35,6 +39,7 @@ class AssetsPanel extends Widget
     )
     {
         parent::__construct('Assets', '', $position, $width, $height);
+        $this->deleteConfirmModal = new OptionListModal(title: 'Delete Asset');
         $this->loadAssetEntries();
         $this->refreshContent();
     }
@@ -133,6 +138,47 @@ class AssetsPanel extends Widget
         return $pendingInspectionTarget;
     }
 
+    public function consumeDeletionRequest(): ?array
+    {
+        $pendingDeletionTarget = $this->pendingDeletionTarget;
+        $this->pendingDeletionTarget = null;
+
+        return $pendingDeletionTarget;
+    }
+
+    public function hasActiveModal(): bool
+    {
+        return $this->deleteConfirmModal->isVisible();
+    }
+
+    public function isModalDirty(): bool
+    {
+        return $this->deleteConfirmModal->isDirty();
+    }
+
+    public function markModalClean(): void
+    {
+        $this->deleteConfirmModal->markClean();
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+        $this->deleteConfirmModal->syncLayout($terminalWidth, $terminalHeight);
+    }
+
+    public function renderActiveModal(): void
+    {
+        if ($this->deleteConfirmModal->isVisible()) {
+            $this->deleteConfirmModal->render();
+        }
+    }
+
+    public function reloadAssets(): void
+    {
+        $this->loadAssetEntries();
+        $this->refreshContent();
+    }
+
     public function handleMouseClick(int $x, int $y): void
     {
         if (!$this->containsPoint($x, $y)) {
@@ -153,6 +199,11 @@ class AssetsPanel extends Widget
     public function update(): void
     {
         if (!$this->hasFocus()) {
+            return;
+        }
+
+        if ($this->hasActiveModal()) {
+            $this->handleModalInput();
             return;
         }
 
@@ -178,6 +229,11 @@ class AssetsPanel extends Widget
 
         if (Input::isKeyDown(KeyCode::ENTER)) {
             $this->activateSelection();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DELETE)) {
+            $this->showDeleteConfirmModal();
         }
     }
 
@@ -403,5 +459,80 @@ class AssetsPanel extends Widget
         }
 
         return substr($path, 0, $separatorPosition);
+    }
+
+    private function showDeleteConfirmModal(): void
+    {
+        $selectedAsset = $this->getSelectedAssetEntry();
+
+        if ($selectedAsset === null) {
+            return;
+        }
+
+        $selectedName = $selectedAsset['name'] ?? 'this asset';
+        $this->deleteConfirmModal->show(
+            ['Delete', 'Cancel'],
+            1,
+            'Are you sure you want to delete ' . $selectedName . '?'
+        );
+        $this->modalState = self::DELETE_MODAL_CONFIRM;
+    }
+
+    private function dismissModal(): void
+    {
+        $this->deleteConfirmModal->hide();
+        $this->modalState = null;
+    }
+
+    private function handleModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->dismissModal();
+            return;
+        }
+
+        if ($this->modalState !== self::DELETE_MODAL_CONFIRM) {
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->deleteConfirmModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->deleteConfirmModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->deleteConfirmModal->getSelectedOption();
+
+        if ($selection !== 'Delete') {
+            $this->dismissModal();
+            return;
+        }
+
+        $selectedVisibleAsset = $this->getSelectedVisibleAsset();
+        $selectedAsset = $selectedVisibleAsset['item'] ?? null;
+
+        if (!is_array($selectedAsset)) {
+            $this->dismissModal();
+            return;
+        }
+
+        $this->pendingDeletionTarget = [
+            'path' => $selectedVisibleAsset['path'] ?? null,
+            'assetPath' => $selectedAsset['path'] ?? null,
+            'name' => $selectedAsset['name'] ?? 'Unnamed Asset',
+            'isDirectory' => (bool) ($selectedAsset['isDirectory'] ?? false),
+        ];
+        $this->selectedPath = is_string($selectedVisibleAsset['path'] ?? null)
+            ? $this->getParentPath($selectedVisibleAsset['path'])
+            : $this->selectedPath;
+        $this->dismissModal();
     }
 }

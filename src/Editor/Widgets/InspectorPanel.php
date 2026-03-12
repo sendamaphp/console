@@ -9,6 +9,7 @@ use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Editor\Widgets\Controls\CompoundInputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
+use Sendama\Console\Editor\Widgets\Controls\NumberInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
@@ -45,17 +46,22 @@ class InspectorPanel extends Widget
     protected ?PathInputControl $activePathInputControl = null;
     protected array $controlBindings = [];
     protected ?array $pendingHierarchyMutation = null;
+    protected string $projectDirectory;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
         int $width = 35,
-        int $height = 29
+        int $height = 29,
+        ?string $workingDirectory = null,
     )
     {
         parent::__construct('Inspector', '', $position, $width, $height);
         $this->inputControlFactory = new InputControlFactory();
         $this->pathInputActionModal = new OptionListModal(title: 'Path Input');
         $this->fileDialogModal = new FileDialogModal();
+        $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
+            ? $workingDirectory
+            : (getcwd() ?: '.');
     }
 
     public function inspectTarget(?array $target): void
@@ -87,6 +93,8 @@ class InspectorPanel extends Widget
 
         if ($context === 'hierarchy' && is_array($value)) {
             $this->buildHierarchyControls($target, $value);
+        } elseif ($context === 'scene' && is_array($value)) {
+            $this->buildSceneControls($target, $value);
         } else {
             $this->buildGenericControls($target);
         }
@@ -158,6 +166,42 @@ class InspectorPanel extends Widget
         $this->pendingHierarchyMutation = null;
 
         return $pendingHierarchyMutation;
+    }
+
+    public function syncHierarchyTarget(string $path, array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || ($this->inspectionTarget['path'] ?? null) !== $path
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Object');
+        $target['type'] = $this->resolveDisplayType($target, $value);
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
+    }
+
+    public function syncSceneTarget(array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'scene'
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Scene');
+        $target['type'] = 'Scene';
+        $target['path'] = 'scene';
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
     }
 
     public function cycleFocusForward(): bool
@@ -327,6 +371,32 @@ class InspectorPanel extends Widget
         $this->addSectionHeader('Renderer');
         $this->addRendererControls($item);
         $this->addScriptComponents($item['components'] ?? []);
+    }
+
+    private function buildSceneControls(array $target, array $scene): void
+    {
+        $this->addControl(new TextInputControl('Type', 'Scene', 0, true));
+        $this->addBoundControl(
+            new TextInputControl('Name', $scene['name'] ?? $target['name'] ?? 'Scene', 0),
+            ['name'],
+        );
+        $this->addBoundControl(
+            new NumberInputControl('Width', $scene['width'] ?? DEFAULT_TERMINAL_WIDTH, 0),
+            ['width'],
+        );
+        $this->addBoundControl(
+            new NumberInputControl('Height', $scene['height'] ?? DEFAULT_TERMINAL_HEIGHT, 0),
+            ['height'],
+        );
+        $this->addBoundControl(
+            new PathInputControl(
+                'Environment Tile Map',
+                $scene['environmentTileMapPath'] ?? 'Maps/example',
+                $this->resolveAssetsWorkingDirectory(),
+                0,
+            ),
+            ['environmentTileMapPath'],
+        );
     }
 
     private function buildGenericControls(array $target): void
@@ -897,7 +967,7 @@ class InspectorPanel extends Widget
             $candidatePaths[] = $normalizedTexturePath . '.texture';
         }
 
-        $workingDirectory = getcwd() ?: '.';
+        $workingDirectory = $this->projectDirectory;
         $assetsRoots = [
             $workingDirectory,
             $workingDirectory . '/Assets',
@@ -986,7 +1056,7 @@ class InspectorPanel extends Widget
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'scene'], true)
             || !isset($this->inspectionTarget['value'])
             || !is_array($this->inspectionTarget['value'])
         ) {
@@ -1040,7 +1110,7 @@ class InspectorPanel extends Widget
 
     private function resolveAssetsWorkingDirectory(): string
     {
-        $workingDirectory = getcwd() ?: '.';
+        $workingDirectory = $this->projectDirectory;
         $assetRoots = [
             $workingDirectory . '/Assets',
             $workingDirectory . '/assets',

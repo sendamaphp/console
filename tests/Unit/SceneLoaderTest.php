@@ -34,6 +34,123 @@ PHP
     expect($scene->hierarchy[1]['name'])->toBe('Player');
 });
 
+test('scene loader evaluates scene metadata in an isolated project context', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
+    mkdir($workspace . '/assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace {
+    const DEFAULT_SCREEN_WIDTH = 120;
+    const DEFAULT_SCREEN_HEIGHT = 40;
+    const LEVEL_HEIGHT = 25;
+}
+
+namespace Sendama\Blasters\Scripts {
+    enum Tag: string
+    {
+        case Manager = 'Manager';
+        case Player = 'Player';
+        case UI = 'UI';
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class GameObject
+    {
+    }
+}
+
+namespace Sendama\Engine\UI\Label {
+    class Label
+    {
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Blasters\Scripts\Tag;
+use Sendama\Engine\Core\GameObject;
+use Sendama\Engine\UI\Label\Label;
+
+return [
+    'width' => DEFAULT_SCREEN_WIDTH,
+    'height' => DEFAULT_SCREEN_HEIGHT,
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'tag' => Tag::Player->value,
+            'position' => ['x' => 4, 'y' => DEFAULT_SCREEN_HEIGHT / 2],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 5],
+                ],
+            ],
+            'components' => [
+                ['class' => 'Sendama\\Game\\PlayerController'],
+            ],
+        ],
+        [
+            'type' => Label::class,
+            'name' => 'Score',
+            'tag' => Tag::UI->value,
+            'position' => ['x' => 4, 'y' => LEVEL_HEIGHT - 2],
+            'size' => ['x' => 10, 'y' => 1],
+            'text' => 'Score: 000',
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->width)->toBe(120);
+    expect($scene->height)->toBe(40);
+    expect($scene->hierarchy[0])->toBe([
+        'type' => 'Sendama\\Engine\\Core\\GameObject',
+        'name' => 'Player',
+        'tag' => 'Player',
+        'position' => ['x' => 4, 'y' => 20],
+        'rotation' => ['x' => 0, 'y' => 0],
+        'scale' => ['x' => 1, 'y' => 1],
+        'sprite' => [
+            'texture' => [
+                'path' => 'Textures/player',
+                'position' => ['x' => 0, 'y' => 0],
+                'size' => ['x' => 1, 'y' => 5],
+            ],
+        ],
+        'components' => [
+            ['class' => 'Sendama\\Game\\PlayerController'],
+        ],
+    ]);
+    expect($scene->hierarchy[1])->toBe([
+        'type' => 'Sendama\\Engine\\UI\\Label\\Label',
+        'name' => 'Score',
+        'tag' => 'UI',
+        'position' => ['x' => 4, 'y' => 23],
+        'size' => ['x' => 10, 'y' => 1],
+        'text' => 'Score: 000',
+    ]);
+});
+
 test('scene loader falls back to the first available scene when none is configured', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
     mkdir($workspace . '/assets/Scenes', 0777, true);

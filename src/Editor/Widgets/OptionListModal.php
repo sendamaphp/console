@@ -27,8 +27,12 @@ class OptionListModal extends Widget
         );
     }
 
-    public function show(array $options, int $selectedIndex = 0): void
+    public function show(array $options, int $selectedIndex = 0, ?string $title = null): void
     {
+        if (is_string($title) && $title !== '') {
+            $this->title = $title;
+        }
+
         $this->options = array_values($options);
         $optionCount = count($this->options);
         $this->selectedIndex = $optionCount > 0

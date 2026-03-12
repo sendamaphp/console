@@ -189,3 +189,105 @@ PHP
     expect($serializedScene)->toContain("'tag' => 'Player'");
     expect($serializedScene)->toContain("'y' => DEFAULT_SCREEN_HEIGHT / 2");
 });
+
+test('scene writer preserves existing list entries when appending to a partial hierarchy', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-writer-append-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+    $scenePath = $workspace . '/Assets/Scenes/level01.scene.php';
+
+    file_put_contents(
+        $scenePath,
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+use Sendama\Engine\UI\Label\Label;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => DEFAULT_SCREEN_HEIGHT / 2],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+        ],
+        [
+            'type' => Label::class,
+            'name' => 'Score',
+            'position' => ['x' => 4, 'y' => 1],
+            'size' => ['x' => 10, 'y' => 1],
+            'text' => 'Score: 000',
+        ],
+    ],
+];
+PHP
+    );
+
+    $scene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'GameObject::class',
+                'name' => 'Player',
+            ],
+            [
+                'type' => 'Label::class',
+                'name' => 'Score',
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Power Up',
+                'tag' => 'None',
+                'position' => ['x' => 0, 'y' => 0],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'components' => [],
+            ],
+        ],
+        sourcePath: $scenePath,
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'GameObject::class',
+                    'name' => 'Player',
+                ],
+                [
+                    'type' => 'Label::class',
+                    'name' => 'Score',
+                ],
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Power Up',
+                    'tag' => 'None',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'rotation' => ['x' => 0, 'y' => 0],
+                    'scale' => ['x' => 1, 'y' => 1],
+                    'components' => [],
+                ],
+            ],
+        ],
+        sourceData: [
+            'hierarchy' => [
+                [
+                    'type' => 'GameObject::class',
+                    'name' => 'Player',
+                ],
+                [
+                    'type' => 'Label::class',
+                    'name' => 'Score',
+                ],
+            ],
+        ],
+    );
+
+    $writer = new SceneWriter();
+    $serializedScene = $writer->serialize($scene);
+
+    expect($serializedScene)->toContain("'tag' => 'Player'");
+    expect($serializedScene)->toContain("'rotation' => ['x' => 0, 'y' => 0]");
+    expect($serializedScene)->toContain("'size' => ['x' => 10, 'y' => 1]");
+    expect($serializedScene)->toContain("'type' => \\Sendama\\Engine\\Core\\GameObject::class");
+    expect($serializedScene)->not->toContain("'type' => 'GameObject::class'");
+});
