@@ -130,6 +130,7 @@ final class Editor implements ObservableInterface
     protected PanelListModal $panelListModal;
     protected bool $shouldRefreshBackgroundUnderModal = false;
     protected bool $didRenderOverlayLastFrame = false;
+    protected SceneWriter $sceneWriter;
 
     /**
      * @param string $name
@@ -152,6 +153,7 @@ final class Editor implements ObservableInterface
             $this->refreshTerminalSize(force: true);
             $this->initializeManagers();
             $this->initializeConsole();
+            $this->sceneWriter = new SceneWriter();
             $this->initializeWidgets();
             $this->initializeEditorStates();
             $this->splashScreen = new SplashScreen(
@@ -372,6 +374,7 @@ final class Editor implements ObservableInterface
             $panel->update();
         }
 
+        $this->synchronizeInspectorSceneChanges();
         $this->synchronizeInspectorPanel();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
@@ -642,6 +645,11 @@ final class Editor implements ObservableInterface
 
     private function handlePanelKeyboardWorkflow(): void
     {
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::CTRL_S)) {
+            $this->saveLoadedScene();
+            return;
+        }
+
         if (Input::isKeyDown(IO\Enumerations\KeyCode::PLAY_TOGGLE, false)) {
             $this->togglePlayMode();
             return;
@@ -884,6 +892,104 @@ final class Editor implements ObservableInterface
         }
 
         $this->inspectorPanel->inspectTarget($selectedItem);
+    }
+
+    private function synchronizeInspectorSceneChanges(): void
+    {
+        $mutation = $this->inspectorPanel->consumeHierarchyMutation();
+
+        if (
+            !is_array($mutation)
+            || !isset($mutation['path'], $mutation['value'])
+            || !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_string($mutation['path'])
+            || !is_array($mutation['value'])
+        ) {
+            return;
+        }
+
+        if (!$this->applyHierarchyMutation($mutation['path'], $mutation['value'])) {
+            return;
+        }
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->hierarchyPanel->setSceneState($this->loadedScene->name, true);
+    }
+
+    private function applyHierarchyMutation(string $path, array $value): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return false;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return false;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return false;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return false;
+            }
+
+            if ($index === $lastIndex) {
+                $nodeArray[$numericSegment] = $value;
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return true;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return false;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return false;
+    }
+
+    private function saveLoadedScene(): void
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            $this->consolePanel->append('[INFO] - No scene loaded to save.');
+            return;
+        }
+
+        $sceneWasDirty = $this->loadedScene->isDirty;
+        $this->loadedScene->isDirty = false;
+
+        if ($this->sceneWriter->save($this->loadedScene)) {
+            $snapshot = $this->sceneWriter->snapshot($this->loadedScene);
+            $this->loadedScene->rawData = $snapshot;
+            $this->loadedScene->sourceData = $snapshot;
+            $this->hierarchyPanel->setSceneState($this->loadedScene->name, false);
+            $this->consolePanel->append('[INFO] - Saved scene ' . $this->loadedScene->name . '.scene.php');
+            return;
+        }
+
+        $this->loadedScene->isDirty = $sceneWasDirty;
+        $this->hierarchyPanel->setSceneState($this->loadedScene->name, $sceneWasDirty);
+        $this->consolePanel->append('[ERROR] - Failed to save scene.');
     }
 
     private function getPanelDisplayNames(): array

@@ -49,3 +49,10 @@ test('input manager preserves the shift+5 play toggle input', function () {
 
     expect($getKey->invoke(null, '%'))->toBe(KeyCode::PLAY_TOGGLE->value);
 });
+
+test('input manager normalizes ctrl+s to the save shortcut', function () {
+    $getKey = new ReflectionMethod(InputManager::class, 'getKey');
+    $getKey->setAccessible(true);
+
+    expect($getKey->invoke(null, "\x13"))->toBe(KeyCode::CTRL_S->value);
+});

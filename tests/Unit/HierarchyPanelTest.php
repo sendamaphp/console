@@ -88,6 +88,7 @@ test('hierarchy panel queues the selected object for inspection', function () {
         'context' => 'hierarchy',
         'name' => 'Player',
         'type' => 'GameObject',
+        'path' => 'scene.0',
         'value' => ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player'],
     ]);
     expect($panel->consumeInspectionRequest())->toBeNull();

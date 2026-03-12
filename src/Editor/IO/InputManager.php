@@ -25,6 +25,7 @@ class InputManager implements StaticObservableInterface
     private static array $axes = [];
     private static array $buttons = [];
     private static ?MouseEvent $mouseEvent = null;
+    private static ?string $terminalModeSnapshot = null;
 
     /**
      * Initializes the InputManager.
@@ -71,7 +72,16 @@ class InputManager implements StaticObservableInterface
      */
     public static function disableEcho(): void
     {
-        system('stty cbreak -echo');
+        if (self::$terminalModeSnapshot === null) {
+            $snapshot = shell_exec('stty -g 2>/dev/null');
+
+            if (is_string($snapshot)) {
+                $snapshot = trim($snapshot);
+                self::$terminalModeSnapshot = $snapshot !== '' ? $snapshot : null;
+            }
+        }
+
+        system('stty cbreak -echo -ixon -ixoff');
     }
 
     /**
@@ -85,7 +95,14 @@ class InputManager implements StaticObservableInterface
 
         // Turn on cursor blinking
         echo "\033[?12l";
-        system('stty -cbreak echo');
+
+        if (is_string(self::$terminalModeSnapshot) && self::$terminalModeSnapshot !== '') {
+            system('stty ' . escapeshellarg(self::$terminalModeSnapshot));
+            self::$terminalModeSnapshot = null;
+            return;
+        }
+
+        system('stty -cbreak echo ixon ixoff');
     }
 
     public static function handleInput(): void
@@ -139,6 +156,7 @@ class InputManager implements StaticObservableInterface
             "\033[1;2C", "\033[c" => KeyCode::SHIFT_RIGHT->value,
             "\033[1;2D", "\033[d" => KeyCode::SHIFT_LEFT->value,
             "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
+            "\x13" => KeyCode::CTRL_S->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,
             "\010", "\177" => KeyCode::BACKSPACE->value,

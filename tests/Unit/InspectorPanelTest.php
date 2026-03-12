@@ -225,3 +225,59 @@ test('inspector panel opens the path action modal for path controls', function (
         }
     }
 });
+
+test('inspector panel emits hierarchy mutations when edits are committed', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+        ],
+    ]);
+
+    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+
+    $panel->cycleFocusForward();
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+    $panel->update();
+
+    foreach (str_split(' 2') as $character) {
+        $previousKeyPress->setValue('');
+        $keyPress->setValue($character);
+        $panel->update();
+    }
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+    $panel->update();
+
+    expect($panel->consumeHierarchyMutation())->toBe([
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player 2',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+        ],
+    ]);
+});

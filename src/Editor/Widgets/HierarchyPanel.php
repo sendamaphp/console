@@ -65,6 +65,12 @@ class HierarchyPanel extends Widget implements ObservableInterface
         $this->notify(new EditorEvent(EventType::HIERARCHY_CHANGED->value, $this));
     }
 
+    public function syncHierarchy(array $hierarchy): void
+    {
+        $this->hierarchy = array_values($hierarchy);
+        $this->refreshContent();
+    }
+
     public function setSceneState(string $sceneName, bool $isDirty = false): void
     {
         $this->sceneName = $sceneName;
@@ -166,6 +172,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
             'context' => 'hierarchy',
             'name' => $selectedItem['name'] ?? 'Unnamed Object',
             'type' => $this->resolveInspectableType($selectedItem),
+            'path' => $selectedNode['path'] ?? null,
             'value' => $selectedItem,
         ];
     }

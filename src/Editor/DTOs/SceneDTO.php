@@ -14,6 +14,9 @@ class SceneDTO
         public string $environmentTileMapPath = "Maps/example",
         public bool $isDirty = false,
         public array $hierarchy = [],
+        public ?string $sourcePath = null,
+        public array $rawData = [],
+        public array $sourceData = [],
     )
     {
     }
@@ -27,6 +30,9 @@ class SceneDTO
             "environmentTileMapPath" => $this->environmentTileMapPath,
             "isDirty" => $this->isDirty,
             "hierarchy" => $this->hierarchy,
+            "sourcePath" => $this->sourcePath,
+            "rawData" => $this->rawData,
+            "sourceData" => $this->sourceData,
         ];
     }
 
@@ -38,5 +44,8 @@ class SceneDTO
         $this->environmentTileMapPath = $data['environmentTileMapPath'] ?? "Maps/example";
         $this->isDirty = $data['isDirty'] ?? false;
         $this->hierarchy = $data['hierarchy'] ?? [];
+        $this->sourcePath = $data['sourcePath'] ?? null;
+        $this->rawData = $data['rawData'] ?? [];
+        $this->sourceData = $data['sourceData'] ?? [];
     }
 }

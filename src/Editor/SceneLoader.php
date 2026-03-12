@@ -32,6 +32,9 @@ final class SceneLoader
             environmentTileMapPath: $sceneData['environmentTileMapPath'] ?? 'Maps/example',
             isDirty: $sceneData['isDirty'] ?? false,
             hierarchy: $sceneData['hierarchy'] ?? [],
+            sourcePath: $scenePath,
+            rawData: $sceneData,
+            sourceData: $sceneData,
         );
     }
 
