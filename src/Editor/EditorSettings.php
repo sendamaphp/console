@@ -44,7 +44,7 @@ class EditorSettings
         $filename = Path::join($workingDirectory, 'sendama.json');
 
         if (!file_exists($filename)) {
-            throw new SendamaConsoleException("$filename does not exist!");
+            return self::fromArray([]);
         }
 
         $settingsJsonFileContents = file_get_contents($filename);
@@ -54,6 +54,10 @@ class EditorSettings
         }
 
         $data = json_decode($settingsJsonFileContents, true);
+
+        if (!is_array($data)) {
+            return self::fromArray([]);
+        }
 
         return self::fromArray($data);
     }

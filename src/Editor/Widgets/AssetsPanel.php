@@ -15,6 +15,7 @@ use Sendama\Console\Util\Path;
  */
 class AssetsPanel extends Widget
 {
+    private const string CREATE_MODAL_ASSET_KIND = 'create_asset_kind';
     private const string DELETE_MODAL_CONFIRM = 'delete_confirm';
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
@@ -28,6 +29,8 @@ class AssetsPanel extends Widget
     protected ?string $selectedPath = null;
     protected ?array $pendingInspectionTarget = null;
     protected ?array $pendingDeletionTarget = null;
+    protected ?array $pendingCreationRequest = null;
+    protected OptionListModal $createAssetModal;
     protected OptionListModal $deleteConfirmModal;
     protected ?string $modalState = null;
 
@@ -35,10 +38,12 @@ class AssetsPanel extends Widget
         array $position = ['x' => 1, 'y' => 15],
         int $width = 35,
         int $height = 14,
-        protected ?string $assetsDirectoryPath = null
+        protected ?string $assetsDirectoryPath = null,
+        protected ?string $workingDirectory = null,
     )
     {
         parent::__construct('Assets', '', $position, $width, $height);
+        $this->createAssetModal = new OptionListModal(title: 'Create Asset');
         $this->deleteConfirmModal = new OptionListModal(title: 'Delete Asset');
         $this->loadAssetEntries();
         $this->refreshContent();
@@ -146,28 +151,52 @@ class AssetsPanel extends Widget
         return $pendingDeletionTarget;
     }
 
+    public function consumeCreationRequest(): ?array
+    {
+        $pendingCreationRequest = $this->pendingCreationRequest;
+        $this->pendingCreationRequest = null;
+
+        return $pendingCreationRequest;
+    }
+
+    public function beginCreateWorkflow(): void
+    {
+        $this->modalState = self::CREATE_MODAL_ASSET_KIND;
+        $this->createAssetModal->show(
+            ['Script', 'Scene', 'Texture', 'Tile Map', 'Event'],
+            title: 'Create Asset',
+        );
+    }
+
     public function hasActiveModal(): bool
     {
-        return $this->deleteConfirmModal->isVisible();
+        return $this->createAssetModal->isVisible() || $this->deleteConfirmModal->isVisible();
     }
 
     public function isModalDirty(): bool
     {
-        return $this->deleteConfirmModal->isDirty();
+        return $this->createAssetModal->isDirty() || $this->deleteConfirmModal->isDirty();
     }
 
     public function markModalClean(): void
     {
+        $this->createAssetModal->markClean();
         $this->deleteConfirmModal->markClean();
     }
 
     public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
     {
+        $this->createAssetModal->syncLayout($terminalWidth, $terminalHeight);
         $this->deleteConfirmModal->syncLayout($terminalWidth, $terminalHeight);
     }
 
     public function renderActiveModal(): void
     {
+        if ($this->createAssetModal->isVisible()) {
+            $this->createAssetModal->render();
+            return;
+        }
+
         if ($this->deleteConfirmModal->isVisible()) {
             $this->deleteConfirmModal->render();
         }
@@ -220,6 +249,11 @@ class AssetsPanel extends Widget
 
         if ($this->hasActiveModal()) {
             $this->handleModalInput();
+            return;
+        }
+
+        if (Input::getCurrentInput() === 'A') {
+            $this->beginCreateWorkflow();
             return;
         }
 
@@ -526,6 +560,7 @@ class AssetsPanel extends Widget
 
     private function dismissModal(): void
     {
+        $this->createAssetModal->hide();
         $this->deleteConfirmModal->hide();
         $this->modalState = null;
     }
@@ -537,17 +572,24 @@ class AssetsPanel extends Widget
             return;
         }
 
-        if ($this->modalState !== self::DELETE_MODAL_CONFIRM) {
+        if (
+            $this->modalState !== self::DELETE_MODAL_CONFIRM
+            && $this->modalState !== self::CREATE_MODAL_ASSET_KIND
+        ) {
             return;
         }
 
+        $activeModal = $this->modalState === self::CREATE_MODAL_ASSET_KIND
+            ? $this->createAssetModal
+            : $this->deleteConfirmModal;
+
         if (Input::isKeyDown(KeyCode::UP)) {
-            $this->deleteConfirmModal->moveSelection(-1);
+            $activeModal->moveSelection(-1);
             return;
         }
 
         if (Input::isKeyDown(KeyCode::DOWN)) {
-            $this->deleteConfirmModal->moveSelection(1);
+            $activeModal->moveSelection(1);
             return;
         }
 
@@ -555,7 +597,28 @@ class AssetsPanel extends Widget
             return;
         }
 
-        $selection = $this->deleteConfirmModal->getSelectedOption();
+        $selection = $activeModal->getSelectedOption();
+
+        if ($this->modalState === self::CREATE_MODAL_ASSET_KIND) {
+            $assetKind = match ($selection) {
+                'Script' => 'script',
+                'Scene' => 'scene',
+                'Texture' => 'texture',
+                'Tile Map' => 'tilemap',
+                'Event' => 'event',
+                default => null,
+            };
+
+            if ($assetKind !== null) {
+                $this->pendingCreationRequest = [
+                    'kind' => $assetKind,
+                    'workingDirectory' => $this->workingDirectory,
+                ];
+            }
+
+            $this->dismissModal();
+            return;
+        }
 
         if ($selection !== 'Delete') {
             $this->dismissModal();

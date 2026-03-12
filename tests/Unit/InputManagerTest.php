@@ -86,6 +86,15 @@ test('input manager tokenizes multi-character printable input without dropping e
     expect($tokenizeInput->invoke(null, 'level02'))->toBe(['l', 'e', 'v', 'e', 'l', '0', '2']);
 });
 
+test('input manager preserves buffered 0 input instead of treating it as empty', function () {
+    $normalizeBufferedInput = new ReflectionMethod(InputManager::class, 'normalizeBufferedInput');
+    $normalizeBufferedInput->setAccessible(true);
+
+    expect($normalizeBufferedInput->invoke(null, false))->toBe('');
+    expect($normalizeBufferedInput->invoke(null, '0'))->toBe('0');
+    expect($normalizeBufferedInput->invoke(null, 'level02'))->toBe('level02');
+});
+
 test('input manager tokenizes mixed escape sequences and printable characters', function () {
     $tokenizeInput = new ReflectionMethod(InputManager::class, 'tokenizeInput');
     $tokenizeInput->setAccessible(true);

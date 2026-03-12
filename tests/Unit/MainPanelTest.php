@@ -360,6 +360,123 @@ test('main panel shows a muted marker for selected non-renderable scene objects'
     expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeTrue();
 });
 
+test('main panel restores selected renderable scene objects to their normal visibility on blur', function () {
+    $workspace = createMainPanelWorkspace();
+    $panelWidth = 40;
+    $panel = new MainPanel(
+        width: $panelWidth,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $decorateSceneLine = new ReflectionMethod(MainPanel::class, 'decorateSceneLine');
+    $decorateSceneLine->setAccessible(true);
+    $refreshContent = new ReflectionMethod(MainPanel::class, 'refreshContent');
+    $refreshContent->setAccessible(true);
+
+    $hasFocus->setValue($panel, true);
+    $refreshContent->invoke($panel);
+
+    $focusedLine = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
+    $focusedRenderedLine = $decorateSceneLine->invoke($panel, $focusedLine, null, 3);
+
+    expect($focusedRenderedLine)->toContain("\033[5;30;46m");
+
+    $hasFocus->setValue($panel, false);
+    $refreshContent->invoke($panel);
+
+    $blurredLine = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
+    $blurredRenderedLine = $decorateSceneLine->invoke($panel, $blurredLine, null, 3);
+
+    expect($blurredRenderedLine)->not->toContain("\033[5;30;46m");
+    expect($blurredRenderedLine)->not->toContain("\033[30;46m");
+});
+
+test('main panel hides the selected placeholder marker on blur for non-renderable scene objects', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Game Manager',
+                'position' => ['x' => 3, 'y' => 2],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $refreshContent = new ReflectionMethod(MainPanel::class, 'refreshContent');
+    $refreshContent->setAccessible(true);
+
+    $hasFocus->setValue($panel, true);
+    pressMainPanelKey('Q');
+    $panel->update();
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeTrue();
+
+    $hasFocus->setValue($panel, false);
+    $refreshContent->invoke($panel);
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeFalse();
+});
+
+test('main panel hides the selected placeholder marker on blur when the renderer is disabled', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 3, 'y' => 2],
+                'renderer' => ['enabled' => false],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $refreshContent = new ReflectionMethod(MainPanel::class, 'refreshContent');
+    $refreshContent->setAccessible(true);
+
+    $hasFocus->setValue($panel, true);
+    pressMainPanelKey('Q');
+    $panel->update();
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeTrue();
+
+    $hasFocus->setValue($panel, false);
+    $refreshContent->invoke($panel);
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeFalse();
+});
+
 test('main panel move mode updates the selected scene object position', function () {
     $workspace = createMainPanelWorkspace();
     $panel = new MainPanel(
@@ -643,7 +760,7 @@ test('main panel sprite tab expands loaded textures to a 16x16 editing grid', fu
     expect($spriteGridHeight->getValue($panel))->toBe(16);
 });
 
-test('main panel sprite tab can create a new texture asset', function () {
+test('main panel sprite create workflow can create a new texture asset', function () {
     $workspace = createMainPanelWorkspace();
     $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
@@ -651,9 +768,7 @@ test('main panel sprite tab can create a new texture asset', function () {
     $hasFocus->setValue($panel, true);
 
     $panel->selectTab('Sprite');
-
-    pressMainPanelKey('A');
-    $panel->update();
+    expect($panel->beginSpriteCreateWorkflow())->toBeTrue();
 
     pressMainPanelKey("\n");
     $panel->update();
@@ -667,7 +782,7 @@ test('main panel sprite tab can create a new texture asset', function () {
     expect($assetSyncRequest['inspectionTarget']['value']['relativePath'] ?? null)->toBe('Textures/new-texture-1.texture');
 });
 
-test('main panel sprite tab creates tile maps at the current terminal-size bounds', function () {
+test('main panel sprite create workflow creates tile maps at the current terminal-size bounds', function () {
     $workspace = createMainPanelWorkspace();
     $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
@@ -675,9 +790,7 @@ test('main panel sprite tab creates tile maps at the current terminal-size bound
     $hasFocus->setValue($panel, true);
 
     $panel->selectTab('Sprite');
-
-    pressMainPanelKey('A');
-    $panel->update();
+    expect($panel->beginSpriteCreateWorkflow())->toBeTrue();
 
     pressMainPanelKey("\033[B");
     $panel->update();
@@ -694,6 +807,22 @@ test('main panel sprite tab creates tile maps at the current terminal-size bound
     expect($assetSyncRequest['path'])->toEndWith('.tmap');
     expect(count($lines))->toBe($expectedHeight);
     expect(mb_strlen($lines[0] ?? ''))->toBe($expectedWidth);
+});
+
+test('main panel sprite tab ignores shift+a during normal focused input', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+
+    pressMainPanelKey('A');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect($panel->consumeAssetSyncRequest())->toBeNull();
 });
 
 test('main panel sprite tab can delete the active asset after confirmation', function () {

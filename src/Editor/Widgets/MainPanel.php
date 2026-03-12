@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Util\Path;
@@ -133,6 +134,18 @@ class MainPanel extends Widget
     public function getActiveTab(): string
     {
         return self::TAB_TITLES[$this->activeTabIndex];
+    }
+
+    public function focus(FocusTargetContext $context): void
+    {
+        parent::focus($context);
+        $this->refreshContent();
+    }
+
+    public function blur(FocusTargetContext $context): void
+    {
+        parent::blur($context);
+        $this->refreshContent();
     }
 
     public function activateNextTab(): void
@@ -374,11 +387,6 @@ class MainPanel extends Widget
         if ($this->hasFocus() && $this->isSpriteTabActive() && !$this->isPlayModeActive) {
             if ($this->hasActiveModal()) {
                 $this->handleSpriteModalInput();
-                return;
-            }
-
-            if (Input::getCurrentInput() === 'A') {
-                $this->showCreateSpriteAssetModal();
                 return;
             }
 
@@ -673,12 +681,12 @@ class MainPanel extends Widget
 
         if ($this->isSpriteTabActive()) {
             if ($this->activeSpriteAsset === null) {
-                $this->help = 'Select .texture or .tmap  Shift+A new  Shift+2 chars';
+                $this->help = 'Select .texture or .tmap';
                 $this->modeHelpLabel = 'Mode: Sprite Editor';
                 return;
             }
 
-            $this->help = 'Arrows move  Type draw  Shift+2 chars  Shift+A new  Ctrl+Z/Y undo redo  Shift+R reset  Del delete';
+            $this->help = 'Arrows move  Type draw  Shift+2 chars  Ctrl+Z/Y undo redo  Shift+R reset  Del delete';
             $this->modeHelpLabel = 'Mode: Sprite Editor  ' . $this->buildSpriteCursorPositionLabel();
             return;
         }
@@ -1029,6 +1037,10 @@ class MainPanel extends Widget
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
+        if (!$this->hasFocus() && ($highlight['kind'] ?? null) !== 'placeholder') {
+            return parent::decorateContentLine($line, $contentColor, $contentIndex);
+        }
+
         $visibleLine = mb_substr($line, 0, $this->width);
         $visibleLength = mb_strlen($visibleLine);
 
@@ -1119,7 +1131,7 @@ class MainPanel extends Widget
                 : [];
 
             if ($renderLines === []) {
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
+                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath || !$this->hasFocus()) {
                     continue;
                 }
 
@@ -1585,18 +1597,9 @@ class MainPanel extends Widget
 
     private function resolveAssetsDirectory(): ?string
     {
-        $candidates = [
-            Path::join($this->projectDirectory, 'Assets'),
-            Path::join($this->projectDirectory, 'assets'),
-        ];
+        $assetsDirectory = Path::resolveAssetsDirectory($this->projectDirectory);
 
-        foreach ($candidates as $candidate) {
-            if (is_dir($candidate)) {
-                return $candidate;
-            }
-        }
-
-        return null;
+        return is_dir($assetsDirectory) ? $assetsDirectory : null;
     }
 
     private function createNextAvailableAssetPath(string $targetDirectory, string $baseName, string $extension): string
@@ -1692,6 +1695,10 @@ class MainPanel extends Widget
 
     private function resolveSceneObjectRenderLines(array $item): array
     {
+        if ($this->isSceneObjectRendererDisabled($item)) {
+            return [];
+        }
+
         $spriteRenderLines = $this->buildSpriteRenderLines($item);
 
         if ($spriteRenderLines !== []) {
@@ -1705,6 +1712,48 @@ class MainPanel extends Widget
         }
 
         return [];
+    }
+
+    private function isSceneObjectRendererDisabled(array $item): bool
+    {
+        if (($item['renderer']['enabled'] ?? null) === false || ($item['render']['enabled'] ?? null) === false) {
+            return true;
+        }
+
+        if (($item['sprite']['enabled'] ?? null) === false) {
+            return true;
+        }
+
+        $components = $item['components'] ?? null;
+
+        if (!is_array($components)) {
+            return false;
+        }
+
+        foreach ($components as $component) {
+            if (!is_array($component)) {
+                continue;
+            }
+
+            $componentClass = is_string($component['class'] ?? null) ? $component['class'] : '';
+
+            if ($componentClass === '') {
+                continue;
+            }
+
+            $normalizedClass = ltrim($componentClass, '\\');
+            $normalizedClass = preg_replace('/::class$/', '', $normalizedClass) ?? $normalizedClass;
+
+            if ($normalizedClass !== 'Sendama\\Engine\\Core\\Rendering\\Renderer' && !str_ends_with($normalizedClass, '\\Renderer')) {
+                continue;
+            }
+
+            if (($component['data']['enabled'] ?? null) === false || ($component['enabled'] ?? null) === false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function resolveInspectableType(array $item): string

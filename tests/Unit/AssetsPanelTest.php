@@ -1,6 +1,7 @@
 <?php
 
 use Sendama\Console\Editor\Widgets\AssetsPanel;
+use Sendama\Console\Editor\Widgets\Widget;
 
 test('assets panel loads and traverses nested project assets', function () {
     $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
@@ -161,4 +162,63 @@ test('assets panel cancels delete confirmation without queuing a deletion', func
     $handleModalInput->invoke($panel);
 
     expect($panel->consumeDeletionRequest())->toBeNull();
+});
+
+test('assets panel queues the selected asset type for creation when confirmed', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+        workingDirectory: $workspace,
+    );
+
+    $panel->beginCreateWorkflow();
+
+    $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
+    $handleModalInput->setAccessible(true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+
+    $handleModalInput->invoke($panel);
+
+    expect($panel->consumeCreationRequest())->toBe([
+        'kind' => 'script',
+        'workingDirectory' => $workspace,
+    ]);
+});
+
+test('assets panel opens the create modal with shift+a while focused', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+        workingDirectory: $workspace,
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $keyPress->setValue('A');
+
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+    expect($panel->consumeCreationRequest())->toBeNull();
 });

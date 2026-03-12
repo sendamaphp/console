@@ -42,18 +42,9 @@ final class SceneLoader
 
     public function resolveAssetsDirectory(): ?string
     {
-        $candidates = [
-            Path::join($this->workingDirectory, 'Assets'),
-            Path::join($this->workingDirectory, 'assets'),
-        ];
+        $assetsDirectory = Path::resolveAssetsDirectory($this->workingDirectory);
 
-        foreach ($candidates as $candidate) {
-            if (is_dir($candidate)) {
-                return $candidate;
-            }
-        }
-
-        return null;
+        return is_dir($assetsDirectory) ? $assetsDirectory : null;
     }
 
     public function resolveActiveScenePath(EditorSceneSettings $sceneSettings): ?string

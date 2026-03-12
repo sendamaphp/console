@@ -13,9 +13,9 @@ class ScriptFileGenerationStrategy extends AbstractAssetFileGenerationStrategy
   protected function configure(): void
   {
     $namespace = $this->composerConfig->getNamespace() . 'Scripts';
-    $namespaceTail = preg_replace('/assets\/Scripts\/?/', '', dirname($this->relativeFilename));
+    $namespaceTail = preg_replace('/^[Aa]ssets\/Scripts\/?/', '', dirname($this->relativeFilename));
 
-    if ($namespaceTail && $namespaceTail !== 'assets/Scripts') {
+    if ($namespaceTail) {
       $namespace .= '\\' . to_pascal_case(str_replace('/', '\\', $namespaceTail));
     }
 

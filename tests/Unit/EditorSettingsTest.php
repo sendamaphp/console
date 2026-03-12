@@ -64,3 +64,25 @@ test('editor settings load editor config from sendama json', function () {
     expect($settings->scenes->loaded)->toBe(['Scenes/level01.scene.php']);
     expect($settings->consoleRefreshIntervalSeconds)->toBe(3.0);
 });
+
+test('editor settings fall back to defaults when sendama json is missing', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-editor-settings-missing-' . uniqid();
+    mkdir($workspace, 0777, true);
+
+    $settings = EditorSettings::loadFromDirectory($workspace);
+
+    expect($settings->scenes->loaded)->toBe([]);
+    expect($settings->scenes->active)->toBe(0);
+    expect($settings->consoleRefreshIntervalSeconds)->toBe(5.0);
+});
+
+test('editor settings fall back to defaults when sendama json is invalid', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-editor-settings-invalid-' . uniqid();
+    mkdir($workspace, 0777, true);
+    file_put_contents($workspace . '/sendama.json', '{invalid json');
+
+    $settings = EditorSettings::loadFromDirectory($workspace);
+
+    expect($settings->scenes->loaded)->toBe([]);
+    expect($settings->consoleRefreshIntervalSeconds)->toBe(5.0);
+});

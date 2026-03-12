@@ -21,7 +21,7 @@ class ComposerConfig extends AbstractConfig
     $namespaces = $this->get('autoload.psr-4') ?? [];
 
     foreach ($namespaces as $namespace => $path) {
-      if ($path === 'assets/') {
+      if ($path === 'Assets/' || $path === 'assets/') {
         return $namespace;
       }
     }
