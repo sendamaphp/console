@@ -7,6 +7,11 @@ use Atatusoft\Termutil\Events\Interfaces\ObservableInterface;
 use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Console\Console;
 use Atatusoft\Termutil\UI\Windows\Window;
+use Sendama\Console\Commands\GenerateEvent;
+use Sendama\Console\Commands\GenerateScene;
+use Sendama\Console\Commands\GenerateScript;
+use Sendama\Console\Commands\GenerateTexture;
+use Sendama\Console\Commands\GenerateTilemap;
 use Sendama\Console\Debug\Debug;
 use Sendama\Console\Editor\Enumerations\ChronoUnit;
 use Sendama\Console\Editor\Events\EditorEvent;
@@ -25,11 +30,17 @@ use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
 use Sendama\Console\Editor\Widgets\MainPanel;
+use Sendama\Console\Editor\Widgets\OptionListModal;
 use Sendama\Console\Editor\Widgets\PanelListModal;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
 use Sendama\Console\Util\Path;
+use Sendama\Console\Util\ProjectNormalizer;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Throwable;
 
@@ -128,9 +139,12 @@ final class Editor implements ObservableInterface
     protected int $terminalWidth = DEFAULT_TERMINAL_WIDTH;
     protected int $terminalHeight = DEFAULT_TERMINAL_HEIGHT;
     protected PanelListModal $panelListModal;
+    protected ?OptionListModal $projectNormalizationModal = null;
     protected bool $shouldRefreshBackgroundUnderModal = false;
     protected bool $didRenderOverlayLastFrame = false;
     protected SceneWriter $sceneWriter;
+    protected ?ProjectNormalizer $projectNormalizer = null;
+    protected array $projectDiscrepancies = [];
 
     /**
      * @param string $name
@@ -156,6 +170,7 @@ final class Editor implements ObservableInterface
             $this->sceneWriter = new SceneWriter();
             $this->initializeWidgets();
             $this->initializeEditorStates();
+            $this->initializeProjectIntegrityCheck();
             $this->splashScreen = new SplashScreen(
                 Console::cursor(),
                 new ConsoleOutput(),
@@ -360,6 +375,12 @@ final class Editor implements ObservableInterface
             $this->refreshTerminalSize();
         }
 
+        if ($this->projectNormalizationModal?->isVisible()) {
+            $this->handleProjectNormalizationModalInput();
+            $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
+            return;
+        }
+
         $this->editorState->update();
         $this->handlePanelKeyboardWorkflow();
 
@@ -375,6 +396,7 @@ final class Editor implements ObservableInterface
         }
 
         $this->synchronizeAssetDeletions();
+        $this->synchronizeAssetCreations();
         $this->synchronizeHierarchyDeletions();
         $this->synchronizeHierarchyAdditions();
         $this->synchronizeMainPanelSceneChanges();
@@ -389,6 +411,23 @@ final class Editor implements ObservableInterface
     private function render(): void
     {
         $this->frameCount++;
+        if ($this->projectNormalizationModal?->isVisible()) {
+            $this->didRenderOverlayLastFrame = true;
+
+            if ($this->shouldRefreshBackgroundUnderModal) {
+                $this->renderEditorFrame();
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->projectNormalizationModal->isDirty()) {
+                $this->projectNormalizationModal->render();
+                $this->projectNormalizationModal->markClean();
+                $this->shouldRefreshBackgroundUnderModal = false;
+            }
+
+            $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+            return;
+        }
+
         if ($this->panelListModal->isVisible()) {
             $this->didRenderOverlayLastFrame = true;
 
@@ -526,6 +565,32 @@ final class Editor implements ObservableInterface
         $this->setState($this->editState);
     }
 
+    private function initializeProjectIntegrityCheck(): void
+    {
+        $this->projectNormalizer = new ProjectNormalizer($this->workingDirectory);
+        $this->projectNormalizationModal = new OptionListModal(title: 'Normalize Project');
+        $this->projectNormalizationModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->projectDiscrepancies = $this->projectNormalizer->inspect();
+
+        if ($this->projectDiscrepancies === []) {
+            return;
+        }
+
+        $issueCount = count($this->projectDiscrepancies);
+        $issueLabel = $issueCount === 1 ? 'issue' : 'issues';
+
+        $this->projectNormalizationModal->show(
+            ['Normalize', 'Cancel'],
+            title: sprintf('Normalize Project? (%d %s)', $issueCount, $issueLabel),
+        );
+        $this->projectNormalizationModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->shouldRefreshBackgroundUnderModal = true;
+
+        foreach ($this->projectDiscrepancies as $discrepancy) {
+            $this->consolePanel->append('[WARN] - ' . $discrepancy);
+        }
+    }
+
     private function togglePlayMode(): void
     {
         if ($this->editorState instanceof PlayState) {
@@ -592,6 +657,7 @@ final class Editor implements ObservableInterface
         );
         $this->assetsPanel = new AssetsPanel(
             assetsDirectoryPath: $this->assetsDirectoryPath,
+            workingDirectory: $this->workingDirectory,
         );
         $this->mainPanel = new MainPanel(
             sceneObjects: $this->loadedScene?->hierarchy ?? [],
@@ -608,6 +674,7 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel = new InspectorPanel(
             workingDirectory: $this->workingDirectory,
         );
+        $this->inspectorPanel->setSceneHierarchy($this->loadedScene?->hierarchy ?? []);
 
         $this->panels->add($this->hierarchyPanel);
         $this->panels->add($this->assetsPanel);
@@ -622,6 +689,14 @@ final class Editor implements ObservableInterface
 
     private function handlePanelFocus(): void
     {
+        if (
+            $this->projectNormalizationModal?->isVisible()
+            || $this->panelListModal->isVisible()
+            || $this->focusedPanel?->hasActiveModal()
+        ) {
+            return;
+        }
+
         if (!Input::isLeftMouseButtonDown()) {
             return;
         }
@@ -693,18 +768,6 @@ final class Editor implements ObservableInterface
             return;
         }
 
-        if (Input::getCurrentInput() === 'A' && !($this->editorState instanceof PlayState)) {
-            if ($this->focusedPanel === $this->mainPanel && $this->mainPanel->beginSpriteCreateWorkflow()) {
-                $this->shouldRefreshBackgroundUnderModal = true;
-                return;
-            }
-
-            $this->setFocusedPanel($this->hierarchyPanel);
-            $this->hierarchyPanel->beginAddWorkflow();
-            $this->shouldRefreshBackgroundUnderModal = true;
-            return;
-        }
-
         if (Input::isKeyDown(IO\Enumerations\KeyCode::SHIFT_UP)) {
             $this->focusSiblingPanel('top');
             return;
@@ -759,7 +822,11 @@ final class Editor implements ObservableInterface
 
         $this->layoutPanels();
 
-        if ($this->panelListModal->isVisible() || $this->focusedPanel?->hasActiveModal()) {
+        if (
+            $this->projectNormalizationModal?->isVisible()
+            || $this->panelListModal->isVisible()
+            || $this->focusedPanel?->hasActiveModal()
+        ) {
             $this->shouldRefreshBackgroundUnderModal = true;
         }
     }
@@ -793,7 +860,68 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->setDimensions($rightPanelWidth, $availableHeight);
 
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->projectNormalizationModal?->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->focusedPanel?->syncModalLayout($this->terminalWidth, $this->terminalHeight);
+    }
+
+    private function handleProjectNormalizationModalInput(): void
+    {
+        if (!$this->projectNormalizationModal instanceof OptionListModal) {
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::ESCAPE)) {
+            $this->projectNormalizationModal->hide();
+            $this->shouldRefreshBackgroundUnderModal = true;
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::UP)) {
+            $this->projectNormalizationModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::DOWN)) {
+            $this->projectNormalizationModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(IO\Enumerations\KeyCode::ENTER)) {
+            return;
+        }
+
+        $selectedOption = $this->projectNormalizationModal->getSelectedOption();
+        $this->projectNormalizationModal->hide();
+
+        if ($selectedOption === 'Normalize') {
+            $this->normalizeLoadedProject();
+        }
+
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function normalizeLoadedProject(): void
+    {
+        if (!$this->projectNormalizer instanceof ProjectNormalizer) {
+            return;
+        }
+
+        $changes = $this->projectNormalizer->normalize();
+
+        $this->initializeSettings();
+        $this->initializeLoadedScene();
+        $this->initializeWidgets();
+
+        if ($changes === []) {
+            $this->consolePanel->append('[INFO] - Project structure is already normalized.');
+            return;
+        }
+
+        foreach ($changes as $change) {
+            $this->consolePanel->append('[INFO] - ' . $change);
+        }
+
+        $this->projectDiscrepancies = $this->projectNormalizer->inspect();
     }
 
     private function configurePanelGraph(): void
@@ -1084,6 +1212,30 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->inspectTarget(null);
     }
 
+    private function synchronizeAssetCreations(): void
+    {
+        $creationRequest = $this->assetsPanel->consumeCreationRequest();
+
+        if (
+            !is_array($creationRequest)
+            || !is_string($creationRequest['kind'] ?? null)
+            || $creationRequest['kind'] === ''
+        ) {
+            return;
+        }
+
+        $createdAsset = $this->createAssetUsingCliCommand($creationRequest['kind']);
+
+        if (!is_array($createdAsset)) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($createdAsset['path']);
+        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdAsset));
+        $this->mainPanel->loadSpriteAsset($createdAsset);
+    }
+
     private function synchronizeMainPanelSceneChanges(): void
     {
         $mutation = $this->mainPanel->consumeHierarchyMutation();
@@ -1268,6 +1420,254 @@ final class Editor implements ObservableInterface
         return rmdir($path);
     }
 
+    private function createAssetUsingCliCommand(string $kind): ?array
+    {
+        $definition = $this->resolveAssetCreationDefinition($kind);
+
+        if ($definition === null) {
+            $this->consolePanel->append('[ERROR] - Unsupported asset type selected.');
+            return null;
+        }
+
+        $originalWorkingDirectory = getcwd();
+
+        if ($originalWorkingDirectory === false) {
+            $this->consolePanel->append('[ERROR] - Failed to resolve the current working directory.');
+            return null;
+        }
+
+        try {
+            if (!@chdir($this->workingDirectory)) {
+                $this->consolePanel->append('[ERROR] - Failed to switch to the project directory.');
+                return null;
+            }
+
+            for ($index = 1; $index <= 200; $index++) {
+                $candidateName = $definition['baseName'] . '-' . $index;
+                $result = $this->runAssetGenerationCommand($definition, $candidateName);
+
+                if (($result['status'] ?? null) === 'success' && is_array($result['asset'] ?? null)) {
+                    return $result['asset'];
+                }
+
+                if (($result['status'] ?? null) === 'fatal') {
+                    return null;
+                }
+            }
+        } finally {
+            @chdir($originalWorkingDirectory);
+        }
+
+        $this->consolePanel->append('[ERROR] - Failed to create asset after multiple attempts.');
+
+        return null;
+    }
+
+    private function resolveAssetCreationDefinition(string $kind): ?array
+    {
+        return match ($kind) {
+            'script' => [
+                'command' => GenerateScript::class,
+                'baseName' => 'new-script',
+            ],
+            'scene' => [
+                'command' => GenerateScene::class,
+                'baseName' => 'new-scene',
+            ],
+            'texture' => [
+                'command' => GenerateTexture::class,
+                'baseName' => 'new-texture',
+            ],
+            'tilemap' => [
+                'command' => GenerateTilemap::class,
+                'baseName' => 'new-map',
+            ],
+            'event' => [
+                'command' => GenerateEvent::class,
+                'baseName' => 'new-event',
+            ],
+            default => null,
+        };
+    }
+
+    private function runAssetGenerationCommand(array $definition, string $candidateName): array
+    {
+        $commandClass = $definition['command'] ?? null;
+
+        if (!is_string($commandClass) || !is_a($commandClass, Command::class, true)) {
+            return ['status' => 'fatal'];
+        }
+
+        /** @var Command $command */
+        $command = new $commandClass();
+        $input = new ArrayInput([
+            'name' => $candidateName,
+        ]);
+        $input->setInteractive(false);
+        $output = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, false);
+        $exitCode = $command->run($input, $output);
+        $commandOutput = trim($output->fetch());
+
+        if ($exitCode !== Command::SUCCESS) {
+            if (str_contains($commandOutput, 'already exists')) {
+                return ['status' => 'retry'];
+            }
+
+            $message = $commandOutput !== ''
+                ? preg_replace('/\s+/', ' ', strip_tags($commandOutput))
+                : 'Asset generation failed.';
+            $this->consolePanel->append('[ERROR] - ' . $message);
+
+            return ['status' => 'fatal'];
+        }
+
+        $relativeFilename = $this->extractCreatedRelativeFilename($commandOutput);
+
+        if (!is_string($relativeFilename) || $relativeFilename === '') {
+            $this->consolePanel->append('[ERROR] - Asset generation succeeded but the created file could not be resolved.');
+            return ['status' => 'fatal'];
+        }
+
+        $absolutePath = $this->resolveGeneratedAssetAbsolutePath($relativeFilename);
+
+        if (!is_string($absolutePath) || !is_file($absolutePath)) {
+            $this->consolePanel->append('[ERROR] - Generated asset file could not be found.');
+            return ['status' => 'fatal'];
+        }
+
+        $finalPath = $this->relocateGeneratedAssetToActiveRoot($absolutePath, $relativeFilename);
+
+        if (!is_string($finalPath) || !is_file($finalPath)) {
+            $this->consolePanel->append('[ERROR] - Generated asset file could not be activated in the current assets directory.');
+            return ['status' => 'fatal'];
+        }
+
+        $this->consolePanel->append('[INFO] - Created asset ' . $this->buildRelativeAssetPath($finalPath) . '.');
+
+        return [
+            'status' => 'success',
+            'asset' => [
+                'name' => basename($finalPath),
+                'path' => $finalPath,
+                'relativePath' => $this->buildRelativeAssetPath($finalPath),
+                'isDirectory' => false,
+                'children' => [],
+            ],
+        ];
+    }
+
+    private function extractCreatedRelativeFilename(string $output): ?string
+    {
+        if (preg_match('/CREATE\s+([^\s]+)\s+\(\d+\s+bytes\)/i', $output, $matches) === 1) {
+            return $matches[1];
+        }
+
+        if (preg_match('/\b([Aa]ssets\/[^\s]+)\b/', $output, $matches) === 1) {
+            return $matches[1];
+        }
+
+        return null;
+    }
+
+    private function resolveGeneratedAssetAbsolutePath(string $relativeFilename): ?string
+    {
+        $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
+        $candidatePaths = [
+            Path::join($this->workingDirectory, $normalizedRelativeFilename),
+        ];
+
+        if (is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== '') {
+            $segments = explode('/', $normalizedRelativeFilename);
+
+            if (count($segments) > 1 && strcasecmp($segments[0], 'assets') === 0) {
+                array_shift($segments);
+                $candidatePaths[] = Path::join($this->assetsDirectoryPath, ...$segments);
+            }
+        }
+
+        foreach ($candidatePaths as $candidatePath) {
+            if (is_file($candidatePath)) {
+                return $candidatePath;
+            }
+        }
+
+        return null;
+    }
+
+    private function relocateGeneratedAssetToActiveRoot(string $absolutePath, string $relativeFilename): string
+    {
+        if (!is_string($this->assetsDirectoryPath) || $this->assetsDirectoryPath === '') {
+            return $absolutePath;
+        }
+
+        $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
+        $segments = explode('/', $normalizedRelativeFilename);
+        $generatedRootSegment = $segments[0] ?? 'Assets';
+
+        if (count($segments) <= 1 || strcasecmp($segments[0], 'assets') !== 0) {
+            return $absolutePath;
+        }
+
+        array_shift($segments);
+        $targetPath = Path::join($this->assetsDirectoryPath, ...$segments);
+
+        if ($targetPath === $absolutePath) {
+            return $absolutePath;
+        }
+
+        if (file_exists($targetPath)) {
+            return $targetPath;
+        }
+
+        if (!is_dir(dirname($targetPath))) {
+            mkdir(dirname($targetPath), 0777, true);
+        }
+
+        if (!rename($absolutePath, $targetPath)) {
+            return $absolutePath;
+        }
+
+        $generatedAssetsRoot = Path::join($this->workingDirectory, $generatedRootSegment);
+
+        if (str_starts_with($absolutePath, $generatedAssetsRoot)) {
+            $this->cleanupEmptyDirectories(dirname($absolutePath), $generatedAssetsRoot);
+        }
+
+        return $targetPath;
+    }
+
+    private function cleanupEmptyDirectories(string $directory, string $stopAt): void
+    {
+        $currentDirectory = $directory;
+
+        while ($currentDirectory !== $stopAt && str_starts_with($currentDirectory, $stopAt)) {
+            if (!is_dir($currentDirectory)) {
+                break;
+            }
+
+            $entries = scandir($currentDirectory);
+
+            if ($entries === false || array_diff($entries, ['.', '..']) !== []) {
+                break;
+            }
+
+            rmdir($currentDirectory);
+            $currentDirectory = dirname($currentDirectory);
+        }
+
+        if (
+            $currentDirectory === $stopAt
+            && $currentDirectory !== $this->assetsDirectoryPath
+            && is_dir($currentDirectory)
+        ) {
+            $entries = scandir($currentDirectory);
+
+            if ($entries !== false && array_diff($entries, ['.', '..']) === []) {
+                rmdir($currentDirectory);
+            }
+        }
+    }
+
     private function renameAssetAndCascadeReferences(
         string $currentAbsolutePath,
         mixed $currentRelativePath,
@@ -1302,6 +1702,18 @@ final class Editor implements ObservableInterface
             : $this->buildRelativeAssetPath($currentAbsolutePath);
         $newRelativePath = $this->buildRelativeAssetPath($targetAbsolutePath);
 
+        if (!$this->synchronizeScriptClassNameWithFileRename($targetAbsolutePath, $oldRelativePath, $newRelativePath)) {
+            if (
+                $targetAbsolutePath !== $currentAbsolutePath
+                && is_file($targetAbsolutePath)
+                && !file_exists($currentAbsolutePath)
+            ) {
+                @rename($targetAbsolutePath, $currentAbsolutePath);
+            }
+
+            return null;
+        }
+
         if ($this->updateSceneAssetReferences($oldRelativePath, $newRelativePath)) {
             if ($this->loadedScene instanceof DTOs\SceneDTO) {
                 $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
@@ -1320,6 +1732,105 @@ final class Editor implements ObservableInterface
             'isDirectory' => false,
             'children' => [],
         ];
+    }
+
+    private function synchronizeScriptClassNameWithFileRename(
+        string $targetAbsolutePath,
+        string $oldRelativePath,
+        string $newRelativePath,
+    ): bool {
+        if (!$this->isScriptAssetPath($oldRelativePath) && !$this->isScriptAssetPath($newRelativePath)) {
+            return true;
+        }
+
+        if (strtolower((string) pathinfo($targetAbsolutePath, PATHINFO_EXTENSION)) !== 'php') {
+            return true;
+        }
+
+        $source = file_get_contents($targetAbsolutePath);
+
+        if (!is_string($source) || $source === '') {
+            $this->consolePanel->append('[ERROR] - Failed to update the renamed script source.');
+            return false;
+        }
+
+        $oldClassName = $this->derivePhpAssetClassNameFromRelativePath($oldRelativePath);
+        $newClassName = $this->derivePhpAssetClassNameFromRelativePath($newRelativePath);
+
+        if ($newClassName === '') {
+            $this->consolePanel->append('[ERROR] - Failed to derive the renamed script class name.');
+            return false;
+        }
+
+        $updatedSource = $source;
+
+        if ($oldClassName !== '') {
+            $updatedSource = preg_replace(
+                '/\b(class\s+)' . preg_quote($oldClassName, '/') . '(\b)/',
+                '${1}' . $newClassName . '$2',
+                $updatedSource,
+                1,
+                $replacementCount,
+            );
+
+            if (!is_string($updatedSource)) {
+                $this->consolePanel->append('[ERROR] - Failed to update the renamed script class.');
+                return false;
+            }
+
+            if (($replacementCount ?? 0) === 0) {
+                $updatedSource = $source;
+            }
+        }
+
+        if ($updatedSource === $source) {
+            $updatedSource = preg_replace(
+                '/\bclass\s+[A-Za-z_][A-Za-z0-9_]*\b/',
+                'class ' . $newClassName,
+                $source,
+                1,
+            );
+
+            if (!is_string($updatedSource) || $updatedSource === $source) {
+                $this->consolePanel->append('[ERROR] - Failed to locate the script class declaration after rename.');
+                return false;
+            }
+        }
+
+        if (file_put_contents($targetAbsolutePath, $updatedSource) === false) {
+            $this->consolePanel->append('[ERROR] - Failed to write the renamed script source.');
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isScriptAssetPath(string $relativePath): bool
+    {
+        return str_starts_with(str_replace('\\', '/', $relativePath), 'Scripts/');
+    }
+
+    private function derivePhpAssetClassNameFromRelativePath(string $relativePath): string
+    {
+        $baseName = (string) pathinfo(basename(str_replace('\\', '/', $relativePath)), PATHINFO_FILENAME);
+
+        if ($baseName === '') {
+            return '';
+        }
+
+        $tokens = preg_split('/[^A-Za-z0-9]+/', $baseName) ?: [];
+        $tokens = array_values(array_filter($tokens, static fn(string $token): bool => $token !== ''));
+
+        if (count($tokens) <= 1) {
+            return preg_match('/[A-Z]/', $baseName) === 1
+                ? ucfirst($baseName)
+                : to_pascal_case($baseName);
+        }
+
+        return implode('', array_map(
+            static fn(string $token): string => ucfirst($token),
+            array_map('strtolower', $tokens),
+        ));
     }
 
     private function normalizeAssetFileName(string $requestedName, string $currentAbsolutePath): string
@@ -1543,6 +2054,7 @@ final class Editor implements ObservableInterface
             $this->loadedScene->height,
             $this->loadedScene->environmentTileMapPath,
         );
+        $this->inspectorPanel->setSceneHierarchy($this->loadedScene->hierarchy);
         $this->mainPanel->setSceneDimensions($this->loadedScene->width, $this->loadedScene->height);
         $this->mainPanel->setEnvironmentTileMapPath($this->loadedScene->environmentTileMapPath);
     }

@@ -118,7 +118,9 @@ class InputManager implements StaticObservableInterface
     {
         self::$previousKeyPress = self::$keyPress;
 
-        $incomingTokens = self::tokenizeInput(stream_get_contents(STDIN) ?: '');
+        $incomingTokens = self::tokenizeInput(
+            self::normalizeBufferedInput(stream_get_contents(STDIN))
+        );
 
         if ($incomingTokens !== []) {
             self::$inputQueue = [...self::$inputQueue, ...$incomingTokens];
@@ -371,6 +373,11 @@ class InputManager implements StaticObservableInterface
     private static function normalizeInput(string $input): string
     {
         return self::tokenizeInput($input)[0] ?? '';
+    }
+
+    private static function normalizeBufferedInput(string|false $input): string
+    {
+        return $input === false ? '' : $input;
     }
 
     private static function tokenizeInput(string $input): array

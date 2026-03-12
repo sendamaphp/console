@@ -4,6 +4,8 @@ This document is a living guide to the Sendama editor.
 
 It is meant to track the editor as it exists today, including current hotkeys, panel workflows, and known behavior. Update this file whenever the editor gains new tools, panels, controls, or shortcuts.
 
+For the task-oriented guide set, start with [docs/guides/README.md](guides/README.md).
+
 ## Starting the Editor
 
 Open the editor from inside a Sendama project:
@@ -21,15 +23,21 @@ sendama edit --directory /path/to/project
 The editor expects a valid Sendama project workspace. In particular:
 
 - editor settings and project settings must be present
-- the project should contain an `Assets` folder
+- the project should contain an `Assets` folder, or a legacy lowercase `assets` folder
 - the active scene is loaded from the configured scene metadata
+
+When the editor opens a project, it also runs a startup sanity check.
+If it finds missing structure such as `config/input.php`, `configuration.json`, log files, or required asset directories, it opens a normalize prompt:
+
+- `Normalize`: create the missing directories and bootstrap files
+- `Cancel` or `Escape`: continue without changing the project
 
 ## Layout Overview
 
 The editor currently uses five main panels:
 
 - `Hierarchy`: scene tree and scene object management
-- `Assets`: project browser rooted at the project's `Assets` folder
+- `Assets`: project browser rooted at the active asset root, preferring `Assets` but compatible with legacy `assets`
 - `Main`: workspace area with `Scene`, `Game`, and `Sprite` tabs
 - `Console`: project log view
 - `Inspector`: object and asset details, plus property editing
@@ -48,7 +56,12 @@ These shortcuts work regardless of the currently focused panel unless a modal is
 | `Shift+5` | Toggle play mode globally |
 | `Ctrl+C` | Close the editor gracefully |
 | `Ctrl+S` | Save the loaded scene |
-| `Shift+A` | Open the Hierarchy add workflow, or create a Sprite asset when the Sprite tab is focused |
+
+`Shift+A` is panel-local:
+
+- in `Hierarchy`, it opens the add-object workflow
+- in `Assets`, it opens the create-asset workflow
+- in `Inspector`, it opens the add-component menu when a hierarchy object is loaded
 
 ## Panel List Modal
 
@@ -89,7 +102,7 @@ Current scene rendering behavior:
 - texture paths are resolved relative to the editor's configured project directory
 - scene coordinates are rendered into a scrollable viewport
 - UI text objects render their `text`
-- objects without a visible representation are not currently drawn in the scene tab
+- selected objects without a visible representation render as a muted `x`
 - the main panel help line shows the current scene controls on the left and the active mode on the right
 
 When the main panel has focus and the `Scene` tab is active, it uses scene-view modes.
@@ -173,18 +186,10 @@ Controls:
 - `Shift+2`: open the character selector modal for special characters
 - `Space`: place a blank character
 - `Backspace`: erase the current cell
-- `Shift+A`: open the create-asset modal
 - `Ctrl+Z`: undo the last grid change
 - `Ctrl+Y`: redo the last undone grid change
 - `Shift+R`: reset the loaded asset back to the state it had when it was opened
 - `Delete`: open the delete-asset confirmation modal
-
-Create workflow:
-
-- `Shift+A` opens a modal with `Texture`, `Tile Map`, and `Cancel`
-- choosing `Texture` creates a new `.texture` file in `Assets/Textures`
-- choosing `Tile Map` creates a new `.tmap` file in `Assets/Maps`
-- the new asset is loaded into the sprite editor immediately
 
 Delete workflow:
 
@@ -267,6 +272,7 @@ Controls:
 - `Right`: expand a folder, or move into it
 - `Left`: collapse a folder, or move to its parent
 - `Enter`: load the selected asset into the Inspector
+- `Shift+A`: open the asset create workflow
 - `Delete`: open the delete confirmation dialog
 
 Inspector type mapping:
@@ -288,6 +294,25 @@ Controls:
 - `Enter`: confirm the selection
 - `Escape`: cancel
 
+### Asset Create Workflow
+
+Press `Shift+A` while the Assets panel has focus to open the create modal.
+
+Current create targets:
+
+- `Script`
+- `Scene`
+- `Texture`
+- `Tile Map`
+- `Event`
+
+Behavior:
+
+- selecting an asset type runs the corresponding Sendama generator command in the opened project directory
+- the editor creates the asset with the next available default name for that asset family
+- after creation, the Assets tree refreshes, the new asset is selected, and the Inspector loads it
+- if the created asset is a texture or tile map, the Sprite tab loads it too
+
 ## Inspector Panel
 
 The Inspector shows details for the currently inspected target.
@@ -304,7 +329,8 @@ For file assets, the Inspector currently shows:
 - editable `Name`
 - read-only `Path`
 
-Renaming a texture or tile map from the Inspector renames the file on disk and updates known scene references in memory, such as `sprite.texture.path` and `environmentTileMapPath`.
+Renaming a file asset from the Inspector renames the file on disk. If the current scene references that file through `sprite.texture.path` or `environmentTileMapPath`, those scene references are updated in memory and should be saved with `Ctrl+S`.
+If the renamed asset is a PHP script under `Assets/Scripts`, the editor also rewrites the class declaration inside the source file to match the new filename.
 
 ### Inspector Hotkeys
 
@@ -312,6 +338,11 @@ When the Inspector has focus:
 
 - `Tab`: move to the next control
 - `Shift+Tab`: move to the previous control
+- `Shift+A`: open the add-component menu for the currently inspected hierarchy object
+- `Shift+W`: enter or leave component move mode when a component header is selected
+- `Delete`: open the remove-component confirmation modal when a component header is selected
+
+The Inspector help line updates dynamically to show the active controls on the left and the current mode on the right.
 
 The Inspector uses a small state machine.
 
@@ -325,6 +356,9 @@ Controls:
 
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
+- `Shift+A`: open the add-component menu when a hierarchy object is being inspected
+- `Shift+W`: toggle component move mode when a component header is focused
+- `Delete`: open the remove-component confirmation modal when a component header is focused
 - `/`: toggle the focused collapsible section, such as `Transform`, `Renderer`, or a component block
 
 #### 2. Property Selection
@@ -384,6 +418,47 @@ For hierarchy objects, the Inspector currently renders:
 3. Script/component sections from the scene metadata
 
 Component headers are visually marked as collapsible sections.
+
+### Add Component Workflow
+
+When the Inspector is focused on a hierarchy object other than the scene root, press `Shift+A` to open `Add Component`.
+
+Current component candidates come from:
+
+- built-in engine component defaults
+- PHP classes discovered under `Assets/Scripts`
+- component classes already present in the loaded scene
+
+Behavior:
+
+- selecting a component appends it to the object's `components` list
+- if the editor can discover serializable default data for that component, it adds that data immediately
+- the new component section appears in the Inspector right away
+
+### Component Remove Workflow
+
+When a component header is focused, press `Delete` to open the remove confirmation modal.
+
+Behavior:
+
+- the modal asks whether to remove the selected component from the current object
+- `Delete`: confirm removal
+- `Cancel` or `Escape`: abort removal
+- confirming removes that component from the object's `components` list immediately
+
+### Component Reorder Workflow
+
+When a component header is focused, press `Shift+W` to enter component move mode.
+
+Behavior:
+
+- `Up`: move the selected component one slot earlier, wrapping to the end from the first slot
+- `Down`: move the selected component one slot later, wrapping to the start from the last slot
+- `Escape`: leave move mode
+
+Current limit:
+
+- component reordering is currently driven from the component header itself, not from nested component fields
 
 ### Renderer Section
 

@@ -3,8 +3,8 @@
 namespace Sendama\Console\Commands;
 
 use Sendama\Console\Editor\Editor;
+use Sendama\Console\Editor\GameSettings;
 use Sendama\Console\Exceptions\IOException;
-use Sendama\Console\Util\Config\ProjectConfig;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -35,11 +35,8 @@ class EditGame extends Command
         $output->writeln("Opening game configuration for editing...", OutputInterface::VERBOSITY_VERBOSE);
 
         $directory = $input->getOption('directory') ?? '.';
-
-        $projectConfig = new ProjectConfig($input, $output);
-        $projectConfig->load();
-
-        $editor = new Editor(name: $projectConfig->get("name"), workingDirectory: $directory);
+        $gameSettings = GameSettings::loadFromDirectory($directory);
+        $editor = new Editor(name: $gameSettings->name, workingDirectory: $directory);
         $editor->run();
 
         $output->writeln("Finished editing game configuration.", OutputInterface::VERBOSITY_VERBOSE);

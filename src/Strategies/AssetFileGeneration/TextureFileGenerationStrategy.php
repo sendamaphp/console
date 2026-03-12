@@ -29,7 +29,7 @@ class TextureFileGenerationStrategy extends AssetFileGeneration\AbstractAssetFil
 
     $this->className = basename($this->classPath);
 
-    $this->relativeFilename = Path::join('assets', $this->classPath . ($this->fileExtension ?? '.php'));
+    $this->relativeFilename = Path::join($this->assetsDirectoryName, $this->classPath . ($this->fileExtension ?? '.php'));
 
   }
 }

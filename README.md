@@ -15,6 +15,8 @@ Sendama CLI is a console application that provides a command line interface for 
 
 For the current editor manual, see [Editor.md](docs/Editor.md).
 
+For the modular guide set, see [docs/guides/README.md](docs/guides/README.md).
+
 ## Requirements
 
 - PHP 8.3 or newer

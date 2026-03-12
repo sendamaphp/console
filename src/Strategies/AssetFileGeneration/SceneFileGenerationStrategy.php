@@ -31,7 +31,7 @@ class SceneFileGenerationStrategy extends AbstractAssetFileGenerationStrategy
     {
         if ($this->asMetaFile) {
             $filename = Path::join(dirname($this->classPath), to_kebab_case($this->className));
-            $this->relativeFilename = Path::join('assets', $filename . ($this->fileExtension ?? '.php'));
+            $this->relativeFilename = Path::join($this->assetsDirectoryName, $filename . ($this->fileExtension ?? '.php'));
             $this->content = <<<PHP
 <?php
 

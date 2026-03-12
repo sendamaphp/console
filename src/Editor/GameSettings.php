@@ -57,6 +57,11 @@ readonly class GameSettings
 
         $data = json_decode($settingsJsonFileContents, true);
 
+        if (!is_array($data)) {
+            Debug::warn("Invalid JSON in $settingsFile.");
+            return new self(name: 'Untitled Game');
+        }
+
         return self::fromArray($data);
     }
 

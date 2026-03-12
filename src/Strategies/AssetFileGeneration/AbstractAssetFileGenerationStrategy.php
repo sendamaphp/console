@@ -18,6 +18,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 abstract class AbstractAssetFileGenerationStrategy implements AssetFileGenerationStrategyInterface
 {
+    protected string $assetsDirectoryName = 'Assets';
     /**
      * The class path.
      *
@@ -61,6 +62,7 @@ abstract class AbstractAssetFileGenerationStrategy implements AssetFileGeneratio
         $this->projectConfig = new ProjectConfig($input, $output);
         $this->composerConfig = new ComposerConfig($input, $output);
         $this->inspector = new Inspector($input, $output);
+        $this->assetsDirectoryName = basename(Path::getWorkingDirectoryAssetsPath()) ?: 'Assets';
 
         $nameTokens = explode('/', $this->filename);
 
@@ -77,7 +79,7 @@ abstract class AbstractAssetFileGenerationStrategy implements AssetFileGeneratio
 
         $this->className = basename($this->classPath);
 
-        $this->relativeFilename = Path::join('assets', $this->classPath . ($this->fileExtension ?? '.php'));
+        $this->relativeFilename = Path::join($this->assetsDirectoryName, $this->classPath . ($this->fileExtension ?? '.php'));
 
         $this->configure();
     }

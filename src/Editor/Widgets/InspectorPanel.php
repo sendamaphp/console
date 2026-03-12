@@ -3,9 +3,14 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
+use ReflectionClass;
+use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
+use Sendama\Console\Util\Path;
 use Sendama\Console\Editor\Widgets\Controls\CompoundInputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
@@ -29,6 +34,15 @@ class InspectorPanel extends Widget
     private const string SELECTED_CONTROL_ACTIVE_SEQUENCE = "\033[5;30;46m";
     private const string EDITING_CONTROL_SEQUENCE = "\033[30;43m";
     private const string EDITING_CONTROL_ACTIVE_SEQUENCE = "\033[5;30;43m";
+    private const array DEFAULT_COMPONENT_CANDIDATES = [
+        'Sendama\\Engine\\Core\\Behaviours\\SimpleQuitListener',
+        'Sendama\\Engine\\Core\\Behaviours\\SimpleBackListener',
+        'Sendama\\Engine\\Core\\Behaviours\\CharacterMovement',
+        'Sendama\\Engine\\Physics\\Rigidbody',
+        'Sendama\\Engine\\Physics\\Collider',
+        'Sendama\\Engine\\Physics\\CharacterController',
+        'Sendama\\Engine\\Animation\\AnimationController',
+    ];
 
     protected ?array $inspectionTarget = null;
     protected array $elements = [];
@@ -44,11 +58,20 @@ class InspectorPanel extends Widget
     protected ?PreviewWindowControl $rendererPreviewControl = null;
     protected OptionListModal $pathInputActionModal;
     protected FileDialogModal $fileDialogModal;
+    protected OptionListModal $addComponentModal;
+    protected OptionListModal $deleteComponentModal;
     protected ?PathInputControl $activePathInputControl = null;
     protected array $controlBindings = [];
+    protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
     protected ?array $pendingAssetMutation = null;
     protected string $projectDirectory;
+    protected array $sceneHierarchy = [];
+    protected array $componentMenuDefinitions = [];
+    protected ?array $cachedProjectComponentCandidates = null;
+    protected bool $isComponentMoveModeActive = false;
+    protected ?int $pendingComponentDeletionIndex = null;
+    protected string $modeHelpLabel = '';
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -61,9 +84,16 @@ class InspectorPanel extends Widget
         $this->inputControlFactory = new InputControlFactory();
         $this->pathInputActionModal = new OptionListModal(title: 'Path Input');
         $this->fileDialogModal = new FileDialogModal();
+        $this->addComponentModal = new OptionListModal(title: 'Add Component');
+        $this->deleteComponentModal = new OptionListModal(title: 'Remove Component');
         $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
             ? $workingDirectory
             : (getcwd() ?: '.');
+    }
+
+    public function setSceneHierarchy(array $hierarchy): void
+    {
+        $this->sceneHierarchy = $hierarchy;
     }
 
     public function inspectTarget(?array $target): void
@@ -79,10 +109,16 @@ class InspectorPanel extends Widget
         $this->rendererPreviewControl = null;
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
+        $this->addComponentModal->hide();
+        $this->deleteComponentModal->hide();
         $this->activePathInputControl = null;
         $this->controlBindings = [];
+        $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
         $this->pendingAssetMutation = null;
+        $this->componentMenuDefinitions = [];
+        $this->isComponentMoveModeActive = false;
+        $this->pendingComponentDeletionIndex = null;
 
         if ($target === null) {
             $this->content = [];
@@ -134,24 +170,34 @@ class InspectorPanel extends Widget
 
     public function hasActiveModal(): bool
     {
-        return $this->pathInputActionModal->isVisible() || $this->fileDialogModal->isVisible();
+        return $this->pathInputActionModal->isVisible()
+            || $this->fileDialogModal->isVisible()
+            || $this->addComponentModal->isVisible()
+            || $this->deleteComponentModal->isVisible();
     }
 
     public function isModalDirty(): bool
     {
-        return $this->pathInputActionModal->isDirty() || $this->fileDialogModal->isDirty();
+        return $this->pathInputActionModal->isDirty()
+            || $this->fileDialogModal->isDirty()
+            || $this->addComponentModal->isDirty()
+            || $this->deleteComponentModal->isDirty();
     }
 
     public function markModalClean(): void
     {
         $this->pathInputActionModal->markClean();
         $this->fileDialogModal->markClean();
+        $this->addComponentModal->markClean();
+        $this->deleteComponentModal->markClean();
     }
 
     public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
     {
         $this->pathInputActionModal->syncLayout($terminalWidth, $terminalHeight);
         $this->fileDialogModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->addComponentModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->deleteComponentModal->syncLayout($terminalWidth, $terminalHeight);
     }
 
     public function renderActiveModal(): void
@@ -162,6 +208,14 @@ class InspectorPanel extends Widget
 
         if ($this->fileDialogModal->isVisible()) {
             $this->fileDialogModal->render();
+        }
+
+        if ($this->addComponentModal->isVisible()) {
+            $this->addComponentModal->render();
+        }
+
+        if ($this->deleteComponentModal->isVisible()) {
+            $this->deleteComponentModal->render();
         }
     }
 
@@ -191,12 +245,35 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $selectedControl = $this->getSelectedControl();
+        $selectedControlMetadata = $this->getSelectedControlMetadata($selectedControl);
+        $selectedComponentIndex = is_int($selectedControlMetadata['componentIndex'] ?? null)
+            ? $selectedControlMetadata['componentIndex']
+            : null;
+        $shouldPreserveComponentMoveMode = $this->isComponentMoveModeActive
+            && $this->isSelectedComponentHeader($selectedControl);
+
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Object');
         $target['type'] = $this->resolveDisplayType($target, $value);
         $target['value'] = $value;
 
         $this->inspectTarget($target);
+
+        if (is_int($selectedComponentIndex)) {
+            $componentCount = is_array($value['components'] ?? null)
+                ? count($value['components'])
+                : 0;
+
+            if ($componentCount > 0) {
+                $this->focusComponentHeaderByIndex(min($selectedComponentIndex, $componentCount - 1));
+            }
+        }
+
+        if ($shouldPreserveComponentMoveMode) {
+            $selectedControl = $this->getSelectedControl();
+            $this->isComponentMoveModeActive = $this->isSelectedComponentHeader($selectedControl);
+        }
     }
 
     public function syncSceneTarget(array $value): void
@@ -262,6 +339,16 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($this->addComponentModal->isVisible()) {
+            $this->handleAddComponentModalInput();
+            return;
+        }
+
+        if ($this->deleteComponentModal->isVisible()) {
+            $this->handleDeleteComponentModalInput();
+            return;
+        }
+
         if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
             $this->handlePathInputActionInput();
             return;
@@ -316,6 +403,15 @@ class InspectorPanel extends Widget
         };
     }
 
+    protected function buildBorderLine(string $label, bool $isTopBorder): string
+    {
+        if ($isTopBorder) {
+            return parent::buildBorderLine($label, true);
+        }
+
+        return $this->buildSplitHelpBorder($this->help, $this->modeHelpLabel);
+    }
+
     private function decorateSectionHeaderLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $contentIndex = $lineIndex - $this->padding->topPadding;
@@ -331,9 +427,18 @@ class InspectorPanel extends Widget
         $middle = $visibleLength > 2 ? mb_substr($visibleLine, 1, $visibleLength - 2) : '';
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
-        $sectionSequence = $lineState === 'selected' && $this->hasFocus()
-            ? self::SECTION_HEADER_SELECTED_SEQUENCE
-            : self::SECTION_HEADER_SEQUENCE;
+        $selectedControl = $this->getSelectedControl();
+        $sectionSequence = match (true) {
+            $lineState === 'selected'
+                && $this->hasFocus()
+                && $this->isComponentMoveModeActive
+                && $this->isSelectedComponentHeader($selectedControl) => self::EDITING_CONTROL_ACTIVE_SEQUENCE,
+            $lineState === 'selected'
+                && $this->isComponentMoveModeActive
+                && $this->isSelectedComponentHeader($selectedControl) => self::EDITING_CONTROL_SEQUENCE,
+            $lineState === 'selected' && $this->hasFocus() => self::SECTION_HEADER_SELECTED_SEQUENCE,
+            default => self::SECTION_HEADER_SEQUENCE,
+        };
 
         return $this->wrapWithColor($leftBorder, $borderColor)
             . $this->wrapWithSequence($middle, $sectionSequence)
@@ -518,7 +623,11 @@ class InspectorPanel extends Widget
                 $this->addControl(
                     $this->addSectionHeader(
                         $this->resolveClassName($component['class'] ?? null, 'Component'),
-                    )
+                    ),
+                    [
+                        'kind' => 'component_header',
+                        'componentIndex' => $componentIndex,
+                    ],
                 );
                 $this->addComponentPropertyControls(
                     $serializedComponentData,
@@ -536,7 +645,11 @@ class InspectorPanel extends Widget
             $this->addControl(
                 $this->addSectionHeader(
                     $this->resolveClassName($component['class'] ?? null, 'Component'),
-                )
+                ),
+                [
+                    'kind' => 'component_header',
+                    'componentIndex' => $componentIndex,
+                ],
             );
 
             if (!is_array($legacyComponentData) || $legacyComponentData === []) {
@@ -631,19 +744,23 @@ class InspectorPanel extends Widget
         return new SectionControl($title, $indentLevel);
     }
 
-    private function addControl(InputControl $control): void
+    private function addControl(InputControl $control, array $metadata = []): void
     {
         $this->elements[] = [
             'kind' => 'control',
             'control' => $control,
         ];
         $this->focusableControls[] = $control;
+
+        if ($metadata !== []) {
+            $this->controlMetadata[spl_object_id($control)] = $metadata;
+        }
     }
 
-    private function addBoundControl(InputControl $control, array $valuePath): void
+    private function addBoundControl(InputControl $control, array $valuePath, array $metadata = []): void
     {
         $this->bindControl($control, $valuePath);
-        $this->addControl($control);
+        $this->addControl($control, $metadata);
     }
 
     private function bindControl(InputControl $control, array $valuePath): void
@@ -653,6 +770,7 @@ class InspectorPanel extends Widget
 
     private function refreshContent(): void
     {
+        $this->updateHelpInfo();
         $this->refreshDerivedControls();
         $content = [];
         $lineKinds = [];
@@ -693,6 +811,102 @@ class InspectorPanel extends Widget
         $this->content = $content;
         $this->lineKinds = $lineKinds;
         $this->lineStates = $lineStates;
+    }
+
+    private function updateHelpInfo(): void
+    {
+        if ($this->addComponentModal->isVisible()) {
+            $this->help = 'Up/Down choose  Enter add  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Add Component';
+            return;
+        }
+
+        if ($this->deleteComponentModal->isVisible()) {
+            $this->help = 'Up/Down choose  Enter confirm  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Remove Component';
+            return;
+        }
+
+        if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
+            $this->help = 'Up/Down choose  Enter select  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Path Action';
+            return;
+        }
+
+        if ($this->interactionState === self::STATE_PATH_INPUT_FILE_DIALOG) {
+            $this->help = 'Up/Down move  Left/Right tree  Enter choose  Esc back';
+            $this->modeHelpLabel = 'Mode: File Picker';
+            return;
+        }
+
+        $selectedControl = $this->getSelectedControl();
+
+        if ($this->interactionState === self::STATE_CONTROL_EDIT) {
+            if ($selectedControl instanceof NumberInputControl) {
+                $this->help = 'Type edit  Up/Down adjust  Left/Right move  Enter save  Esc cancel';
+                $this->modeHelpLabel = 'Mode: Number Edit';
+                return;
+            }
+
+            if ($selectedControl instanceof TextInputControl || $selectedControl instanceof PathInputControl) {
+                $this->help = 'Type edit  Left/Right move  Backspace delete  Enter save  Esc cancel';
+                $this->modeHelpLabel = 'Mode: Text Edit';
+                return;
+            }
+
+            $this->help = 'Edit value  Enter save  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Control Edit';
+            return;
+        }
+
+        if ($this->interactionState === self::STATE_PROPERTY_SELECTION) {
+            $this->help = 'Up/Down property  Enter edit  Esc back';
+            $this->modeHelpLabel = 'Mode: Property Select';
+            return;
+        }
+
+        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+            $this->help = 'Up/Down reorder  Shift+W done  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Component Move';
+            return;
+        }
+
+        if ($this->isSelectedComponentHeader($selectedControl)) {
+            $this->help = 'Up/Down select  / toggle  Shift+A add  Shift+W move  Del remove';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
+        if ($selectedControl instanceof CompoundInputControl) {
+            $this->help = 'Up/Down select  Enter properties  Tab next';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
+        if ($selectedControl instanceof PathInputControl) {
+            $this->help = 'Up/Down select  Enter path options  Tab next';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
+        $this->help = 'Up/Down select  Enter edit  Shift+A add  Tab next';
+        $this->modeHelpLabel = 'Mode: Control Select';
+    }
+
+    private function buildSplitHelpBorder(string $leftLabel, string $rightLabel): string
+    {
+        $availableLabelWidth = max(0, $this->width - 3);
+        $visibleRightLabel = $this->clipContentToWidth($rightLabel, $availableLabelWidth);
+        $remainingWidth = max(0, $availableLabelWidth - mb_strlen($visibleRightLabel));
+        $visibleLeftLabel = $this->clipContentToWidth($leftLabel, $remainingWidth);
+        $fillerWidth = max(0, $availableLabelWidth - mb_strlen($visibleLeftLabel) - mb_strlen($visibleRightLabel));
+
+        return $this->borderPack->bottomLeft
+            . $this->borderPack->horizontal
+            . $visibleLeftLabel
+            . str_repeat($this->borderPack->horizontal, $fillerWidth)
+            . $visibleRightLabel
+            . $this->borderPack->bottomRight;
     }
 
     private function refreshDerivedControls(): void
@@ -776,11 +990,49 @@ class InspectorPanel extends Widget
             % count($visibleControlIndexes);
         $this->selectedControlIndex = $visibleControlIndexes[$nextVisibleControlPosition];
         $this->applyControlSelection();
+        $selectedControl = $this->getSelectedControl();
+
+        if (!$this->isSelectedComponentHeader($selectedControl)) {
+            $this->isComponentMoveModeActive = false;
+        }
+
         $this->refreshContent();
     }
 
     private function handleControlSelectionInput(InputControl $selectedControl): void
     {
+        if (Input::getCurrentInput() === 'A' && $this->canOpenAddComponentModal()) {
+            $this->showAddComponentModal();
+            return;
+        }
+
+        if (Input::getCurrentInput() === 'W') {
+            $this->handleComponentMoveModeToggle($selectedControl);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DELETE) && $this->isSelectedComponentHeader($selectedControl)) {
+            $this->showDeleteComponentModal($selectedControl);
+            return;
+        }
+
+        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+            if (Input::isKeyDown(KeyCode::ESCAPE)) {
+                $this->isComponentMoveModeActive = false;
+                return;
+            }
+
+            if (Input::isKeyPressed(KeyCode::UP)) {
+                $this->moveSelectedComponent(-1);
+                return;
+            }
+
+            if (Input::isKeyPressed(KeyCode::DOWN)) {
+                $this->moveSelectedComponent(1);
+                return;
+            }
+        }
+
         if (Input::isKeyDown(KeyCode::UP)) {
             $this->moveControlSelection(-1);
             return;
@@ -859,26 +1111,26 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::BACKSPACE)) {
+        if (Input::isKeyPressed(KeyCode::BACKSPACE)) {
             $selectedControl->deleteBackward();
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::LEFT)) {
+        if (Input::isKeyPressed(KeyCode::LEFT)) {
             $selectedControl->moveCursorLeft();
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::RIGHT)) {
+        if (Input::isKeyPressed(KeyCode::RIGHT)) {
             $selectedControl->moveCursorRight();
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::UP) && $selectedControl->increment()) {
+        if (Input::isKeyPressed(KeyCode::UP) && $selectedControl->increment()) {
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::DOWN) && $selectedControl->decrement()) {
+        if (Input::isKeyPressed(KeyCode::DOWN) && $selectedControl->decrement()) {
             return;
         }
 
@@ -927,6 +1179,8 @@ class InspectorPanel extends Widget
     private function resetInteractionState(): void
     {
         $this->closePathInputModals();
+        $this->closeAddComponentModal();
+        $this->closeDeleteComponentModal();
         $selectedControl = $this->getSelectedControl();
 
         if ($selectedControl instanceof CompoundInputControl) {
@@ -940,6 +1194,79 @@ class InspectorPanel extends Widget
         }
 
         $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->isComponentMoveModeActive = false;
+    }
+
+    private function handleAddComponentModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closeAddComponentModal();
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->addComponentModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->addComponentModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->addComponentModal->getSelectedOption();
+
+        if (!is_string($selection) || $selection === '' || $selection === 'Cancel') {
+            $this->closeAddComponentModal();
+            $this->refreshContent();
+            return;
+        }
+
+        $componentDefinition = $this->componentMenuDefinitions[$selection] ?? null;
+
+        if (is_array($componentDefinition)) {
+            $this->appendComponentToInspectionTarget($componentDefinition);
+        }
+
+        $this->closeAddComponentModal();
+        $this->refreshContent();
+    }
+
+    private function handleDeleteComponentModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closeDeleteComponentModal();
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->deleteComponentModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->deleteComponentModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->deleteComponentModal->getSelectedOption();
+
+        if ($selection === 'Delete' && is_int($this->pendingComponentDeletionIndex)) {
+            $this->removeComponentAtIndex($this->pendingComponentDeletionIndex);
+        }
+
+        $this->closeDeleteComponentModal();
+        $this->refreshContent();
     }
 
     private function handlePathInputActionInput(): void
@@ -1062,6 +1389,749 @@ class InspectorPanel extends Widget
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
         $this->activePathInputControl = null;
+    }
+
+    private function canOpenAddComponentModal(): bool
+    {
+        return is_array($this->inspectionTarget)
+            && ($this->inspectionTarget['context'] ?? null) === 'hierarchy'
+            && is_string($this->inspectionTarget['path'] ?? null)
+            && ($this->inspectionTarget['path'] ?? null) !== 'scene'
+            && is_array($this->inspectionTarget['value'] ?? null);
+    }
+
+    private function showAddComponentModal(): void
+    {
+        $this->componentMenuDefinitions = $this->resolveAvailableComponentDefinitions();
+        $options = array_keys($this->componentMenuDefinitions);
+        $options[] = 'Cancel';
+        $this->addComponentModal->show($options, 0, 'Add Component');
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
+    private function closeAddComponentModal(): void
+    {
+        $this->addComponentModal->hide();
+        $this->componentMenuDefinitions = [];
+    }
+
+    private function closeDeleteComponentModal(): void
+    {
+        $this->deleteComponentModal->hide();
+        $this->pendingComponentDeletionIndex = null;
+    }
+
+    private function resolveAvailableComponentDefinitions(): array
+    {
+        $currentItem = is_array($this->inspectionTarget['value'] ?? null)
+            ? $this->inspectionTarget['value']
+            : [];
+        $candidateClasses = $this->resolveComponentCandidateClasses($currentItem);
+        $definitions = $this->loadComponentDefinitionsInIsolatedProcess($candidateClasses, $currentItem);
+
+        if ($definitions === []) {
+            return [];
+        }
+
+        usort(
+            $definitions,
+            fn(array $left, array $right): int => strcmp(
+                (string) ($left['label'] ?? $left['class'] ?? ''),
+                (string) ($right['label'] ?? $right['class'] ?? '')
+            ),
+        );
+
+        $resolvedDefinitions = [];
+        $usedLabels = [];
+
+        foreach ($definitions as $definition) {
+            $componentClass = is_string($definition['class'] ?? null) ? $definition['class'] : null;
+
+            if ($componentClass === null || $componentClass === '') {
+                continue;
+            }
+
+            $label = $this->buildUniqueComponentMenuLabel(
+                is_string($definition['label'] ?? null) && $definition['label'] !== ''
+                    ? $definition['label']
+                    : $this->resolveClassName($componentClass, $componentClass),
+                $componentClass,
+                $usedLabels,
+            );
+
+            $resolvedDefinitions[$label] = [
+                'class' => $componentClass,
+                'data' => is_array($definition['data'] ?? null) ? $definition['data'] : [],
+            ];
+        }
+
+        return $resolvedDefinitions;
+    }
+
+    private function resolveComponentCandidateClasses(array $currentItem): array
+    {
+        $currentComponentClasses = $this->collectComponentClassesFromComponents($currentItem['components'] ?? []);
+        $sceneComponentClasses = $this->collectComponentClassesFromHierarchy($this->sceneHierarchy);
+        $projectComponentClasses = $this->discoverProjectComponentCandidates();
+
+        $candidates = array_values(array_unique(array_filter(
+            [
+                ...self::DEFAULT_COMPONENT_CANDIDATES,
+                ...$projectComponentClasses,
+                ...$sceneComponentClasses,
+                ...$currentComponentClasses,
+            ],
+            static fn(mixed $class): bool => is_string($class) && $class !== '',
+        )));
+
+        return $candidates;
+    }
+
+    private function discoverProjectComponentCandidates(): array
+    {
+        if (is_array($this->cachedProjectComponentCandidates)) {
+            return $this->cachedProjectComponentCandidates;
+        }
+
+        $scriptsDirectory = Path::join($this->resolveAssetsWorkingDirectory(), 'Scripts');
+
+        if (!is_dir($scriptsDirectory)) {
+            return $this->cachedProjectComponentCandidates = [];
+        }
+
+        $componentCandidates = [];
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($scriptsDirectory, RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || strtolower((string) $file->getExtension()) !== 'php') {
+                continue;
+            }
+
+            $classReference = $this->extractClassReferenceFromPhpFile($file->getPathname());
+
+            if (is_string($classReference) && $classReference !== '') {
+                $componentCandidates[] = $classReference;
+            }
+        }
+
+        return $this->cachedProjectComponentCandidates = array_values(array_unique($componentCandidates));
+    }
+
+    private function extractClassReferenceFromPhpFile(string $filePath): ?string
+    {
+        $source = file_get_contents($filePath);
+
+        if ($source === false || $source === '') {
+            return null;
+        }
+
+        $tokens = token_get_all($source);
+        $namespace = '';
+        $className = null;
+        $tokenCount = count($tokens);
+
+        for ($index = 0; $index < $tokenCount; $index++) {
+            $token = $tokens[$index];
+
+            if (is_array($token) && $token[0] === T_NAMESPACE) {
+                $namespace = '';
+
+                for ($lookahead = $index + 1; $lookahead < $tokenCount; $lookahead++) {
+                    $namespaceToken = $tokens[$lookahead];
+
+                    if (
+                        is_string($namespaceToken)
+                        && ($namespaceToken === ';' || $namespaceToken === '{')
+                    ) {
+                        break;
+                    }
+
+                    if (
+                        is_array($namespaceToken)
+                        && in_array($namespaceToken[0], [T_STRING, T_NAME_QUALIFIED, T_NS_SEPARATOR], true)
+                    ) {
+                        $namespace .= $namespaceToken[1];
+                    }
+                }
+
+                continue;
+            }
+
+            if (!is_array($token) || $token[0] !== T_CLASS) {
+                continue;
+            }
+
+            $previousToken = $tokens[$index - 1] ?? null;
+
+            if (
+                is_array($previousToken)
+                && in_array($previousToken[0], [T_DOUBLE_COLON, T_NEW], true)
+            ) {
+                continue;
+            }
+
+            for ($lookahead = $index + 1; $lookahead < $tokenCount; $lookahead++) {
+                $classToken = $tokens[$lookahead];
+
+                if (is_array($classToken) && $classToken[0] === T_STRING) {
+                    $className = $classToken[1];
+                    break 2;
+                }
+            }
+        }
+
+        if (!is_string($className) || $className === '') {
+            return null;
+        }
+
+        return $namespace !== ''
+            ? $namespace . '\\' . $className
+            : $className;
+    }
+
+    private function collectComponentClassesFromHierarchy(array $hierarchy): array
+    {
+        $componentClasses = [];
+
+        foreach ($hierarchy as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $componentClasses = [
+                ...$componentClasses,
+                ...$this->collectComponentClassesFromComponents($item['components'] ?? []),
+                ...$this->collectComponentClassesFromHierarchy(
+                    is_array($item['children'] ?? null) ? $item['children'] : []
+                ),
+            ];
+        }
+
+        return array_values(array_unique($componentClasses));
+    }
+
+    private function collectComponentClassesFromComponents(mixed $components): array
+    {
+        if (!is_array($components)) {
+            return [];
+        }
+
+        $componentClasses = [];
+
+        foreach ($components as $component) {
+            if (!is_array($component)) {
+                continue;
+            }
+
+            $componentClass = $component['class'] ?? null;
+
+            if (is_string($componentClass) && $componentClass !== '') {
+                $componentClasses[] = $componentClass;
+            }
+        }
+
+        return array_values(array_unique($componentClasses));
+    }
+
+    private function loadComponentDefinitionsInIsolatedProcess(array $candidateClasses, array $item): array
+    {
+        $candidateClasses = array_values(array_unique(array_filter(
+            $candidateClasses,
+            static fn(mixed $class): bool => is_string($class) && $class !== '',
+        )));
+
+        if ($candidateClasses === []) {
+            return [];
+        }
+
+        $autoloadPath = Path::join($this->projectDirectory, 'vendor', 'autoload.php');
+
+        if (!is_file($autoloadPath)) {
+            return array_map(
+                fn(string $componentClass): array => [
+                    'class' => $componentClass,
+                    'label' => $this->resolveClassName($componentClass, $componentClass),
+                    'data' => [],
+                ],
+                $candidateClasses,
+            );
+        }
+
+        $script = <<<'PHP'
+$autoloadPath = $argv[1] ?? '';
+$candidateClasses = json_decode($argv[2] ?? '[]', true);
+$item = json_decode($argv[3] ?? '[]', true);
+
+function normalize_editor_value(mixed $value): mixed
+{
+    if (is_array($value)) {
+        $normalized = [];
+
+        foreach ($value as $key => $item) {
+            $normalized[$key] = normalize_editor_value($item);
+        }
+
+        return $normalized;
+    }
+
+    if ($value instanceof UnitEnum) {
+        return $value instanceof BackedEnum ? $value->value : $value->name;
+    }
+
+    if (!is_object($value)) {
+        return $value;
+    }
+
+    if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
+        return [
+            'x' => normalize_editor_value($value->getX()),
+            'y' => normalize_editor_value($value->getY()),
+        ];
+    }
+
+    if (method_exists($value, 'getName')) {
+        try {
+            return $value->getName();
+        } catch (Throwable) {
+        }
+    }
+
+    if (method_exists($value, '__serialize')) {
+        try {
+            $serialized = $value->__serialize();
+
+            return is_array($serialized)
+                ? normalize_editor_value($serialized)
+                : normalize_editor_value((array) $serialized);
+        } catch (Throwable) {
+        }
+    }
+
+    if ($value instanceof Stringable) {
+        return (string) $value;
+    }
+
+    return get_class($value);
+}
+
+function build_vector(mixed $value, array $default = ['x' => 0, 'y' => 0]): ?object
+{
+    if (!class_exists('\Sendama\Engine\Core\Vector2')) {
+        return null;
+    }
+
+    $vectorValue = is_array($value) ? $value : $default;
+
+    return new \Sendama\Engine\Core\Vector2(
+        (int) ($vectorValue['x'] ?? $default['x']),
+        (int) ($vectorValue['y'] ?? $default['y']),
+    );
+}
+
+function build_dummy_game_object(array $item): ?object
+{
+    if (!class_exists('\Sendama\Engine\Core\GameObject')) {
+        return null;
+    }
+
+    $tag = is_string($item['tag'] ?? null) && $item['tag'] !== 'None'
+        ? $item['tag']
+        : null;
+
+    return new \Sendama\Engine\Core\GameObject(
+        is_string($item['name'] ?? null) ? $item['name'] : 'GameObject',
+        $tag,
+        build_vector($item['position'] ?? null) ?? new \Sendama\Engine\Core\Vector2(),
+        build_vector($item['rotation'] ?? null) ?? new \Sendama\Engine\Core\Vector2(),
+        build_vector($item['scale'] ?? ['x' => 1, 'y' => 1], ['x' => 1, 'y' => 1]) ?? new \Sendama\Engine\Core\Vector2(1, 1),
+        null,
+    );
+}
+
+function extract_component_serializable_data(object $component): array
+{
+    $serializedData = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        try {
+            $serializedData[$property->getName()] = $property->getValue($component);
+        } catch (Throwable) {
+            continue;
+        }
+    }
+
+    return $serializedData;
+}
+
+function serialize_component_data(string $componentClass, array $item): ?array
+{
+    if (
+        !class_exists($componentClass)
+        || !class_exists('\Sendama\Engine\Core\Component')
+        || !is_a($componentClass, '\Sendama\Engine\Core\Component', true)
+    ) {
+        return null;
+    }
+
+    try {
+        $reflection = new ReflectionClass($componentClass);
+
+        if ($reflection->isAbstract()) {
+            return null;
+        }
+
+        $gameObject = build_dummy_game_object($item);
+
+        if (!is_object($gameObject)) {
+            return null;
+        }
+
+        $component = new $componentClass($gameObject);
+
+        return normalize_editor_value(extract_component_serializable_data($component));
+    } catch (Throwable) {
+        return null;
+    }
+}
+
+function short_class_name(string $classReference): string
+{
+    $segments = explode('\\', ltrim($classReference, '\\'));
+    return end($segments) ?: $classReference;
+}
+
+if (is_file($autoloadPath)) {
+    require $autoloadPath;
+}
+
+$definitions = [];
+
+foreach ((array) $candidateClasses as $candidateClass) {
+    if (!is_string($candidateClass) || $candidateClass === '') {
+        continue;
+    }
+
+    if (in_array($candidateClass, ['Sendama\Engine\Core\Transform', 'Sendama\Engine\Core\Rendering\Renderer'], true)) {
+        continue;
+    }
+
+    if (
+        !class_exists($candidateClass)
+        || !class_exists('\Sendama\Engine\Core\Component')
+        || !is_a($candidateClass, '\Sendama\Engine\Core\Component', true)
+    ) {
+        continue;
+    }
+
+    try {
+        $reflection = new ReflectionClass($candidateClass);
+
+        if ($reflection->isAbstract()) {
+            continue;
+        }
+    } catch (Throwable) {
+        continue;
+    }
+
+    $definitions[] = [
+        'class' => $candidateClass,
+        'label' => short_class_name($candidateClass),
+        'data' => serialize_component_data($candidateClass, is_array($item) ? $item : []) ?? [],
+    ];
+}
+
+echo json_encode($definitions, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+PHP;
+
+        $command = [
+            PHP_BINARY,
+            '-d',
+            'display_errors=stderr',
+            '-r',
+            $script,
+            $autoloadPath,
+            json_encode($candidateClasses, JSON_UNESCAPED_SLASHES) ?: '[]',
+            json_encode($item, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}',
+        ];
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptors, $pipes, $this->projectDirectory);
+
+        if (!is_resource($process)) {
+            return [];
+        }
+
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0 || !is_string($stdout)) {
+            return [];
+        }
+
+        $definitions = json_decode($stdout, true);
+
+        return is_array($definitions) ? $definitions : [];
+    }
+
+    private function buildUniqueComponentMenuLabel(string $baseLabel, string $componentClass, array &$usedLabels): string
+    {
+        if (!isset($usedLabels[$baseLabel])) {
+            $usedLabels[$baseLabel] = true;
+            return $baseLabel;
+        }
+
+        $uniqueLabel = $baseLabel . ' (' . ltrim($componentClass, '\\') . ')';
+        $usedLabels[$uniqueLabel] = true;
+
+        return $uniqueLabel;
+    }
+
+    private function appendComponentToInspectionTarget(array $componentDefinition): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !is_string($this->inspectionTarget['path'] ?? null)
+            || !is_array($this->inspectionTarget['value'] ?? null)
+        ) {
+            return;
+        }
+
+        $componentClass = is_string($componentDefinition['class'] ?? null)
+            ? $componentDefinition['class']
+            : null;
+
+        if ($componentClass === null || $componentClass === '') {
+            return;
+        }
+
+        $inspectionValue = $this->inspectionTarget['value'];
+        $inspectionValue['components'] = is_array($inspectionValue['components'] ?? null)
+            ? array_values($inspectionValue['components'])
+            : [];
+
+        $componentEntry = ['class' => $componentClass];
+
+        if (array_key_exists('data', $componentDefinition) && is_array($componentDefinition['data'])) {
+            $componentEntry['data'] = $componentDefinition['data'];
+        }
+
+        $inspectionValue['components'][] = $componentEntry;
+        $updatedTarget = $this->inspectionTarget;
+        $updatedTarget['value'] = $inspectionValue;
+        $this->inspectTarget($updatedTarget);
+        $this->pendingHierarchyMutation = [
+            'path' => $updatedTarget['path'],
+            'value' => $inspectionValue,
+        ];
+    }
+
+    private function getSelectedControlMetadata(?InputControl $control): array
+    {
+        if (!$control instanceof InputControl) {
+            return [];
+        }
+
+        return $this->controlMetadata[spl_object_id($control)] ?? [];
+    }
+
+    private function isSelectedComponentHeader(?InputControl $control): bool
+    {
+        if (!$control instanceof SectionControl) {
+            return false;
+        }
+
+        $metadata = $this->getSelectedControlMetadata($control);
+
+        return ($metadata['kind'] ?? null) === 'component_header'
+            && is_int($metadata['componentIndex'] ?? null);
+    }
+
+    private function handleComponentMoveModeToggle(InputControl $selectedControl): void
+    {
+        if (!$this->isSelectedComponentHeader($selectedControl)) {
+            $this->isComponentMoveModeActive = false;
+            return;
+        }
+
+        $this->isComponentMoveModeActive = !$this->isComponentMoveModeActive;
+    }
+
+    private function showDeleteComponentModal(InputControl $selectedControl): void
+    {
+        $metadata = $this->getSelectedControlMetadata($selectedControl);
+        $componentIndex = $metadata['componentIndex'] ?? null;
+
+        if (!is_int($componentIndex)) {
+            return;
+        }
+
+        $inspectionValue = is_array($this->inspectionTarget['value'] ?? null)
+            ? $this->inspectionTarget['value']
+            : [];
+        $components = is_array($inspectionValue['components'] ?? null)
+            ? array_values($inspectionValue['components'])
+            : [];
+        $component = $components[$componentIndex] ?? null;
+
+        if (!is_array($component)) {
+            return;
+        }
+
+        $componentName = $this->resolveClassName($component['class'] ?? null, 'this component');
+        $this->pendingComponentDeletionIndex = $componentIndex;
+        $this->isComponentMoveModeActive = false;
+        $this->deleteComponentModal->show(
+            ['Delete', 'Cancel'],
+            1,
+            'Remove ' . $componentName . ' from this object?'
+        );
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
+    private function removeComponentAtIndex(int $componentIndex): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !is_string($this->inspectionTarget['path'] ?? null)
+            || !is_array($this->inspectionTarget['value'] ?? null)
+        ) {
+            return;
+        }
+
+        $inspectionValue = $this->inspectionTarget['value'];
+        $components = is_array($inspectionValue['components'] ?? null)
+            ? array_values($inspectionValue['components'])
+            : [];
+
+        if (!array_key_exists($componentIndex, $components)) {
+            return;
+        }
+
+        array_splice($components, $componentIndex, 1);
+        $inspectionValue['components'] = array_values($components);
+
+        $nextComponentIndex = $components === []
+            ? null
+            : min($componentIndex, count($components) - 1);
+
+        $this->rebuildHierarchyInspection($inspectionValue, $nextComponentIndex);
+    }
+
+    private function moveSelectedComponent(int $direction): void
+    {
+        $selectedControl = $this->getSelectedControl();
+        $metadata = $this->getSelectedControlMetadata($selectedControl);
+        $componentIndex = $metadata['componentIndex'] ?? null;
+
+        if (
+            !is_int($componentIndex)
+            || !in_array($direction, [-1, 1], true)
+            || !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !is_array($this->inspectionTarget['value'] ?? null)
+        ) {
+            return;
+        }
+
+        $inspectionValue = $this->inspectionTarget['value'];
+        $components = is_array($inspectionValue['components'] ?? null)
+            ? array_values($inspectionValue['components'])
+            : [];
+        $componentCount = count($components);
+
+        if ($componentCount < 2 || !array_key_exists($componentIndex, $components)) {
+            return;
+        }
+
+        $targetIndex = ($componentIndex + $direction + $componentCount) % $componentCount;
+        $component = $components[$componentIndex];
+        array_splice($components, $componentIndex, 1);
+        array_splice($components, $targetIndex, 0, [$component]);
+        $inspectionValue['components'] = array_values($components);
+
+        $this->rebuildHierarchyInspection($inspectionValue, $targetIndex, true);
+    }
+
+    private function rebuildHierarchyInspection(
+        array $inspectionValue,
+        ?int $focusComponentIndex = null,
+        bool $preserveMoveMode = false,
+    ): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !is_string($this->inspectionTarget['path'] ?? null)
+        ) {
+            return;
+        }
+
+        $updatedTarget = $this->inspectionTarget;
+        $updatedTarget['value'] = $inspectionValue;
+        $updatedTarget['name'] = $inspectionValue['name'] ?? ($updatedTarget['name'] ?? 'Unnamed Object');
+        $updatedTarget['type'] = $this->resolveDisplayType($updatedTarget, $inspectionValue);
+        $this->inspectTarget($updatedTarget);
+
+        if (is_int($focusComponentIndex)) {
+            $this->focusComponentHeaderByIndex($focusComponentIndex);
+        }
+
+        $this->isComponentMoveModeActive = $preserveMoveMode && is_int($focusComponentIndex);
+        $this->pendingHierarchyMutation = [
+            'path' => $updatedTarget['path'],
+            'value' => $inspectionValue,
+        ];
+    }
+
+    private function focusComponentHeaderByIndex(int $componentIndex): void
+    {
+        foreach ($this->focusableControls as $index => $control) {
+            if (!$control instanceof InputControl) {
+                continue;
+            }
+
+            $metadata = $this->getSelectedControlMetadata($control);
+
+            if (
+                ($metadata['kind'] ?? null) === 'component_header'
+                && ($metadata['componentIndex'] ?? null) === $componentIndex
+            ) {
+                $this->selectedControlIndex = $index;
+                $this->applyControlSelection();
+                $this->refreshContent();
+                return;
+            }
+        }
     }
 
     private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array

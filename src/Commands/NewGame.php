@@ -4,6 +4,7 @@ namespace Sendama\Console\Commands;
 
 use RuntimeException;
 use Sendama\Console\Util\Path;
+use Sendama\Console\Util\ProjectNormalizer;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -137,12 +138,12 @@ class NewGame extends Command
   {
     $mainFilename = strtolower(filter_string($projectName)) . '.php';
 
-    return json_encode([
-      'name' => $projectName,
-      'description' => 'A 2D ASCII terminal game.',
-      'version' => '0.0.1',
-      'main' => $mainFilename,
-    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    return ProjectNormalizer::buildSendamaConfiguration(
+      projectName: $projectName,
+      description: 'A 2D ASCII terminal game.',
+      version: '0.0.1',
+      mainFile: $mainFilename,
+    );
   }
 
   /**
@@ -171,7 +172,7 @@ class NewGame extends Command
       ],
       'autoload' => [
         'psr-4' => [
-          $namespace => 'assets/'
+          $namespace => 'Assets/'
         ]
       ],
       'config' => [
@@ -233,18 +234,13 @@ class NewGame extends Command
       throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
     }
 
+    $this->createConfigurationJsonFile($projectName);
+
     $this->output->writeln('<comment>Creating package configuration</comment>', OutputInterface::VERBOSITY_VERBOSE);
     $projectName = strtolower(filter_string($projectName));
     $packageName = $this->getPackageName("sendama-engine/$projectName");
 
-    $targetConfigFilename = Path::join($this->targetDirectory, 'config', 'input.php');
-    // Get the config/input.php template
-    $sourceInputConfigFilename = Path::join(dirname(__DIR__, 2), 'templates', 'config', 'input.php');
-    $inputConfigContents = file_get_contents($sourceInputConfigFilename);
-    $inputConfigContents = str_replace('%PACKAGE_NAME%', $packageName, $inputConfigContents);
-    if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
-    }
+    $this->createInputConfigurationFile($packageName);
 
     $targetConfigFilename = Path::join($this->targetDirectory, 'composer.json');
     if (false === file_put_contents($targetConfigFilename, $this->getComposerConfiguration($packageName))) {
@@ -253,6 +249,35 @@ class NewGame extends Command
 
     if ($this->confirm('<info>?</info> Would you like to install the dependencies? <fg=gray>(Y/n)</> ', 'y') ) {
       $this->installDependencies($this->targetDirectory);
+    }
+  }
+
+  private function createConfigurationJsonFile(string $projectName): void
+  {
+    $targetConfigurationFilename = Path::join($this->targetDirectory, 'configuration.json');
+    $mainFilename = strtolower(filter_string($projectName)) . '.php';
+
+    if (false === file_put_contents(
+      $targetConfigurationFilename,
+      ProjectNormalizer::buildConfigurationJson(
+        projectName: $projectName,
+        description: 'A simple ASCII terminal game',
+        version: '0.0.1',
+        mainFile: $mainFilename,
+      )
+    )) {
+      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigurationFilename));
+    }
+  }
+
+  private function createInputConfigurationFile(string $packageName): void
+  {
+    $targetConfigFilename = Path::join($this->targetDirectory, 'config', 'input.php');
+    $inputConfigContents = ProjectNormalizer::buildInputConfiguration();
+    $inputConfigContents = str_replace('%PACKAGE_NAME%', $packageName, $inputConfigContents);
+
+    if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
+      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
     }
   }
 
@@ -291,7 +316,7 @@ class NewGame extends Command
     $this->output->writeln('<comment>Creating splash screen texture file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
     $targetSplashScreenTextureFilename = Path::join($assetsDirectory, 'splash.texture');
 
-    ## Load the splash screen texture from assets/splash.texture
+    ## Load the splash screen texture from Assets/splash.texture
     $sourceSplashScreenTextureFilename = Path::join(dirname(__DIR__, 2), 'templates', 'assets', 'splash.texture');
     if (! copy($sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename) ) {
       throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename));
@@ -412,7 +437,7 @@ class NewGame extends Command
    */
   private function createAssetsDirectory(): string
   {
-    $assetsDirectory = Path::join($this->targetDirectory, 'assets');
+    $assetsDirectory = Path::join($this->targetDirectory, 'Assets');
     if (file_exists($assetsDirectory)) {
       return $assetsDirectory;
     }

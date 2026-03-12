@@ -110,7 +110,7 @@ final class Path
    */
   public static function getAssetsDirectory(): string
   {
-    return self::join(self::getProjectRootPath(), 'assets');
+    return self::resolveAssetsDirectory(self::getProjectRootPath());
   }
 
   /**
@@ -120,7 +120,41 @@ final class Path
    */
   public static function getWorkingDirectoryAssetsPath(): string
   {
-    return self::join(getcwd(), 'assets');
+    return self::resolveAssetsDirectory(getcwd() ?: self::$workingDirectory ?: '.');
+  }
+
+  /**
+   * Returns the canonical assets directory for the given root, preferring `Assets`
+   * while remaining compatible with older lowercase `assets` projects.
+   *
+   * @param string $rootDirectory
+   * @return string
+   */
+  public static function resolveAssetsDirectory(string $rootDirectory): string
+  {
+    $canonicalAssetsDirectory = self::join($rootDirectory, 'Assets');
+    $legacyAssetsDirectory = self::join($rootDirectory, 'assets');
+    $canonicalExists = is_dir($canonicalAssetsDirectory);
+    $legacyExists = is_dir($legacyAssetsDirectory);
+
+    if ($canonicalExists && $legacyExists) {
+      $canonicalEntries = scandir($canonicalAssetsDirectory);
+      $legacyEntries = scandir($legacyAssetsDirectory);
+      $canonicalHasContent = $canonicalEntries !== false && array_diff($canonicalEntries, ['.', '..']) !== [];
+      $legacyHasContent = $legacyEntries !== false && array_diff($legacyEntries, ['.', '..']) !== [];
+
+      if (!$canonicalHasContent && $legacyHasContent) {
+        return $legacyAssetsDirectory;
+      }
+
+      return $canonicalAssetsDirectory;
+    }
+
+    if ($canonicalExists || !$legacyExists) {
+      return $canonicalAssetsDirectory;
+    }
+
+    return $legacyAssetsDirectory;
   }
 
   /**
