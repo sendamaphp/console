@@ -19,6 +19,7 @@ class FileDialogModal extends Widget
     protected array $visibleEntries = [];
     protected array $expandedPaths = [];
     protected ?string $selectedPath = null;
+    protected array $allowedExtensions = [];
 
     public function __construct()
     {
@@ -31,9 +32,14 @@ class FileDialogModal extends Widget
         );
     }
 
-    public function show(string $workingDirectory, ?string $selectedRelativePath = null): void
+    public function show(
+        string $workingDirectory,
+        ?string $selectedRelativePath = null,
+        array $allowedExtensions = [],
+    ): void
     {
         $this->workingDirectory = Path::normalize($workingDirectory);
+        $this->allowedExtensions = $this->normalizeAllowedExtensions($allowedExtensions);
         $this->entryTree = $this->buildEntryTree($this->workingDirectory);
         $this->expandedPaths = [];
         $this->selectedPath = null;
@@ -229,13 +235,26 @@ class FileDialogModal extends Widget
 
             $entryPath = Path::join($directory, $entryName);
             $isDirectory = is_dir($entryPath);
+            $children = $isDirectory ? $this->buildEntryTree($entryPath) : [];
+
+            if (!$isDirectory && !$this->matchesAllowedExtension($entryName)) {
+                continue;
+            }
+
+            if (
+                $isDirectory
+                && $this->allowedExtensions !== []
+                && $children === []
+            ) {
+                continue;
+            }
 
             $tree[] = [
                 'name' => $entryName,
                 'absolutePath' => $entryPath,
                 'relativePath' => $this->buildRelativePath($entryPath),
                 'isDirectory' => $isDirectory,
-                'children' => $isDirectory ? $this->buildEntryTree($entryPath) : [],
+                'children' => $children,
             ];
         }
 
@@ -248,6 +267,25 @@ class FileDialogModal extends Widget
         });
 
         return $tree;
+    }
+
+    private function normalizeAllowedExtensions(array $allowedExtensions): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            static fn(string $extension): string => ltrim(strtolower($extension), '.'),
+            array_filter($allowedExtensions, 'is_string'),
+        ))));
+    }
+
+    private function matchesAllowedExtension(string $entryName): bool
+    {
+        if ($this->allowedExtensions === []) {
+            return true;
+        }
+
+        $extension = strtolower((string) pathinfo($entryName, PATHINFO_EXTENSION));
+
+        return $extension !== '' && in_array($extension, $this->allowedExtensions, true);
     }
 
     private function buildRelativePath(string $absolutePath): string

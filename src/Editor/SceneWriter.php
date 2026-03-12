@@ -1,0 +1,284 @@
+<?php
+
+namespace Sendama\Console\Editor;
+
+use Sendama\Console\Editor\DTOs\SceneDTO;
+
+final class SceneWriter
+{
+    public function __construct(
+        private readonly SceneSourceParser $sourceParser = new SceneSourceParser(),
+    )
+    {
+    }
+
+    public function save(SceneDTO $scene): bool
+    {
+        if (!is_string($scene->sourcePath) || $scene->sourcePath === '') {
+            return false;
+        }
+
+        $serializedScene = $this->serialize($scene);
+
+        return file_put_contents($scene->sourcePath, $serializedScene) !== false;
+    }
+
+    public function serialize(SceneDTO $scene): string
+    {
+        $sceneData = $this->snapshot($scene);
+        $parsedSource = $this->parseSceneSource($scene);
+        $originalSceneData = is_array($scene->sourceData) ? $scene->sourceData : [];
+
+        if ($parsedSource !== null && $originalSceneData !== []) {
+            $mergedSource = $this->renderMergedValue(
+                $sceneData,
+                $originalSceneData,
+                $parsedSource['root']
+            );
+
+            return $parsedSource['prefix'] . $mergedSource . $parsedSource['suffix'];
+        }
+
+        return "<?php\n\nreturn " . $this->exportValue($sceneData) . ";\n";
+    }
+
+    public function snapshot(SceneDTO $scene): array
+    {
+        $sceneData = is_array($scene->rawData) ? $scene->rawData : [];
+        $sceneData['width'] = $scene->width;
+        $sceneData['height'] = $scene->height;
+        $sceneData['environmentTileMapPath'] = $scene->environmentTileMapPath;
+        $sceneData['hierarchy'] = $scene->hierarchy;
+
+        unset($sceneData['isDirty']);
+
+        return $sceneData;
+    }
+
+    private function parseSceneSource(SceneDTO $scene): ?array
+    {
+        if (!is_string($scene->sourcePath) || $scene->sourcePath === '' || !is_file($scene->sourcePath)) {
+            return null;
+        }
+
+        return $this->sourceParser->parseFile($scene->sourcePath);
+    }
+
+    private function renderMergedValue(
+        mixed $currentValue,
+        mixed $originalValue,
+        array $sourceNode,
+        int $depth = 0,
+    ): string {
+        if ($currentValue === $originalValue && isset($sourceNode['source'])) {
+            return $sourceNode['source'];
+        }
+
+        if (
+            is_array($currentValue)
+            && is_array($originalValue)
+            && ($sourceNode['kind'] ?? null) === 'array'
+            && $this->canRenderMergedArray($currentValue, $originalValue, $sourceNode)
+        ) {
+            return $this->renderMergedArray($currentValue, $originalValue, $sourceNode, $depth);
+        }
+
+        return $this->exportValue($currentValue, $depth);
+    }
+
+    private function canRenderMergedArray(array $currentValue, array $originalValue, array $sourceNode): bool
+    {
+        if (($sourceNode['kind'] ?? null) !== 'array') {
+            return false;
+        }
+
+        if (array_is_list($currentValue) !== array_is_list($originalValue)) {
+            return false;
+        }
+
+        if (array_is_list($currentValue)) {
+            return true;
+        }
+
+        return true;
+    }
+
+    private function renderMergedArray(
+        array $currentValue,
+        array $originalValue,
+        array $sourceNode,
+        int $depth,
+    ): string {
+        if ($currentValue === []) {
+            return '[]';
+        }
+
+        $indent = str_repeat('    ', $depth);
+        $childIndent = str_repeat('    ', $depth + 1);
+        $isList = array_is_list($currentValue);
+        $lines = [];
+
+        if ($isList) {
+            foreach (array_keys($currentValue) as $index) {
+                $itemNode = $sourceNode['items'][$index] ?? null;
+
+                if (
+                    is_array($itemNode)
+                    && isset($itemNode['node'])
+                    && array_key_exists($index, $originalValue)
+                ) {
+                    $lines[] = $childIndent
+                        . $this->renderMergedValue(
+                            $currentValue[$index],
+                            $originalValue[$index],
+                            $itemNode['node'],
+                            $depth + 1
+                        )
+                        . ',';
+
+                    continue;
+                }
+
+                $lines[] = $childIndent
+                    . $this->exportValue($currentValue[$index], $depth + 1)
+                    . ',';
+            }
+
+            return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+        }
+
+        $renderedKeys = [];
+
+        foreach (($sourceNode['items'] ?? []) as $itemNode) {
+            if (!is_array($itemNode) || !isset($itemNode['node'])) {
+                return $this->exportArray($currentValue, $depth);
+            }
+
+            $resolvedKey = $this->resolveSourceArrayKey($itemNode['keySource'] ?? null);
+
+            if (!is_int($resolvedKey) && !is_string($resolvedKey)) {
+                return $this->exportArray($currentValue, $depth);
+            }
+
+            $valuePrefix = $this->renderArrayKeyPrefix($resolvedKey, $itemNode['keySource'] ?? null);
+
+            if (array_key_exists($resolvedKey, $currentValue)) {
+                $renderedKeys[$resolvedKey] = true;
+                $value = $currentValue[$resolvedKey];
+                $originalItemValue = array_key_exists($resolvedKey, $originalValue)
+                    ? $originalValue[$resolvedKey]
+                    : null;
+
+                $renderedValue = array_key_exists($resolvedKey, $originalValue)
+                    ? $this->renderMergedValue($value, $originalItemValue, $itemNode['node'], $depth + 1)
+                    : $this->exportValue($value, $depth + 1);
+
+                $lines[] = $childIndent . $valuePrefix . $renderedValue . ',';
+                continue;
+            }
+
+                $lines[] = $childIndent . $valuePrefix . $itemNode['node']['source'] . ',';
+        }
+
+        foreach ($currentValue as $key => $value) {
+            if (isset($renderedKeys[$key])) {
+                continue;
+            }
+
+            $lines[] = $childIndent
+                . $this->renderArrayKeyPrefix($key, null)
+                . $this->exportValue($value, $depth + 1, is_string($key) ? $key : null)
+                . ',';
+        }
+
+        return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+    }
+
+    private function renderArrayKeyPrefix(int|string $key, ?string $keySource): string
+    {
+        if (is_string($keySource) && trim($keySource) !== '') {
+            return rtrim($keySource) . ' => ';
+        }
+
+        return var_export($key, true) . ' => ';
+    }
+
+    private function resolveSourceArrayKey(?string $keySource): int|string|null
+    {
+        if (!is_string($keySource)) {
+            return null;
+        }
+
+        $trimmedKey = trim($keySource);
+
+        if ($trimmedKey === '') {
+            return null;
+        }
+
+        if (preg_match('/^([\'"])(.*)\\1$/s', $trimmedKey, $matches) === 1) {
+            return stripcslashes($matches[2]);
+        }
+
+        if (preg_match('/^-?\\d+$/', $trimmedKey) === 1) {
+            return (int) $trimmedKey;
+        }
+
+        return $trimmedKey;
+    }
+
+    private function exportValue(mixed $value, int $depth = 0, ?string $contextKey = null): string
+    {
+        if (is_array($value)) {
+            return $this->exportArray($value, $depth);
+        }
+
+        if (is_string($value) && in_array($contextKey, ['type', 'class'], true)) {
+            return $this->exportClassReference($value);
+        }
+
+        return var_export($value, true);
+    }
+
+    private function exportArray(array $value, int $depth): string
+    {
+        if ($value === []) {
+            return '[]';
+        }
+
+        $indent = str_repeat('    ', $depth);
+        $childIndent = str_repeat('    ', $depth + 1);
+        $lines = [];
+
+        foreach ($value as $key => $item) {
+            $prefix = array_is_list($value)
+                ? ''
+                : var_export($key, true) . ' => ';
+
+            $lines[] = $childIndent
+                . $prefix
+                . $this->exportValue($item, $depth + 1, is_string($key) ? $key : null)
+                . ',';
+        }
+
+        return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+    }
+
+    private function exportClassReference(string $value): string
+    {
+        $normalizedValue = trim($value);
+
+        if ($normalizedValue === '') {
+            return var_export($value, true);
+        }
+
+        if (preg_match('/^[A-Za-z_\\\\][A-Za-z0-9_\\\\]*::class$/', $normalizedValue) === 1) {
+            return $normalizedValue;
+        }
+
+        if (preg_match('/^[A-Za-z_\\\\][A-Za-z0-9_\\\\]*$/', $normalizedValue) === 1) {
+            return '\\' . ltrim($normalizedValue, '\\') . '::class';
+        }
+
+        return var_export($value, true);
+    }
+}

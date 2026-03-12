@@ -130,6 +130,7 @@ final class Editor implements ObservableInterface
     protected PanelListModal $panelListModal;
     protected bool $shouldRefreshBackgroundUnderModal = false;
     protected bool $didRenderOverlayLastFrame = false;
+    protected SceneWriter $sceneWriter;
 
     /**
      * @param string $name
@@ -152,6 +153,7 @@ final class Editor implements ObservableInterface
             $this->refreshTerminalSize(force: true);
             $this->initializeManagers();
             $this->initializeConsole();
+            $this->sceneWriter = new SceneWriter();
             $this->initializeWidgets();
             $this->initializeEditorStates();
             $this->splashScreen = new SplashScreen(
@@ -372,6 +374,13 @@ final class Editor implements ObservableInterface
             $panel->update();
         }
 
+        $this->synchronizeAssetDeletions();
+        $this->synchronizeHierarchyDeletions();
+        $this->synchronizeHierarchyAdditions();
+        $this->synchronizeMainPanelSceneChanges();
+        $this->synchronizeMainPanelAssetChanges();
+        $this->synchronizeInspectorSceneChanges();
+        $this->synchronizeInspectorAssetChanges();
         $this->synchronizeInspectorPanel();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
@@ -577,15 +586,26 @@ final class Editor implements ObservableInterface
             sceneName: $this->loadedScene?->name ?? 'Scene',
             isSceneDirty: $this->loadedScene?->isDirty ?? false,
             hierarchy: $this->loadedScene?->hierarchy ?? [],
+            sceneWidth: $this->loadedScene?->width ?? DEFAULT_TERMINAL_WIDTH,
+            sceneHeight: $this->loadedScene?->height ?? DEFAULT_TERMINAL_HEIGHT,
+            environmentTileMapPath: $this->loadedScene?->environmentTileMapPath ?? 'Maps/example',
         );
         $this->assetsPanel = new AssetsPanel(
             assetsDirectoryPath: $this->assetsDirectoryPath,
         );
-        $this->mainPanel = new MainPanel();
+        $this->mainPanel = new MainPanel(
+            sceneObjects: $this->loadedScene?->hierarchy ?? [],
+            workingDirectory: $this->workingDirectory,
+            sceneWidth: $this->loadedScene?->width ?? DEFAULT_TERMINAL_WIDTH,
+            sceneHeight: $this->loadedScene?->height ?? DEFAULT_TERMINAL_HEIGHT,
+            environmentTileMapPath: $this->loadedScene?->environmentTileMapPath ?? 'Maps/example',
+        );
         $this->consolePanel = new ConsolePanel(
             logFilePath: Path::join($this->workingDirectory, 'logs', 'debug.log'),
         );
-        $this->inspectorPanel = new InspectorPanel();
+        $this->inspectorPanel = new InspectorPanel(
+            workingDirectory: $this->workingDirectory,
+        );
 
         $this->panels->add($this->hierarchyPanel);
         $this->panels->add($this->assetsPanel);
@@ -642,6 +662,16 @@ final class Editor implements ObservableInterface
 
     private function handlePanelKeyboardWorkflow(): void
     {
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::CTRL_C)) {
+            $this->stop();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::CTRL_S)) {
+            $this->saveLoadedScene();
+            return;
+        }
+
         if (Input::isKeyDown(IO\Enumerations\KeyCode::PLAY_TOGGLE, false)) {
             $this->togglePlayMode();
             return;
@@ -658,6 +688,18 @@ final class Editor implements ObservableInterface
         }
 
         if ($this->focusedPanel?->hasActiveModal()) {
+            return;
+        }
+
+        if (Input::getCurrentInput() === 'A' && !($this->editorState instanceof PlayState)) {
+            if ($this->focusedPanel === $this->mainPanel && $this->mainPanel->beginSpriteCreateWorkflow()) {
+                $this->shouldRefreshBackgroundUnderModal = true;
+                return;
+            }
+
+            $this->setFocusedPanel($this->hierarchyPanel);
+            $this->hierarchyPanel->beginAddWorkflow();
+            $this->shouldRefreshBackgroundUnderModal = true;
             return;
         }
 
@@ -877,13 +919,753 @@ final class Editor implements ObservableInterface
     private function synchronizeInspectorPanel(): void
     {
         $selectedItem = $this->hierarchyPanel->consumeInspectionRequest()
-            ?? $this->assetsPanel->consumeInspectionRequest();
+            ?? $this->assetsPanel->consumeInspectionRequest()
+            ?? $this->mainPanel->consumeInspectionRequest();
 
         if ($selectedItem === null) {
             return;
         }
 
+        if (($selectedItem['context'] ?? null) === 'hierarchy' && is_string($selectedItem['path'] ?? null)) {
+            $this->hierarchyPanel->selectPath($selectedItem['path']);
+            $this->mainPanel->selectSceneObject($selectedItem['path']);
+        } elseif (($selectedItem['context'] ?? null) === 'scene') {
+            $this->hierarchyPanel->selectPath('scene');
+        } elseif (($selectedItem['context'] ?? null) === 'asset') {
+            $this->mainPanel->loadSpriteAsset(is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null);
+        }
+
         $this->inspectorPanel->inspectTarget($selectedItem);
+    }
+
+    private function synchronizeInspectorSceneChanges(): void
+    {
+        $mutation = $this->inspectorPanel->consumeHierarchyMutation();
+
+        if (
+            !is_array($mutation)
+            || !isset($mutation['path'], $mutation['value'])
+            || !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_string($mutation['path'])
+            || !is_array($mutation['value'])
+        ) {
+            return;
+        }
+
+        if ($mutation['path'] === 'scene') {
+            if (!$this->applySceneMutation($mutation['value'])) {
+                return;
+            }
+
+            $this->loadedScene->isDirty = true;
+            $this->syncScenePanels(true);
+            $this->inspectorPanel->syncSceneTarget($this->buildSceneInspectionValue());
+            return;
+        }
+
+        if (!$this->applyHierarchyMutation($mutation['path'], $mutation['value'])) {
+            return;
+        }
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->hierarchyPanel->selectPath($mutation['path']);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObject($mutation['path']);
+        $this->inspectorPanel->syncHierarchyTarget($mutation['path'], $mutation['value']);
+    }
+
+    private function synchronizeInspectorAssetChanges(): void
+    {
+        $mutation = $this->inspectorPanel->consumeAssetMutation();
+
+        if (
+            !is_array($mutation)
+            || !is_string($mutation['path'] ?? null)
+            || $mutation['path'] === ''
+            || !is_string($mutation['name'] ?? null)
+        ) {
+            return;
+        }
+
+        $renamedAsset = $this->renameAssetAndCascadeReferences(
+            $mutation['path'],
+            $mutation['relativePath'] ?? null,
+            $mutation['name'],
+        );
+
+        if ($renamedAsset === null) {
+            if (is_file($mutation['path'])) {
+                $this->inspectorPanel->syncAssetTarget([
+                    'name' => basename($mutation['path']),
+                    'path' => $mutation['path'],
+                    'relativePath' => is_string($mutation['relativePath'] ?? null)
+                        ? $mutation['relativePath']
+                        : basename($mutation['path']),
+                    'isDirectory' => false,
+                    'children' => [],
+                ]);
+            }
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($renamedAsset['path']);
+        $assetInspectionTarget = $this->buildAssetInspectionTarget($renamedAsset);
+        $this->inspectorPanel->inspectTarget($assetInspectionTarget);
+        $this->mainPanel->loadSpriteAsset($renamedAsset);
+    }
+
+    private function synchronizeHierarchyAdditions(): void
+    {
+        $newItem = $this->hierarchyPanel->consumeCreationRequest();
+
+        if (!$this->loadedScene instanceof DTOs\SceneDTO || !is_array($newItem) || $newItem === []) {
+            return;
+        }
+
+        $this->loadedScene->hierarchy[] = $newItem;
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $newPath = 'scene.' . (count($this->loadedScene->hierarchy) - 1);
+        $this->hierarchyPanel->selectPath($newPath);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObject($newPath);
+    }
+
+    private function synchronizeHierarchyDeletions(): void
+    {
+        $deletionRequest = $this->hierarchyPanel->consumeDeletionRequest();
+
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($deletionRequest)
+            || !is_string($deletionRequest['path'] ?? null)
+            || $deletionRequest['path'] === ''
+        ) {
+            return;
+        }
+
+        if (!$this->deleteHierarchyNode($deletionRequest['path'])) {
+            return;
+        }
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->inspectorPanel->inspectTarget(null);
+    }
+
+    private function synchronizeAssetDeletions(): void
+    {
+        $deletionRequest = $this->assetsPanel->consumeDeletionRequest();
+
+        if (
+            !is_array($deletionRequest)
+            || !is_string($deletionRequest['assetPath'] ?? null)
+            || $deletionRequest['assetPath'] === ''
+        ) {
+            return;
+        }
+
+        if (!$this->deleteAssetPath($deletionRequest['assetPath'])) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->inspectorPanel->inspectTarget(null);
+    }
+
+    private function synchronizeMainPanelSceneChanges(): void
+    {
+        $mutation = $this->mainPanel->consumeHierarchyMutation();
+
+        if (
+            !is_array($mutation)
+            || !isset($mutation['path'], $mutation['value'])
+            || !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_string($mutation['path'])
+            || !is_array($mutation['value'])
+        ) {
+            return;
+        }
+
+        if (!$this->applyHierarchyMutation($mutation['path'], $mutation['value'])) {
+            return;
+        }
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->hierarchyPanel->selectPath($mutation['path']);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObject($mutation['path']);
+        $this->inspectorPanel->syncHierarchyTarget($mutation['path'], $mutation['value']);
+    }
+
+    private function synchronizeMainPanelAssetChanges(): void
+    {
+        $assetSyncRequest = $this->mainPanel->consumeAssetSyncRequest();
+
+        if (!is_array($assetSyncRequest)) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+
+        if (is_string($assetSyncRequest['path'] ?? null)) {
+            $this->assetsPanel->selectAssetByAbsolutePath($assetSyncRequest['path']);
+        }
+
+        if (is_array($assetSyncRequest['inspectionTarget'] ?? null)) {
+            $this->inspectorPanel->inspectTarget($assetSyncRequest['inspectionTarget']);
+            return;
+        }
+
+        if (($assetSyncRequest['clearInspection'] ?? false) === true) {
+            $this->inspectorPanel->inspectTarget(null);
+        }
+    }
+
+    private function applyHierarchyMutation(string $path, array $value): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return false;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return false;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return false;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return false;
+            }
+
+            if ($index === $lastIndex) {
+                $nodeArray[$numericSegment] = $value;
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return true;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return false;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return false;
+    }
+
+    private function deleteHierarchyNode(string $path): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return false;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return false;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return false;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return false;
+            }
+
+            if ($index === $lastIndex) {
+                unset($nodeArray[$numericSegment]);
+                $nodeArray = array_values($nodeArray);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return true;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return false;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return false;
+    }
+
+    private function deleteAssetPath(string $path): bool
+    {
+        if (is_file($path) || is_link($path)) {
+            return unlink($path);
+        }
+
+        if (!is_dir($path)) {
+            return false;
+        }
+
+        $entries = scandir($path);
+
+        if ($entries === false) {
+            return false;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $entryPath = Path::join($path, $entry);
+
+            if (!$this->deleteAssetPath($entryPath)) {
+                return false;
+            }
+        }
+
+        return rmdir($path);
+    }
+
+    private function renameAssetAndCascadeReferences(
+        string $currentAbsolutePath,
+        mixed $currentRelativePath,
+        string $requestedName,
+    ): ?array {
+        if (!is_file($currentAbsolutePath)) {
+            return null;
+        }
+
+        $normalizedName = $this->normalizeAssetFileName($requestedName, $currentAbsolutePath);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        $targetAbsolutePath = Path::join(dirname($currentAbsolutePath), $normalizedName);
+
+        if ($targetAbsolutePath !== $currentAbsolutePath) {
+            if (file_exists($targetAbsolutePath)) {
+                $this->consolePanel->append('[ERROR] - Cannot rename asset: target file already exists.');
+                return null;
+            }
+
+            if (!rename($currentAbsolutePath, $targetAbsolutePath)) {
+                $this->consolePanel->append('[ERROR] - Failed to rename asset.');
+                return null;
+            }
+        }
+
+        $oldRelativePath = is_string($currentRelativePath) && $currentRelativePath !== ''
+            ? str_replace('\\', '/', $currentRelativePath)
+            : $this->buildRelativeAssetPath($currentAbsolutePath);
+        $newRelativePath = $this->buildRelativeAssetPath($targetAbsolutePath);
+
+        if ($this->updateSceneAssetReferences($oldRelativePath, $newRelativePath)) {
+            if ($this->loadedScene instanceof DTOs\SceneDTO) {
+                $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+                $this->loadedScene->rawData['environmentTileMapPath'] = $this->loadedScene->environmentTileMapPath;
+                $this->loadedScene->isDirty = true;
+                $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+                $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+                $this->syncScenePanels(true);
+            }
+        }
+
+        return [
+            'name' => basename($targetAbsolutePath),
+            'path' => $targetAbsolutePath,
+            'relativePath' => $newRelativePath,
+            'isDirectory' => false,
+            'children' => [],
+        ];
+    }
+
+    private function normalizeAssetFileName(string $requestedName, string $currentAbsolutePath): string
+    {
+        $trimmedName = trim(str_replace('\\', '/', $requestedName));
+        $trimmedName = basename($trimmedName);
+        $currentExtension = strtolower((string) pathinfo($currentAbsolutePath, PATHINFO_EXTENSION));
+
+        if ($trimmedName === '') {
+            return basename($currentAbsolutePath);
+        }
+
+        $requestedBaseName = (string) pathinfo($trimmedName, PATHINFO_FILENAME);
+
+        if ($requestedBaseName === '') {
+            $requestedBaseName = (string) pathinfo(basename($currentAbsolutePath), PATHINFO_FILENAME);
+        }
+
+        return $currentExtension !== ''
+            ? $requestedBaseName . '.' . $currentExtension
+            : $requestedBaseName;
+    }
+
+    private function buildRelativeAssetPath(string $absolutePath): string
+    {
+        $assetsDirectory = $this->assetsDirectoryPath;
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            return basename($absolutePath);
+        }
+
+        $relativePath = substr($absolutePath, strlen($assetsDirectory));
+
+        return ltrim(str_replace('\\', '/', (string) $relativePath), '/');
+    }
+
+    private function updateSceneAssetReferences(string $oldRelativePath, string $newRelativePath): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $hasChanges = false;
+        $oldWithExtension = str_replace('\\', '/', $oldRelativePath);
+        $newWithExtension = str_replace('\\', '/', $newRelativePath);
+        $oldWithoutExtension = preg_replace('/\.[^.]+$/', '', $oldWithExtension) ?? $oldWithExtension;
+        $newWithoutExtension = preg_replace('/\.[^.]+$/', '', $newWithExtension) ?? $newWithExtension;
+
+        if ($this->loadedScene->environmentTileMapPath === $oldWithExtension) {
+            $this->loadedScene->environmentTileMapPath = $newWithExtension;
+            $hasChanges = true;
+        } elseif ($this->loadedScene->environmentTileMapPath === $oldWithoutExtension) {
+            $this->loadedScene->environmentTileMapPath = $newWithoutExtension;
+            $hasChanges = true;
+        }
+
+        $this->loadedScene->hierarchy = $this->updateHierarchyAssetReferences(
+            $this->loadedScene->hierarchy,
+            $oldWithExtension,
+            $oldWithoutExtension,
+            $newWithExtension,
+            $newWithoutExtension,
+            $hasChanges,
+        );
+
+        return $hasChanges;
+    }
+
+    private function updateHierarchyAssetReferences(
+        array $items,
+        string $oldWithExtension,
+        string $oldWithoutExtension,
+        string $newWithExtension,
+        string $newWithoutExtension,
+        bool &$hasChanges,
+    ): array {
+        foreach ($items as $index => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            if (is_string($item['sprite']['texture']['path'] ?? null)) {
+                if ($item['sprite']['texture']['path'] === $oldWithExtension) {
+                    $items[$index]['sprite']['texture']['path'] = $newWithExtension;
+                    $hasChanges = true;
+                } elseif ($item['sprite']['texture']['path'] === $oldWithoutExtension) {
+                    $items[$index]['sprite']['texture']['path'] = $newWithoutExtension;
+                    $hasChanges = true;
+                }
+            }
+
+            if (is_array($item['children'] ?? null)) {
+                $items[$index]['children'] = $this->updateHierarchyAssetReferences(
+                    $item['children'],
+                    $oldWithExtension,
+                    $oldWithoutExtension,
+                    $newWithExtension,
+                    $newWithoutExtension,
+                    $hasChanges,
+                );
+            }
+        }
+
+        return array_values($items);
+    }
+
+    private function buildAssetInspectionTarget(array $asset): array
+    {
+        return [
+            'context' => 'asset',
+            'name' => $asset['name'] ?? basename((string) ($asset['path'] ?? '')),
+            'type' => ($asset['isDirectory'] ?? false) ? 'Folder' : 'File',
+            'value' => $asset,
+        ];
+    }
+
+    private function saveLoadedScene(): void
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            $this->consolePanel->append('[INFO] - No scene loaded to save.');
+            return;
+        }
+
+        $sceneWasDirty = $this->loadedScene->isDirty;
+        $this->loadedScene->isDirty = false;
+        $originalSourcePath = $this->loadedScene->sourcePath;
+        $targetSourcePath = $this->resolveTargetSceneSourcePath($this->loadedScene);
+
+        $saveSucceeded = is_string($targetSourcePath)
+            && is_string($originalSourcePath)
+            && $targetSourcePath !== ''
+            && $originalSourcePath !== ''
+            && $targetSourcePath !== $originalSourcePath
+            ? $this->saveRenamedScene($this->loadedScene, $targetSourcePath)
+            : $this->sceneWriter->save($this->loadedScene);
+
+        if ($saveSucceeded) {
+            if (
+                is_string($targetSourcePath)
+                && $targetSourcePath !== ''
+                && is_string($originalSourcePath)
+                && $originalSourcePath !== ''
+                && $targetSourcePath !== $originalSourcePath
+            ) {
+                $this->loadedScene->sourcePath = $targetSourcePath;
+                $this->updateEditorSceneReference($originalSourcePath, $targetSourcePath);
+            }
+
+            $snapshot = $this->sceneWriter->snapshot($this->loadedScene);
+            $this->loadedScene->rawData = $snapshot;
+            $this->loadedScene->sourceData = $snapshot;
+            $this->syncScenePanels(false);
+            $this->consolePanel->append('[INFO] - Saved scene ' . $this->loadedScene->name . '.scene.php');
+            return;
+        }
+
+        $this->loadedScene->isDirty = $sceneWasDirty;
+        $this->syncScenePanels($sceneWasDirty);
+        $this->consolePanel->append('[ERROR] - Failed to save scene.');
+    }
+
+    private function applySceneMutation(array $value): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        if (is_string($value['name'] ?? null)) {
+            $nextSceneName = $this->normalizeSceneName($value['name']);
+
+            if ($nextSceneName !== '') {
+                $this->loadedScene->name = $nextSceneName;
+            }
+        }
+
+        if (isset($value['width']) && is_numeric($value['width'])) {
+            $this->loadedScene->width = max(1, (int) round((float) $value['width']));
+        }
+
+        if (isset($value['height']) && is_numeric($value['height'])) {
+            $this->loadedScene->height = max(1, (int) round((float) $value['height']));
+        }
+
+        if (is_string($value['environmentTileMapPath'] ?? null)) {
+            $this->loadedScene->environmentTileMapPath = trim($value['environmentTileMapPath']) !== ''
+                ? trim($value['environmentTileMapPath'])
+                : 'Maps/example';
+        }
+
+        $this->loadedScene->rawData['width'] = $this->loadedScene->width;
+        $this->loadedScene->rawData['height'] = $this->loadedScene->height;
+        $this->loadedScene->rawData['environmentTileMapPath'] = $this->loadedScene->environmentTileMapPath;
+
+        return true;
+    }
+
+    private function buildSceneInspectionValue(): array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return [];
+        }
+
+        return [
+            'name' => $this->loadedScene->name,
+            'width' => $this->loadedScene->width,
+            'height' => $this->loadedScene->height,
+            'environmentTileMapPath' => $this->loadedScene->environmentTileMapPath,
+        ];
+    }
+
+    private function syncScenePanels(bool $isDirty): void
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return;
+        }
+
+        $this->hierarchyPanel->setSceneState(
+            $this->loadedScene->name,
+            $isDirty,
+            $this->loadedScene->width,
+            $this->loadedScene->height,
+            $this->loadedScene->environmentTileMapPath,
+        );
+        $this->mainPanel->setSceneDimensions($this->loadedScene->width, $this->loadedScene->height);
+        $this->mainPanel->setEnvironmentTileMapPath($this->loadedScene->environmentTileMapPath);
+    }
+
+    private function resolveTargetSceneSourcePath(DTOs\SceneDTO $scene): ?string
+    {
+        if (!is_string($scene->sourcePath) || $scene->sourcePath === '') {
+            return null;
+        }
+
+        $sceneDirectory = dirname($scene->sourcePath);
+        $sceneName = $this->normalizeSceneName($scene->name);
+
+        if ($sceneName === '') {
+            return $scene->sourcePath;
+        }
+
+        return Path::join($sceneDirectory, $sceneName . '.scene.php');
+    }
+
+    private function normalizeSceneName(string $sceneName): string
+    {
+        $normalizedSceneName = trim($sceneName);
+        $normalizedSceneName = preg_replace('/\.scene\.php$/', '', $normalizedSceneName) ?? $normalizedSceneName;
+        $normalizedSceneName = preg_replace('#[\\\\/]#', '-', $normalizedSceneName) ?? $normalizedSceneName;
+
+        return trim($normalizedSceneName);
+    }
+
+    private function saveRenamedScene(DTOs\SceneDTO $scene, string $targetSourcePath): bool
+    {
+        $serializedScene = $this->sceneWriter->serialize($scene);
+
+        if (file_put_contents($targetSourcePath, $serializedScene) === false) {
+            return false;
+        }
+
+        $originalSourcePath = $scene->sourcePath;
+
+        if (
+            is_string($originalSourcePath)
+            && $originalSourcePath !== ''
+            && $originalSourcePath !== $targetSourcePath
+            && is_file($originalSourcePath)
+            && !unlink($originalSourcePath)
+        ) {
+            $this->consolePanel->append('[WARN] - Saved renamed scene but could not remove the old scene file.');
+        }
+
+        return true;
+    }
+
+    private function updateEditorSceneReference(string $originalSourcePath, string $targetSourcePath): void
+    {
+        $settingsPath = Path::join($this->workingDirectory, 'sendama.json');
+
+        if (!is_file($settingsPath)) {
+            return;
+        }
+
+        $settingsContents = file_get_contents($settingsPath);
+
+        if ($settingsContents === false) {
+            return;
+        }
+
+        $settingsData = json_decode($settingsContents, true);
+
+        if (!is_array($settingsData)) {
+            return;
+        }
+
+        $activeSceneIndex = $this->settings->scenes->active;
+        $configuredScenes = $settingsData['scenes']['loaded'] ?? [];
+        $configuredSceneReference = $configuredScenes[$activeSceneIndex] ?? $configuredScenes[0] ?? null;
+        $updatedSceneReference = $this->buildUpdatedSceneReference(
+            is_string($configuredSceneReference) ? $configuredSceneReference : null,
+            $originalSourcePath,
+            $targetSourcePath,
+        );
+
+        $targetSceneIndex = array_key_exists($activeSceneIndex, $configuredScenes) ? $activeSceneIndex : 0;
+        $settingsData['scenes']['loaded'][$targetSceneIndex] = $updatedSceneReference;
+
+        if (file_put_contents(
+            $settingsPath,
+            json_encode($settingsData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL
+        ) === false) {
+            return;
+        }
+
+        $this->settings->scenes->loaded[$targetSceneIndex] = $updatedSceneReference;
+    }
+
+    private function buildUpdatedSceneReference(
+        ?string $configuredSceneReference,
+        string $originalSourcePath,
+        string $targetSourcePath,
+    ): string {
+        if (!is_string($configuredSceneReference) || trim($configuredSceneReference) === '') {
+            return basename($targetSourcePath, '.scene.php');
+        }
+
+        if ($this->isAbsolutePath($configuredSceneReference)) {
+            return $targetSourcePath;
+        }
+
+        $configuredSceneReference = str_replace('\\', '/', trim($configuredSceneReference));
+        $hasExtension = str_ends_with($configuredSceneReference, '.scene.php');
+        $directory = dirname($configuredSceneReference);
+        $replacement = $hasExtension
+            ? basename($targetSourcePath)
+            : basename($targetSourcePath, '.scene.php');
+
+        if ($directory === '.' || $directory === '') {
+            return $replacement;
+        }
+
+        return rtrim($directory, '/') . '/' . $replacement;
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/')
+            || preg_match('/^[A-Za-z]:[\/\\\\]/', $path) === 1;
     }
 
     private function getPanelDisplayNames(): array

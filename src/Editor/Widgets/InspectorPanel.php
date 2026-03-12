@@ -9,6 +9,7 @@ use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Editor\Widgets\Controls\CompoundInputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
+use Sendama\Console\Editor\Widgets\Controls\NumberInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
@@ -43,17 +44,25 @@ class InspectorPanel extends Widget
     protected OptionListModal $pathInputActionModal;
     protected FileDialogModal $fileDialogModal;
     protected ?PathInputControl $activePathInputControl = null;
+    protected array $controlBindings = [];
+    protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingAssetMutation = null;
+    protected string $projectDirectory;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
         int $width = 35,
-        int $height = 29
+        int $height = 29,
+        ?string $workingDirectory = null,
     )
     {
         parent::__construct('Inspector', '', $position, $width, $height);
         $this->inputControlFactory = new InputControlFactory();
         $this->pathInputActionModal = new OptionListModal(title: 'Path Input');
         $this->fileDialogModal = new FileDialogModal();
+        $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
+            ? $workingDirectory
+            : (getcwd() ?: '.');
     }
 
     public function inspectTarget(?array $target): void
@@ -70,6 +79,9 @@ class InspectorPanel extends Widget
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
         $this->activePathInputControl = null;
+        $this->controlBindings = [];
+        $this->pendingHierarchyMutation = null;
+        $this->pendingAssetMutation = null;
 
         if ($target === null) {
             $this->content = [];
@@ -83,6 +95,10 @@ class InspectorPanel extends Widget
 
         if ($context === 'hierarchy' && is_array($value)) {
             $this->buildHierarchyControls($target, $value);
+        } elseif ($context === 'scene' && is_array($value)) {
+            $this->buildSceneControls($target, $value);
+        } elseif ($context === 'asset' && is_array($value)) {
+            $this->buildAssetControls($target, $value);
         } else {
             $this->buildGenericControls($target);
         }
@@ -146,6 +162,75 @@ class InspectorPanel extends Widget
         if ($this->fileDialogModal->isVisible()) {
             $this->fileDialogModal->render();
         }
+    }
+
+    public function consumeHierarchyMutation(): ?array
+    {
+        $pendingHierarchyMutation = $this->pendingHierarchyMutation;
+        $this->pendingHierarchyMutation = null;
+
+        return $pendingHierarchyMutation;
+    }
+
+    public function consumeAssetMutation(): ?array
+    {
+        $pendingAssetMutation = $this->pendingAssetMutation;
+        $this->pendingAssetMutation = null;
+
+        return $pendingAssetMutation;
+    }
+
+    public function syncHierarchyTarget(string $path, array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || ($this->inspectionTarget['path'] ?? null) !== $path
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Object');
+        $target['type'] = $this->resolveDisplayType($target, $value);
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
+    }
+
+    public function syncSceneTarget(array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'scene'
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Scene');
+        $target['type'] = 'Scene';
+        $target['path'] = 'scene';
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
+    }
+
+    public function syncAssetTarget(array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'asset'
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Asset');
+        $target['type'] = ($value['isDirectory'] ?? false) ? 'Folder' : 'File';
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
     }
 
     public function cycleFocusForward(): bool
@@ -282,21 +367,66 @@ class InspectorPanel extends Widget
     private function buildHierarchyControls(array $target, array $item): void
     {
         $this->addControl(new TextInputControl('Type', $this->resolveDisplayType($target, $item), 0, true));
-        $this->addControl(new TextInputControl('Name', $item['name'] ?? $target['name'] ?? 'Unnamed Object', 0));
-        $this->addControl(new TextInputControl('Tag', $item['tag'] ?? 'None', 0));
+        $this->addBoundControl(
+            new TextInputControl('Name', $item['name'] ?? $target['name'] ?? 'Unnamed Object', 0),
+            ['name'],
+        );
+        $this->addBoundControl(
+            new TextInputControl('Tag', $item['tag'] ?? 'None', 0),
+            ['tag'],
+        );
 
         $this->addSectionHeader('Transform');
-        $this->addControl(new VectorInputControl('Position', $this->normalizeVector($item['position'] ?? null), 1));
-        $this->addControl(new VectorInputControl('Rotation', $this->normalizeVector($item['rotation'] ?? null), 1));
-        $this->addControl(new VectorInputControl('Scale', $this->normalizeVector($item['scale'] ?? ['x' => 1, 'y' => 1]), 1));
+        $this->addBoundControl(
+            new VectorInputControl('Position', $this->normalizeVector($item['position'] ?? null), 1),
+            ['position'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Rotation', $this->normalizeVector($item['rotation'] ?? null), 1),
+            ['rotation'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Scale', $this->normalizeVector($item['scale'] ?? ['x' => 1, 'y' => 1]), 1),
+            ['scale'],
+        );
 
         if (isset($item['size']) && is_array($item['size'])) {
-            $this->addControl(new VectorInputControl('Size', $this->normalizeVector($item['size']), 1));
+            $this->addBoundControl(
+                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
+                ['size'],
+            );
         }
 
         $this->addSectionHeader('Renderer');
         $this->addRendererControls($item);
         $this->addScriptComponents($item['components'] ?? []);
+    }
+
+    private function buildSceneControls(array $target, array $scene): void
+    {
+        $this->addControl(new TextInputControl('Type', 'Scene', 0, true));
+        $this->addBoundControl(
+            new TextInputControl('Name', $scene['name'] ?? $target['name'] ?? 'Scene', 0),
+            ['name'],
+        );
+        $this->addBoundControl(
+            new NumberInputControl('Width', $scene['width'] ?? DEFAULT_TERMINAL_WIDTH, 0),
+            ['width'],
+        );
+        $this->addBoundControl(
+            new NumberInputControl('Height', $scene['height'] ?? DEFAULT_TERMINAL_HEIGHT, 0),
+            ['height'],
+        );
+        $this->addBoundControl(
+            new PathInputControl(
+                'Environment Tile Map',
+                $scene['environmentTileMapPath'] ?? 'Maps/example',
+                $this->resolveAssetsWorkingDirectory(),
+                ['tmap'],
+                0,
+            ),
+            ['environmentTileMapPath'],
+        );
     }
 
     private function buildGenericControls(array $target): void
@@ -308,6 +438,26 @@ class InspectorPanel extends Widget
         if (isset($target['name'])) {
             $this->addControl(new TextInputControl('Name', $target['name'], 0, true));
         }
+    }
+
+    private function buildAssetControls(array $target, array $asset): void
+    {
+        $isDirectory = (bool) ($asset['isDirectory'] ?? false);
+        $assetName = $asset['name'] ?? $target['name'] ?? 'Unnamed Asset';
+        $assetPath = is_string($asset['path'] ?? null) ? $asset['path'] : '';
+
+        $this->addControl(new TextInputControl('Type', $isDirectory ? 'Folder' : 'File', 0, true));
+
+        if ($isDirectory) {
+            $this->addControl(new TextInputControl('Name', $assetName, 0, true));
+        } else {
+            $this->addBoundControl(
+                new TextInputControl('Name', $assetName, 0),
+                ['name'],
+            );
+        }
+
+        $this->addControl(new TextInputControl('Path', $assetPath, 0, true));
     }
 
     private function addRendererControls(array $item): void
@@ -324,6 +474,7 @@ class InspectorPanel extends Widget
             'Texture',
             $texturePath,
             $this->resolveAssetsWorkingDirectory(),
+            ['texture'],
             1,
         );
         $this->rendererOffsetControl = new VectorInputControl('Offset', $offset, 1);
@@ -334,13 +485,13 @@ class InspectorPanel extends Widget
             1,
         );
 
-        $this->addControl($this->rendererTextureControl);
-        $this->addControl($this->rendererOffsetControl);
-        $this->addControl($this->rendererSizeControl);
+        $this->addBoundControl($this->rendererTextureControl, ['sprite', 'texture', 'path']);
+        $this->addBoundControl($this->rendererOffsetControl, ['sprite', 'texture', 'position']);
+        $this->addBoundControl($this->rendererSizeControl, ['sprite', 'texture', 'size']);
         $this->addControl($this->rendererPreviewControl);
 
         if (array_key_exists('text', $item)) {
-            $this->addControl(new TextInputControl('Text', $item['text'], 1));
+            $this->addBoundControl(new TextInputControl('Text', $item['text'], 1), ['text']);
         }
     }
 
@@ -350,7 +501,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        foreach ($components as $component) {
+        foreach ($components as $componentIndex => $component) {
             if (!is_array($component)) {
                 continue;
             }
@@ -362,11 +513,14 @@ class InspectorPanel extends Widget
                     continue;
                 }
 
-                $this->addControl($this->inputControlFactory->create(
-                    $this->humanizeKey((string) $key),
-                    $value,
-                    1,
-                ));
+                $this->addBoundControl(
+                    $this->inputControlFactory->create(
+                        $this->humanizeKey((string) $key),
+                        $value,
+                        1,
+                    ),
+                    ['components', $componentIndex, $key],
+                );
             }
         }
     }
@@ -386,6 +540,12 @@ class InspectorPanel extends Widget
             'control' => $control,
         ];
         $this->focusableControls[] = $control;
+    }
+
+    private function addBoundControl(InputControl $control, array $valuePath): void
+    {
+        $this->controlBindings[spl_object_id($control)] = $valuePath;
+        $this->addControl($control);
     }
 
     private function refreshContent(): void
@@ -592,12 +752,17 @@ class InspectorPanel extends Widget
     private function commitSelectedEdit(InputControl $selectedControl): void
     {
         if ($selectedControl instanceof CompoundInputControl) {
-            $selectedControl->commitActiveEdit();
+            if ($selectedControl->commitActiveEdit()) {
+                $this->applyControlValueToInspectionTarget($selectedControl);
+            }
+
             $this->interactionState = self::STATE_PROPERTY_SELECTION;
             return;
         }
 
-        $selectedControl->commitEdit();
+        if ($selectedControl->commitEdit()) {
+            $this->applyControlValueToInspectionTarget($selectedControl);
+        }
 
         if ($selectedControl instanceof PathInputControl) {
             $this->activePathInputControl = null;
@@ -673,6 +838,7 @@ class InspectorPanel extends Widget
                 $this->fileDialogModal->show(
                     $this->activePathInputControl->getWorkingDirectory(),
                     (string) $this->activePathInputControl->getValue(),
+                    $this->activePathInputControl->getAllowedExtensions(),
                 );
                 $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
             }
@@ -738,6 +904,7 @@ class InspectorPanel extends Widget
         }
 
         $this->activePathInputControl->setValueFromRelativePath($selectedPath);
+        $this->applyControlValueToInspectionTarget($this->activePathInputControl);
         $this->closePathInputModals();
         $this->interactionState = self::STATE_CONTROL_SELECTION;
         $this->refreshContent();
@@ -852,7 +1019,7 @@ class InspectorPanel extends Widget
             $candidatePaths[] = $normalizedTexturePath . '.texture';
         }
 
-        $workingDirectory = getcwd() ?: '.';
+        $workingDirectory = $this->projectDirectory;
         $assetsRoots = [
             $workingDirectory,
             $workingDirectory . '/Assets',
@@ -937,9 +1104,86 @@ class InspectorPanel extends Widget
         return ucwords(trim($spacedKey));
     }
 
+    private function applyControlValueToInspectionTarget(InputControl $control): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || !isset($this->inspectionTarget['value'])
+            || !is_array($this->inspectionTarget['value'])
+        ) {
+            return;
+        }
+
+        $valuePath = $this->controlBindings[spl_object_id($control)] ?? null;
+
+        if (!is_array($valuePath) || $valuePath === []) {
+            return;
+        }
+
+        $inspectionValue = $this->inspectionTarget['value'];
+        $this->setNestedValue($inspectionValue, $valuePath, $control->getValue());
+        $this->inspectionTarget['value'] = $inspectionValue;
+
+        if ($valuePath === ['name']) {
+            $this->inspectionTarget['name'] = (string) $control->getValue();
+        }
+
+        $context = $this->inspectionTarget['context'] ?? null;
+
+        if ($context === 'asset') {
+            if (
+                $valuePath === ['name']
+                && !($inspectionValue['isDirectory'] ?? false)
+                && is_string($inspectionValue['path'] ?? null)
+            ) {
+                $this->pendingAssetMutation = [
+                    'path' => $inspectionValue['path'],
+                    'relativePath' => $inspectionValue['relativePath'] ?? basename($inspectionValue['path']),
+                    'name' => (string) $control->getValue(),
+                ];
+            }
+
+            return;
+        }
+
+        if (!in_array($context, ['hierarchy', 'scene'], true)) {
+            return;
+        }
+
+        $hierarchyPath = $this->inspectionTarget['path'] ?? null;
+
+        if (!is_string($hierarchyPath) || $hierarchyPath === '') {
+            return;
+        }
+
+        $this->pendingHierarchyMutation = [
+            'path' => $hierarchyPath,
+            'value' => $inspectionValue,
+        ];
+    }
+
+    private function setNestedValue(array &$value, array $path, mixed $nextValue): void
+    {
+        $current = &$value;
+        $lastIndex = count($path) - 1;
+
+        foreach ($path as $index => $segment) {
+            if ($index === $lastIndex) {
+                $current[$segment] = $nextValue;
+                return;
+            }
+
+            if (!isset($current[$segment]) || !is_array($current[$segment])) {
+                $current[$segment] = [];
+            }
+
+            $current = &$current[$segment];
+        }
+    }
+
     private function resolveAssetsWorkingDirectory(): string
     {
-        $workingDirectory = getcwd() ?: '.';
+        $workingDirectory = $this->projectDirectory;
         $assetRoots = [
             $workingDirectory . '/Assets',
             $workingDirectory . '/assets',

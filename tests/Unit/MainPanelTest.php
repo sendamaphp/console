@@ -1,8 +1,31 @@
 <?php
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\MainPanel;
 use Sendama\Console\Editor\Widgets\Widget;
+
+function pressMainPanelKey(string $keyPress): void
+{
+    $currentKeyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $currentKeyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $currentKeyPress->setValue($keyPress);
+}
+
+function createMainPanelWorkspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/sendama-main-panel-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    mkdir($workspace . '/Assets/Maps', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/player.texture', "abcd\nefgh\nijkl\n");
+    file_put_contents($workspace . '/Assets/Textures/enemy.texture', "QRST\nUVWX\nYZ12\n");
+    file_put_contents($workspace . '/Assets/Maps/level.tmap', "xxxxx\nx   x\nxxxxx\n");
+
+    return $workspace;
+}
 
 test('main panel cycles forward through tabs', function () {
     $panel = new MainPanel(width: 60, height: 12);
@@ -75,4 +98,639 @@ test('main panel highlights the active tab in the divider', function () {
     expect($panel->content[0])->toContain('Scene  Game  Sprite');
     expect($panel->content[1])->toContain('■■■■■■');
     expect(mb_strlen($panel->content[1]))->toBe($panel->innerWidth - 2);
+});
+
+test('main panel renders scene objects at their positions on the scene tab', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 0],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 1, 'y' => 1],
+                        'size' => ['x' => 2, 'y' => 2],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\UI\\Label\\Label',
+                'name' => 'Score',
+                'position' => ['x' => 4, 'y' => 3],
+                'text' => 'Score: 000',
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'fg')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'jk')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Score: 000')))->toBeTrue();
+});
+
+test('main panel renders the environment tile map behind scene objects', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 24,
+        height: 10,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+        environmentTileMapPath: 'Maps/level',
+    );
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'xxxxx')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x a x')))->toBeTrue();
+});
+
+test('main panel resolves scene textures from the configured project directory', function () {
+    $workspace = createMainPanelWorkspace();
+    $originalWorkingDirectory = getcwd();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 1, 'y' => 0],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 2, 'y' => 2],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    chdir(sys_get_temp_dir());
+
+    try {
+        expect(array_any($panel->content, fn(string $line) => str_contains($line, 'ab')))->toBeTrue();
+        expect(array_any($panel->content, fn(string $line) => str_contains($line, 'ef')))->toBeTrue();
+    } finally {
+        if ($originalWorkingDirectory !== false) {
+            chdir($originalWorkingDirectory);
+        }
+    }
+});
+
+test('main panel select mode loads the selected scene object into the inspector payload', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 0],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 10, 'y' => 4],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('Q');
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Enemy',
+        'type' => 'GameObject',
+        'path' => 'scene.1',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Enemy',
+            'position' => ['x' => 10, 'y' => 4],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/enemy',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+});
+
+test('main panel select mode emits an inspection payload as scene selection changes', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 0],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 10, 'y' => 4],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('Q');
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Enemy',
+        'type' => 'GameObject',
+        'path' => 'scene.1',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Enemy',
+            'position' => ['x' => 10, 'y' => 4],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/enemy',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+});
+
+test('main panel move mode updates the selected scene object position', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('W');
+    $panel->update();
+
+    pressMainPanelKey("\033[C");
+    $panel->update();
+
+    expect($panel->consumeHierarchyMutation())->toBe([
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'position' => ['x' => 3, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'a')))->toBeTrue();
+});
+
+test('main panel move mode emits an updated inspection payload for the selected object', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('W');
+    $panel->update();
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'position' => ['x' => 2, 'y' => 1],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+
+    pressMainPanelKey("\033[C");
+    $panel->update();
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'position' => ['x' => 3, 'y' => 1],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+});
+
+test('main panel pan mode scrolls the scene viewport', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 16,
+        height: 8,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 16, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+        sceneWidth: 30,
+        sceneHeight: 10,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Q')))->toBeFalse();
+
+    pressMainPanelKey('E');
+    $panel->update();
+
+    for ($index = 0; $index < 8; $index++) {
+        pressMainPanelKey("\033[C");
+        $panel->update();
+    }
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Q')))->toBeTrue();
+});
+
+test('main panel help line shows controls on the left and the active mode on the right', function () {
+    $panel = new MainPanel(width: 72, height: 10);
+    $buildBorderLine = new ReflectionMethod(MainPanel::class, 'buildBorderLine');
+    $buildBorderLine->setAccessible(true);
+
+    $selectHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($selectHelpLine)->toContain('Arrows cycle');
+    expect($selectHelpLine)->toContain('Mode: Scene Select');
+
+    pressMainPanelKey('E');
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+    $panel->update();
+
+    $panHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($panHelpLine)->toContain('Arrows pan');
+    expect($panHelpLine)->toContain('Mode: Scene Pan');
+});
+
+test('main panel sprite tab edits the selected asset grid and persists it', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('Z');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Zbcd')))->toBeTrue();
+});
+
+test('main panel sprite tab expands loaded textures to a 16x16 editing grid', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $spriteGridWidth = new ReflectionProperty(MainPanel::class, 'spriteGridWidth');
+    $spriteGridHeight = new ReflectionProperty(MainPanel::class, 'spriteGridHeight');
+    $spriteGridWidth->setAccessible(true);
+    $spriteGridHeight->setAccessible(true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    expect($spriteGridWidth->getValue($panel))->toBe(16);
+    expect($spriteGridHeight->getValue($panel))->toBe(16);
+});
+
+test('main panel sprite tab can create a new texture asset', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+
+    pressMainPanelKey('A');
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+
+    expect($assetSyncRequest)->toBeArray();
+    expect($assetSyncRequest['path'] ?? null)->toBeString();
+    expect($assetSyncRequest['path'])->toEndWith('.texture');
+    expect(file_exists($assetSyncRequest['path']))->toBeTrue();
+    expect($assetSyncRequest['inspectionTarget']['value']['relativePath'] ?? null)->toBe('Textures/new-texture-1.texture');
+});
+
+test('main panel sprite tab creates tile maps at the current terminal-size bounds', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+
+    pressMainPanelKey('A');
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+    $terminalSize = get_max_terminal_size();
+    $expectedWidth = max(1, (int) ($terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH));
+    $expectedHeight = max(1, (int) ($terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT));
+    $lines = explode("\n", rtrim((string) file_get_contents($assetSyncRequest['path']), "\n"));
+
+    expect($assetSyncRequest['path'])->toEndWith('.tmap');
+    expect(count($lines))->toBe($expectedHeight);
+    expect(mb_strlen($lines[0] ?? ''))->toBe($expectedWidth);
+});
+
+test('main panel sprite tab can delete the active asset after confirmation', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey("\033[3~");
+    $panel->update();
+
+    pressMainPanelKey("\033[A");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+
+    expect(file_exists($workspace . '/Assets/Textures/player.texture'))->toBeFalse();
+    expect($assetSyncRequest)->toBe([
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'clearInspection' => true,
+    ]);
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Select a .texture or .tmap asset')))->toBeTrue();
+});
+
+test('main panel sprite tab supports undo redo and reset', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('Z');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+
+    pressMainPanelKey("\x1A");
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("abcd\n");
+
+    pressMainPanelKey("\x19");
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+
+    pressMainPanelKey('R');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("abcd\n");
+});
+
+test('main panel sprite tab can insert a special character from the character picker modal', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('@');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("█bcd\n");
+});
+
+test('main panel sprite tab shows the cursor column x row position in the help line', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 84, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+    $buildBorderLine = new ReflectionMethod(MainPanel::class, 'buildBorderLine');
+    $buildBorderLine->setAccessible(true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    $initialHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($initialHelpLine)->toContain('Col x Row: 1 x 1');
+
+    pressMainPanelKey("\033[C");
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    $updatedHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($updatedHelpLine)->toContain('Col x Row: 2 x 2');
 });

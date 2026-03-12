@@ -5,6 +5,7 @@ namespace Sendama\Console\Editor\Widgets;
 use Atatusoft\Termutil\Events\Interfaces\ObservableInterface;
 use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\Events\EditorEvent;
 use Sendama\Console\Editor\Events\Enumerations\EventType;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -20,19 +21,34 @@ class HierarchyPanel extends Widget implements ObservableInterface
     use ObservableTrait;
 
     private const string ROOT_PATH = 'scene';
+    private const string ADD_MODAL_OBJECT_KIND = 'object_kind';
+    private const string ADD_MODAL_UI_KIND = 'ui_kind';
+    private const string DELETE_MODAL_CONFIRM = 'delete_confirm';
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
     private const string LEAF_ICON = '•';
     private const string SELECTED_ROW_SEQUENCE = "\033[30;46m";
     private const string SELECTED_ROW_FOCUSED_SEQUENCE = "\033[5;30;46m";
+    private const string GAME_OBJECT_TYPE = 'Sendama\\Engine\\Core\\GameObject';
+    private const string LABEL_TYPE = 'Sendama\\Engine\\UI\\Label\\Label';
+    private const string TEXT_TYPE = 'Sendama\\Engine\\UI\\Text\\Text';
 
     protected string $sceneName = 'Scene';
     protected bool $isSceneDirty = false;
+    protected int $sceneWidth = DEFAULT_TERMINAL_WIDTH;
+    protected int $sceneHeight = DEFAULT_TERMINAL_HEIGHT;
+    protected string $environmentTileMapPath = 'Maps/example';
     protected array $hierarchy = [];
     protected array $visibleHierarchy = [];
     protected array $expandedPaths = [];
     protected ?string $selectedPath = null;
     protected ?array $pendingInspectionItem = null;
+    protected ?array $pendingCreationItem = null;
+    protected ?array $pendingDeletionItem = null;
+    protected OptionListModal $addObjectModal;
+    protected OptionListModal $addUiElementModal;
+    protected OptionListModal $deleteConfirmModal;
+    protected ?string $addModalState = null;
 
     public function __construct(
         array $position = ['x' => 1, 'y' => 1],
@@ -40,13 +56,22 @@ class HierarchyPanel extends Widget implements ObservableInterface
         int $height = 14,
         string $sceneName = 'Scene',
         bool $isSceneDirty = false,
-        array $hierarchy = []
+        array $hierarchy = [],
+        int $sceneWidth = DEFAULT_TERMINAL_WIDTH,
+        int $sceneHeight = DEFAULT_TERMINAL_HEIGHT,
+        string $environmentTileMapPath = 'Maps/example',
     )
     {
         $this->initializeObservers();
         parent::__construct('Hierarchy', '', $position, $width, $height);
+        $this->addObjectModal = new OptionListModal(title: 'Add Object');
+        $this->addUiElementModal = new OptionListModal(title: 'Add UI Element');
+        $this->deleteConfirmModal = new OptionListModal(title: 'Delete Object');
         $this->sceneName = $sceneName;
         $this->isSceneDirty = $isSceneDirty;
+        $this->sceneWidth = $sceneWidth;
+        $this->sceneHeight = $sceneHeight;
+        $this->environmentTileMapPath = $environmentTileMapPath;
         $this->setHierarchy($hierarchy);
     }
 
@@ -65,10 +90,35 @@ class HierarchyPanel extends Widget implements ObservableInterface
         $this->notify(new EditorEvent(EventType::HIERARCHY_CHANGED->value, $this));
     }
 
-    public function setSceneState(string $sceneName, bool $isDirty = false): void
+    public function syncHierarchy(array $hierarchy): void
+    {
+        $this->hierarchy = array_values($hierarchy);
+        $this->refreshContent();
+    }
+
+    public function setSceneState(
+        string $sceneName,
+        bool $isDirty = false,
+        ?int $sceneWidth = null,
+        ?int $sceneHeight = null,
+        ?string $environmentTileMapPath = null,
+    ): void
     {
         $this->sceneName = $sceneName;
         $this->isSceneDirty = $isDirty;
+        $this->sceneWidth = $sceneWidth ?? $this->sceneWidth;
+        $this->sceneHeight = $sceneHeight ?? $this->sceneHeight;
+        $this->environmentTileMapPath = $environmentTileMapPath ?? $this->environmentTileMapPath;
+        $this->refreshContent();
+    }
+
+    public function selectPath(?string $path): void
+    {
+        if ($path === null) {
+            return;
+        }
+
+        $this->selectedPath = $path;
         $this->refreshContent();
     }
 
@@ -152,6 +202,22 @@ class HierarchyPanel extends Widget implements ObservableInterface
     {
         $selectedNode = $this->getSelectedVisibleNode();
 
+        if (($selectedNode['kind'] ?? null) === 'scene') {
+            $this->pendingInspectionItem = [
+                'context' => 'scene',
+                'name' => $this->sceneName,
+                'type' => 'Scene',
+                'path' => self::ROOT_PATH,
+                'value' => [
+                    'name' => $this->sceneName,
+                    'width' => $this->sceneWidth,
+                    'height' => $this->sceneHeight,
+                    'environmentTileMapPath' => $this->environmentTileMapPath,
+                ],
+            ];
+            return;
+        }
+
         if (($selectedNode['kind'] ?? null) !== 'object') {
             return;
         }
@@ -166,6 +232,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
             'context' => 'hierarchy',
             'name' => $selectedItem['name'] ?? 'Unnamed Object',
             'type' => $this->resolveInspectableType($selectedItem),
+            'path' => $selectedNode['path'] ?? null,
             'value' => $selectedItem,
         ];
     }
@@ -176,6 +243,83 @@ class HierarchyPanel extends Widget implements ObservableInterface
         $this->pendingInspectionItem = null;
 
         return $pendingInspectionItem;
+    }
+
+    public function consumeCreationRequest(): ?array
+    {
+        $pendingCreationItem = $this->pendingCreationItem;
+        $this->pendingCreationItem = null;
+
+        return $pendingCreationItem;
+    }
+
+    public function consumeDeletionRequest(): ?array
+    {
+        $pendingDeletionItem = $this->pendingDeletionItem;
+        $this->pendingDeletionItem = null;
+
+        return $pendingDeletionItem;
+    }
+
+    public function beginAddWorkflow(): void
+    {
+        $this->showAddObjectModal();
+    }
+
+    public function hasActiveModal(): bool
+    {
+        return $this->addObjectModal->isVisible()
+            || $this->addUiElementModal->isVisible()
+            || $this->deleteConfirmModal->isVisible();
+    }
+
+    public function isModalDirty(): bool
+    {
+        return $this->addObjectModal->isDirty()
+            || $this->addUiElementModal->isDirty()
+            || $this->deleteConfirmModal->isDirty();
+    }
+
+    public function markModalClean(): void
+    {
+        $this->addObjectModal->markClean();
+        $this->addUiElementModal->markClean();
+        $this->deleteConfirmModal->markClean();
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+        $this->addObjectModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->addUiElementModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->deleteConfirmModal->syncLayout($terminalWidth, $terminalHeight);
+    }
+
+    public function renderActiveModal(): void
+    {
+        if ($this->addObjectModal->isVisible()) {
+            $this->addObjectModal->render();
+        }
+
+        if ($this->addUiElementModal->isVisible()) {
+            $this->addUiElementModal->render();
+        }
+
+        if ($this->deleteConfirmModal->isVisible()) {
+            $this->deleteConfirmModal->render();
+        }
+    }
+
+    public function focus(FocusTargetContext $context): void
+    {
+        parent::focus($context);
+        $this->refreshContent();
+    }
+
+    public function blur(FocusTargetContext $context): void
+    {
+        $this->dismissAddModals();
+        parent::blur($context);
+        $this->refreshContent();
     }
 
     public function handleMouseClick(int $x, int $y): void
@@ -200,6 +344,21 @@ class HierarchyPanel extends Widget implements ObservableInterface
     public function update(): void
     {
         if (!$this->hasFocus()) {
+            return;
+        }
+
+        if ($this->hasActiveModal()) {
+            $this->handleModalInput();
+            return;
+        }
+
+        if (Input::getCurrentInput() === 'A') {
+            $this->showAddObjectModal();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DELETE)) {
+            $this->showDeleteConfirmModal();
             return;
         }
 
@@ -275,8 +434,12 @@ class HierarchyPanel extends Widget implements ObservableInterface
             'kind' => 'scene',
             'path' => self::ROOT_PATH,
             'item' => [
-                'name' => $this->getDisplaySceneName(),
+                'name' => $this->sceneName,
+                'displayName' => $this->getDisplaySceneName(),
                 'type' => 'Scene',
+                'width' => $this->sceneWidth,
+                'height' => $this->sceneHeight,
+                'environmentTileMapPath' => $this->environmentTileMapPath,
             ],
             'depth' => 0,
             'hasChildren' => $this->hierarchy !== [],
@@ -387,7 +550,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
             ($entry['hasChildren'] ?? false) => self::COLLAPSED_ICON,
             default => self::LEAF_ICON,
         };
-        $name = $entry['item']['name'] ?? 'Unnamed Object';
+        $name = $entry['item']['displayName'] ?? $entry['item']['name'] ?? 'Unnamed Object';
         $indentation = str_repeat('  ', (int)($entry['depth'] ?? 0));
 
         return $indentation . $icon . ' ' . $name;
@@ -433,5 +596,205 @@ class HierarchyPanel extends Widget implements ObservableInterface
         }
 
         return substr($path, 0, $separatorPosition);
+    }
+
+    private function showAddObjectModal(): void
+    {
+        $this->addObjectModal->show(['GameObject', 'UIElement']);
+        $this->addUiElementModal->hide();
+        $this->deleteConfirmModal->hide();
+        $this->addModalState = self::ADD_MODAL_OBJECT_KIND;
+    }
+
+    private function showAddUiElementModal(): void
+    {
+        $this->addUiElementModal->show(['Text', 'Label']);
+        $this->addObjectModal->hide();
+        $this->deleteConfirmModal->hide();
+        $this->addModalState = self::ADD_MODAL_UI_KIND;
+    }
+
+    private function showDeleteConfirmModal(): void
+    {
+        $selectedNode = $this->getSelectedVisibleNode();
+
+        if (($selectedNode['kind'] ?? null) !== 'object') {
+            return;
+        }
+
+        $selectedItem = $selectedNode['item'] ?? null;
+        $selectedName = is_array($selectedItem) ? ($selectedItem['name'] ?? 'this object') : 'this object';
+
+        $this->deleteConfirmModal->show(
+            ['Delete', 'Cancel'],
+            1,
+            'Are you sure you want to delete ' . $selectedName . '?'
+        );
+        $this->addObjectModal->hide();
+        $this->addUiElementModal->hide();
+        $this->addModalState = self::DELETE_MODAL_CONFIRM;
+    }
+
+    private function dismissAddModals(): void
+    {
+        $this->addObjectModal->hide();
+        $this->addUiElementModal->hide();
+        $this->deleteConfirmModal->hide();
+        $this->addModalState = null;
+    }
+
+    private function handleModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            if ($this->addModalState === self::ADD_MODAL_UI_KIND) {
+                $this->showAddObjectModal();
+                return;
+            }
+
+            $this->dismissAddModals();
+            return;
+        }
+
+        $activeModal = match ($this->addModalState) {
+            self::ADD_MODAL_OBJECT_KIND => $this->addObjectModal,
+            self::ADD_MODAL_UI_KIND => $this->addUiElementModal,
+            self::DELETE_MODAL_CONFIRM => $this->deleteConfirmModal,
+            default => null,
+        };
+
+        if (!$activeModal instanceof OptionListModal) {
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $activeModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $activeModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selectedOption = $activeModal->getSelectedOption();
+
+        if (!is_string($selectedOption) || $selectedOption === '') {
+            return;
+        }
+
+        if ($this->addModalState === self::ADD_MODAL_OBJECT_KIND) {
+            $this->handleAddObjectTypeSelection($selectedOption);
+            return;
+        }
+
+        if ($this->addModalState === self::ADD_MODAL_UI_KIND) {
+            $this->handleAddUiElementSelection($selectedOption);
+            return;
+        }
+
+        if ($this->addModalState === self::DELETE_MODAL_CONFIRM) {
+            $this->handleDeleteConfirmationSelection($selectedOption);
+        }
+    }
+
+    private function handleAddObjectTypeSelection(string $selection): void
+    {
+        if ($selection === 'UIElement') {
+            $this->showAddUiElementModal();
+            return;
+        }
+
+        $this->pendingCreationItem = $this->buildDefaultObjectDefinition($selection);
+        $this->dismissAddModals();
+    }
+
+    private function handleAddUiElementSelection(string $selection): void
+    {
+        $this->pendingCreationItem = $this->buildDefaultObjectDefinition($selection);
+        $this->dismissAddModals();
+    }
+
+    private function handleDeleteConfirmationSelection(string $selection): void
+    {
+        if ($selection !== 'Delete') {
+            $this->dismissAddModals();
+            return;
+        }
+
+        $selectedNode = $this->getSelectedVisibleNode();
+
+        if (($selectedNode['kind'] ?? null) !== 'object') {
+            $this->dismissAddModals();
+            return;
+        }
+
+        $selectedItem = $selectedNode['item'] ?? null;
+        $this->pendingDeletionItem = [
+            'path' => $selectedNode['path'] ?? null,
+            'name' => is_array($selectedItem) ? ($selectedItem['name'] ?? 'Unnamed Object') : 'Unnamed Object',
+        ];
+        $this->dismissAddModals();
+    }
+
+    private function buildDefaultObjectDefinition(string $selection): array
+    {
+        $instanceName = $selection . ' #' . $this->getNextInstanceCount($selection);
+
+        return match ($selection) {
+            'GameObject' => [
+                'type' => self::GAME_OBJECT_TYPE,
+                'name' => $instanceName,
+                'tag' => 'None',
+                'position' => ['x' => 0, 'y' => 0],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'components' => [],
+            ],
+            'Text' => [
+                'type' => self::TEXT_TYPE,
+                'name' => $instanceName,
+                'tag' => 'UI',
+                'position' => ['x' => 0, 'y' => 0],
+                'size' => ['x' => 1, 'y' => 1],
+                'text' => $instanceName,
+            ],
+            'Label' => [
+                'type' => self::LABEL_TYPE,
+                'name' => $instanceName,
+                'tag' => 'UI',
+                'position' => ['x' => 0, 'y' => 0],
+                'size' => ['x' => 1, 'y' => 1],
+                'text' => $instanceName,
+            ],
+            default => [],
+        };
+    }
+
+    private function getNextInstanceCount(string $type): int
+    {
+        return $this->countInstancesOfType($this->hierarchy, $type) + 1;
+    }
+
+    private function countInstancesOfType(array $items, string $type): int
+    {
+        $count = 0;
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            if ($this->resolveInspectableType($item) === $type) {
+                $count++;
+            }
+
+            $count += $this->countInstancesOfType($this->getChildItems($item), $type);
+        }
+
+        return $count;
     }
 }

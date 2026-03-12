@@ -91,3 +91,74 @@ test('assets panel reports folders as folder type in inspector payload', functio
         ],
     ]);
 });
+
+test('assets panel queues the selected asset for deletion when confirmed', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+    file_put_contents($workspace . '/Assets/readme.txt', 'docs');
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $showDeleteConfirmModal = new ReflectionMethod(AssetsPanel::class, 'showDeleteConfirmModal');
+    $showDeleteConfirmModal->setAccessible(true);
+    $showDeleteConfirmModal->invoke($panel);
+
+    $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
+    $handleModalInput->setAccessible(true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+
+    $deleteConfirmModal = new ReflectionProperty(AssetsPanel::class, 'deleteConfirmModal');
+    $deleteConfirmModal->setAccessible(true);
+    $modal = $deleteConfirmModal->getValue($panel);
+    $moveSelection = new ReflectionMethod($modal, 'moveSelection');
+    $moveSelection->invoke($modal, -1);
+
+    $handleModalInput->invoke($panel);
+
+    expect($panel->consumeDeletionRequest())->toBe([
+        'path' => '0',
+        'assetPath' => $workspace . '/Assets/readme.txt',
+        'name' => 'readme.txt',
+        'isDirectory' => false,
+    ]);
+});
+
+test('assets panel cancels delete confirmation without queuing a deletion', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+    file_put_contents($workspace . '/Assets/readme.txt', 'docs');
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $showDeleteConfirmModal = new ReflectionMethod(AssetsPanel::class, 'showDeleteConfirmModal');
+    $showDeleteConfirmModal->setAccessible(true);
+    $showDeleteConfirmModal->invoke($panel);
+
+    $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
+    $handleModalInput->setAccessible(true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+
+    $handleModalInput->invoke($panel);
+
+    expect($panel->consumeDeletionRequest())->toBeNull();
+});
