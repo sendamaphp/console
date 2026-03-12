@@ -7,6 +7,8 @@ use Sendama\Console\Util\Path;
 
 class EditorSettings
 {
+    public const float DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS = 5.0;
+
     protected(set) int $width {
         get {
             return $this->width;
@@ -23,7 +25,8 @@ class EditorSettings
      * @param EditorSceneSettings $scenes
      */
     public function __construct(
-        public readonly EditorSceneSettings $scenes
+        public readonly EditorSceneSettings $scenes,
+        public readonly float $consoleRefreshIntervalSeconds = self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS,
     )
     {
         $terminalSize = get_max_terminal_size();
@@ -61,6 +64,31 @@ class EditorSettings
      */
     public static function fromArray(array $data): self
     {
-        return new self(scenes: EditorSceneSettings::fromArray($data["scenes"] ?? []));
+        $editorData = is_array($data['editor'] ?? null) ? $data['editor'] : $data;
+        $scenesData = $editorData['scenes'] ?? $data['scenes'] ?? [];
+        $consoleData = is_array($editorData['console'] ?? null) ? $editorData['console'] : [];
+        $refreshInterval = $consoleData['refreshInterval']
+            ?? $editorData['consoleRefreshInterval']
+            ?? self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+
+        return new self(
+            scenes: EditorSceneSettings::fromArray(is_array($scenesData) ? $scenesData : []),
+            consoleRefreshIntervalSeconds: self::normalizeRefreshInterval($refreshInterval),
+        );
+    }
+
+    private static function normalizeRefreshInterval(mixed $refreshInterval): float
+    {
+        if (!is_numeric($refreshInterval)) {
+            return self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+        }
+
+        $normalizedRefreshInterval = (float) $refreshInterval;
+
+        if ($normalizedRefreshInterval <= 0) {
+            return self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+        }
+
+        return $normalizedRefreshInterval;
     }
 }

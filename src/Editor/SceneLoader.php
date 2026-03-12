@@ -23,7 +23,9 @@ final class SceneLoader
             return null;
         }
 
-        $sceneData = $this->loadSceneData($scenePath);
+        $sceneDataBundle = $this->loadSceneDataBundle($scenePath);
+        $sceneData = $sceneDataBundle['editor'] ?? [];
+        $sourceSceneData = $sceneDataBundle['source'] ?? $sceneData;
 
         return new SceneDTO(
             name: basename($scenePath, '.scene.php'),
@@ -34,7 +36,7 @@ final class SceneLoader
             hierarchy: $sceneData['hierarchy'] ?? [],
             sourcePath: $scenePath,
             rawData: $sceneData,
-            sourceData: $sceneData,
+            sourceData: $sourceSceneData,
         );
     }
 
@@ -149,19 +151,26 @@ final class SceneLoader
         return array_values(array_unique($candidates));
     }
 
-    private function loadSceneData(string $scenePath): array
+    private function loadSceneDataBundle(string $scenePath): array
     {
-        $isolatedSceneData = $this->loadSceneDataInIsolatedProcess($scenePath);
+        $isolatedSceneDataBundle = $this->loadSceneDataInIsolatedProcess($scenePath);
 
-        if (is_array($isolatedSceneData)) {
-            return $isolatedSceneData;
+        if (
+            is_array($isolatedSceneDataBundle)
+            && is_array($isolatedSceneDataBundle['source'] ?? null)
+            && is_array($isolatedSceneDataBundle['editor'] ?? null)
+        ) {
+            return $isolatedSceneDataBundle;
         }
 
         try {
             $sceneData = require $scenePath;
 
             if (is_array($sceneData)) {
-                return $sceneData;
+                return [
+                    'source' => $sceneData,
+                    'editor' => $sceneData,
+                ];
             }
 
             Debug::warn("Scene metadata at {$scenePath} did not return an array.");
@@ -169,7 +178,12 @@ final class SceneLoader
             Debug::warn("Failed to load scene metadata at {$scenePath}: {$throwable->getMessage()}");
         }
 
-        return $this->extractSceneDataFromSource($scenePath);
+        $fallbackSceneData = $this->extractSceneDataFromSource($scenePath);
+
+        return [
+            'source' => $fallbackSceneData,
+            'editor' => $fallbackSceneData,
+        ];
     }
 
     private function loadSceneDataInIsolatedProcess(string $scenePath): ?array
@@ -178,6 +192,268 @@ final class SceneLoader
         $script = <<<'PHP'
 $autoloadPath = $argv[1] ?? '';
 $scenePath = $argv[2] ?? '';
+
+function normalize_editor_value(mixed $value): mixed
+{
+    if (is_array($value)) {
+        $normalized = [];
+
+        foreach ($value as $key => $item) {
+            $normalized[$key] = normalize_editor_value($item);
+        }
+
+        return $normalized;
+    }
+
+    if ($value instanceof UnitEnum) {
+        return $value instanceof BackedEnum ? $value->value : $value->name;
+    }
+
+    if (!is_object($value)) {
+        return $value;
+    }
+
+    if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
+        return [
+            'x' => normalize_editor_value($value->getX()),
+            'y' => normalize_editor_value($value->getY()),
+        ];
+    }
+
+    if (method_exists($value, 'getName')) {
+        try {
+            return $value->getName();
+        } catch (Throwable) {
+            // Ignore and continue.
+        }
+    }
+
+    if (method_exists($value, '__serialize')) {
+        try {
+            $serializedValue = $value->__serialize();
+
+            return is_array($serializedValue)
+                ? normalize_editor_value($serializedValue)
+                : normalize_editor_value((array) $serializedValue);
+        } catch (Throwable) {
+            // Ignore and continue.
+        }
+    }
+
+    if ($value instanceof Stringable) {
+        return (string) $value;
+    }
+
+    return get_class($value);
+}
+
+function build_vector(mixed $value, array $default = ['x' => 0, 'y' => 0]): ?object
+{
+    if (!class_exists('\Sendama\Engine\Core\Vector2')) {
+        return null;
+    }
+
+    $vectorValue = is_array($value) ? $value : $default;
+
+    return new \Sendama\Engine\Core\Vector2(
+        (int) ($vectorValue['x'] ?? $default['x']),
+        (int) ($vectorValue['y'] ?? $default['y']),
+    );
+}
+
+function build_sprite(array $item): ?object
+{
+    $texture = is_array($item['sprite']['texture'] ?? null) ? $item['sprite']['texture'] : null;
+
+    if (
+        !is_array($texture)
+        || !is_string($texture['path'] ?? null)
+        || $texture['path'] === ''
+        || !class_exists('\Sendama\Engine\Core\Texture')
+        || !class_exists('\Sendama\Engine\Core\Sprite')
+    ) {
+        return null;
+    }
+
+    $textureObject = new \Sendama\Engine\Core\Texture($texture['path']);
+    $rect = [
+        'position' => normalize_editor_value(build_vector($texture['position'] ?? null)),
+        'size' => normalize_editor_value(build_vector($texture['size'] ?? ['x' => 1, 'y' => 1], ['x' => 1, 'y' => 1])),
+    ];
+
+    return new \Sendama\Engine\Core\Sprite($textureObject, $rect);
+}
+
+function build_dummy_game_object(array $item): ?object
+{
+    if (!class_exists('\Sendama\Engine\Core\GameObject')) {
+        return null;
+    }
+
+    $tag = is_string($item['tag'] ?? null) && $item['tag'] !== 'None'
+        ? $item['tag']
+        : null;
+
+    return new \Sendama\Engine\Core\GameObject(
+        is_string($item['name'] ?? null) ? $item['name'] : 'GameObject',
+        $tag,
+        build_vector($item['position'] ?? null) ?? new \Sendama\Engine\Core\Vector2(),
+        build_vector($item['rotation'] ?? null) ?? new \Sendama\Engine\Core\Vector2(),
+        build_vector($item['scale'] ?? ['x' => 1, 'y' => 1], ['x' => 1, 'y' => 1]) ?? new \Sendama\Engine\Core\Vector2(1, 1),
+        null,
+    );
+}
+
+function serialize_component_data(string $componentClass, array $item): ?array
+{
+    if (
+        !class_exists($componentClass)
+        || !class_exists('\Sendama\Engine\Core\Component')
+        || !is_a($componentClass, '\Sendama\Engine\Core\Component', true)
+    ) {
+        return null;
+    }
+
+    try {
+        $gameObject = build_dummy_game_object($item);
+
+        if (!is_object($gameObject)) {
+            return null;
+        }
+
+        $component = new $componentClass($gameObject);
+
+        return normalize_editor_value(extract_component_serializable_data($component));
+    } catch (Throwable) {
+        return null;
+    }
+}
+
+function extract_component_serializable_data(object $component): array
+{
+    $serializedData = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        try {
+            $serializedData[$property->getName()] = $property->getValue($component);
+        } catch (Throwable) {
+            continue;
+        }
+    }
+
+    return $serializedData;
+}
+
+function enrich_component_entry(mixed $component, array $item): mixed
+{
+    if (!is_array($component)) {
+        return $component;
+    }
+
+    $componentClass = $component['class'] ?? null;
+    $defaultComponentData = is_string($componentClass) && $componentClass !== ''
+        ? serialize_component_data($componentClass, $item)
+        : null;
+
+    if (array_key_exists('data', $component)) {
+        $existingComponentData = is_array($component['data'])
+            ? normalize_editor_value($component['data'])
+            : normalize_editor_value((array) $component['data']);
+
+        if (is_array($defaultComponentData)) {
+            $component['data'] = merge_component_data($defaultComponentData, $existingComponentData);
+        } else {
+            $component['data'] = $existingComponentData;
+        }
+
+        return $component;
+    }
+
+    if (!is_string($componentClass) || $componentClass === '') {
+        return $component;
+    }
+
+    if (is_array($defaultComponentData)) {
+        $component['data'] = $defaultComponentData;
+    }
+
+    return $component;
+}
+
+function merge_component_data(array $defaultData, array $existingData): array
+{
+    if ($existingData === []) {
+        return $defaultData;
+    }
+
+    $mergedData = $defaultData;
+
+    foreach ($existingData as $key => $value) {
+        if (
+            array_key_exists($key, $defaultData)
+            && is_array($defaultData[$key])
+            && is_array($value)
+            && !array_is_list($defaultData[$key])
+            && !array_is_list($value)
+        ) {
+            $mergedData[$key] = merge_component_data($defaultData[$key], $value);
+            continue;
+        }
+
+        $mergedData[$key] = $value;
+    }
+
+    return $mergedData;
+}
+
+function enrich_hierarchy_item(mixed $item): mixed
+{
+    if (!is_array($item)) {
+        return $item;
+    }
+
+    if (is_array($item['components'] ?? null)) {
+        $item['components'] = array_values(array_map(
+            static fn (mixed $component): mixed => enrich_component_entry($component, $item),
+            $item['components'],
+        ));
+    }
+
+    if (is_array($item['children'] ?? null)) {
+        $item['children'] = array_values(array_map(
+            static fn (mixed $child): mixed => enrich_hierarchy_item($child),
+            $item['children'],
+        ));
+    }
+
+    return $item;
+}
+
+function enrich_scene_data(array $sceneData): array
+{
+    if (!is_array($sceneData['hierarchy'] ?? null)) {
+        return $sceneData;
+    }
+
+    $sceneData['hierarchy'] = array_values(array_map(
+        static fn (mixed $item): mixed => enrich_hierarchy_item($item),
+        $sceneData['hierarchy'],
+    ));
+
+    return $sceneData;
+}
 
 if ($scenePath === '' || !is_file($scenePath)) {
     fwrite(STDERR, "Scene file not found.\n");
@@ -201,7 +477,12 @@ if (!is_array($sceneData ?? null)) {
     exit(2);
 }
 
-$encodedSceneData = json_encode($sceneData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$payload = [
+    'source' => $sceneData,
+    'editor' => enrich_scene_data($sceneData),
+];
+
+$encodedSceneData = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
 if (!is_string($encodedSceneData)) {
     fwrite(STDERR, "Failed to encode scene metadata.\n");

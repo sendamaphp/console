@@ -92,3 +92,29 @@ test('input manager tokenizes mixed escape sequences and printable characters', 
 
     expect($tokenizeInput->invoke(null, "\033[B0"))->toBe(["\033[B", '0']);
 });
+
+test('input manager coalesces repeated arrow tokens to avoid held-key drift', function () {
+    $coalesceRepeatableTokens = new ReflectionMethod(InputManager::class, 'coalesceRepeatableTokens');
+    $coalesceRepeatableTokens->setAccessible(true);
+
+    expect($coalesceRepeatableTokens->invoke(null, ["\033[C", "\033[C", "\033[C"]))->toBe([
+        "\033[C",
+    ]);
+    expect($coalesceRepeatableTokens->invoke(null, ["\033[C", "\033[D", "\033[D"]))->toBe([
+        "\033[C",
+        "\033[D",
+    ]);
+    expect($coalesceRepeatableTokens->invoke(null, ['0', '0']))->toBe(['0', '0']);
+});
+
+test('input manager treats repeated arrow input as pressed', function () {
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue("\033[C");
+    $keyPress->setValue("\033[C");
+
+    expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeTrue();
+    expect(InputManager::isKeyDown(KeyCode::RIGHT))->toBeFalse();
+});

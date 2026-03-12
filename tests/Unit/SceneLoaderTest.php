@@ -151,6 +151,415 @@ PHP
     ]);
 });
 
+test('scene loader enriches component entries with serialized component data for editor use', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-components-' . uniqid();
+    mkdir($workspace . '/assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+        public function __construct(public ?string $name = null)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core {
+    use ReflectionObject;
+    use Sendama\Engine\Core\Behaviours\Attributes\SerializeField;
+
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class Texture
+    {
+        public function __construct(public string $path)
+        {
+        }
+    }
+
+    class Sprite
+    {
+        public function __construct(public Texture $texture, public array $rect)
+        {
+        }
+
+        public function __serialize(): array
+        {
+            return [
+                'texture' => $this->texture->path,
+                'rect' => $this->rect,
+            ];
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?Sprite $sprite = null,
+        ) {
+        }
+
+        public function getName(): string
+        {
+            return $this->name;
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+
+        public function __serialize(): array
+        {
+            $data = [];
+            $properties = (new ReflectionObject($this))->getProperties();
+
+            foreach ($properties as $property) {
+                if ($property->isPublic() || $property->getAttributes(SerializeField::class)) {
+                    $data[$property->getName()] = $property->getValue($this);
+                }
+            }
+
+            return $data;
+        }
+    }
+}
+
+namespace Sendama\Game {
+    use Sendama\Engine\Core\Behaviours\Attributes\SerializeField;
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+    use Sendama\Engine\Core\Vector2;
+
+    class PlayerController extends Component
+    {
+        public bool $enabledInEditor = true;
+
+        #[SerializeField]
+        protected int $speed = 3;
+
+        public Vector2|array $spawnOffset;
+
+        public function __construct(GameObject $gameObject)
+        {
+            $this->spawnOffset = new Vector2(2, 1);
+            parent::__construct($gameObject);
+        }
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+            'components' => [
+                ['class' => 'Sendama\\Game\\PlayerController'],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->sourceData['hierarchy'][0]['components'])->toBe([
+        ['class' => 'Sendama\\Game\\PlayerController'],
+    ]);
+    expect($scene->hierarchy[0]['components'])->toBe([
+        [
+            'class' => 'Sendama\\Game\\PlayerController',
+            'data' => [
+                'enabledInEditor' => true,
+                'speed' => 3,
+                'spawnOffset' => ['x' => 2, 'y' => 1],
+            ],
+        ],
+    ]);
+});
+
+test('scene loader backfills empty saved component data from serialized defaults', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-component-merge-' . uniqid();
+    mkdir($workspace . '/assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+        public function __construct(public ?string $name = null)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core\Scenes\Interfaces {
+    interface SceneInterface
+    {
+    }
+}
+
+namespace Sendama\Engine\Core\Scenes {
+    use Sendama\Engine\Core\Scenes\Interfaces\SceneInterface;
+
+    class SceneManager
+    {
+        private static ?self $instance = null;
+
+        public static function getInstance(): self
+        {
+            return self::$instance ??= new self();
+        }
+
+        public function getActiveScene(): ?SceneInterface
+        {
+            return null;
+        }
+    }
+}
+
+namespace Sendama\Engine\Core {
+    use ReflectionObject;
+
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?object $sprite = null,
+        ) {
+        }
+
+        public function getName(): string
+        {
+            return $this->name;
+        }
+
+        public function getScene(): ?\Sendama\Engine\Core\Scenes\Interfaces\SceneInterface
+        {
+            return null;
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+
+        public function getGameObject(): GameObject
+        {
+            return $this->gameObject;
+        }
+
+        public function __serialize(): array
+        {
+            $data = [];
+            $properties = (new ReflectionObject($this))->getProperties();
+
+            foreach ($properties as $property) {
+                if ($property->isPublic() || $property->getAttributes(\Sendama\Engine\Core\Behaviours\Attributes\SerializeField::class)) {
+                    $data[$property->getName()] = $property->getValue($this);
+                }
+            }
+
+            return $data;
+        }
+    }
+}
+
+namespace Sendama\Engine\Core\Behaviours {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+    use Sendama\Engine\Core\Scenes\Interfaces\SceneInterface;
+
+    abstract class Behaviour extends Component
+    {
+        public SceneInterface $activeScene {
+            get {
+                $scene = $this->getGameObject()->getScene();
+
+                if (!$scene instanceof SceneInterface) {
+                    throw new \RuntimeException('No active scene');
+                }
+
+                return $scene;
+            }
+        }
+
+        public SceneInterface $scene {
+            get {
+                $scene = $this->getGameObject()->getScene();
+
+                if (!$scene instanceof SceneInterface) {
+                    throw new \RuntimeException('No scene');
+                }
+
+                return $scene;
+            }
+        }
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class Texture
+    {
+        public function __construct(public string $path)
+        {
+        }
+
+        public function __toString(): string
+        {
+            return $this->path;
+        }
+    }
+}
+
+namespace Sendama\Game {
+    use Sendama\Engine\Core\Behaviours\Attributes\SerializeField;
+    use Sendama\Engine\Core\Behaviours\Behaviour;
+    use Sendama\Engine\Core\Texture;
+
+    class Gun extends Behaviour
+    {
+        #[SerializeField]
+        protected float $fireRate = 0.5;
+
+        #[SerializeField]
+        protected int $maxBullets = 10;
+
+        #[SerializeField]
+        protected ?Texture $bulletTexture = null;
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Gun',
+                    'data' => [],
+                ],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->hierarchy[0]['components'])->toBe([
+        [
+            'class' => 'Sendama\\Game\\Gun',
+            'data' => [
+                'fireRate' => 0.5,
+                'maxBullets' => 10,
+                'bulletTexture' => null,
+            ],
+        ],
+    ]);
+});
+
 test('scene loader falls back to the first available scene when none is configured', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
     mkdir($workspace . '/assets/Scenes', 0777, true);

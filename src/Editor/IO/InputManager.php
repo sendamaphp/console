@@ -14,6 +14,13 @@ class InputManager implements StaticObservableInterface
 {
     use StaticObservableTrait;
 
+    private const array COALESCED_REPEATABLE_KEYS = [
+        KeyCode::UP->value,
+        KeyCode::RIGHT->value,
+        KeyCode::DOWN->value,
+        KeyCode::LEFT->value,
+    ];
+
     /**
      * @var string The current key press.
      */
@@ -110,9 +117,14 @@ class InputManager implements StaticObservableInterface
     public static function handleInput(): void
     {
         self::$previousKeyPress = self::$keyPress;
-        if (self::$inputQueue === []) {
-            self::$inputQueue = self::tokenizeInput(stream_get_contents(STDIN) ?: '');
+
+        $incomingTokens = self::tokenizeInput(stream_get_contents(STDIN) ?: '');
+
+        if ($incomingTokens !== []) {
+            self::$inputQueue = [...self::$inputQueue, ...$incomingTokens];
         }
+
+        self::$inputQueue = self::coalesceRepeatableTokens(self::$inputQueue);
 
         self::$keyPress = array_shift(self::$inputQueue) ?? '';
         self::$mouseEvent = self::parseMouseEvent(self::$keyPress);
@@ -277,7 +289,7 @@ class InputManager implements StaticObservableInterface
      */
     public static function isKeyPressed(KeyCode $keyCode): bool
     {
-        return self::$keyPress === $keyCode->value;
+        return self::getKey(self::$keyPress) === $keyCode->value;
     }
 
     /**
@@ -394,6 +406,36 @@ class InputManager implements StaticObservableInterface
         }
 
         return $tokens;
+    }
+
+    private static function coalesceRepeatableTokens(array $tokens): array
+    {
+        if ($tokens === []) {
+            return [];
+        }
+
+        $coalescedTokens = [];
+        $previousNormalizedToken = null;
+        $previousWasRepeatable = false;
+
+        foreach ($tokens as $token) {
+            if (!is_string($token) || $token === '') {
+                continue;
+            }
+
+            $normalizedToken = self::getKey($token);
+            $isRepeatableToken = in_array($normalizedToken, self::COALESCED_REPEATABLE_KEYS, true);
+
+            if ($isRepeatableToken && $previousWasRepeatable && $normalizedToken === $previousNormalizedToken) {
+                continue;
+            }
+
+            $coalescedTokens[] = $token;
+            $previousNormalizedToken = $normalizedToken;
+            $previousWasRepeatable = $isRepeatableToken;
+        }
+
+        return $coalescedTokens;
     }
 
     private static function extractEscapeSequence(string $input): string

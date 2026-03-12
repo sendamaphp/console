@@ -119,18 +119,24 @@ final class SceneWriter
         $lines = [];
 
         if ($isList) {
+            $listItemMappings = $this->buildListItemMappings($currentValue, $originalValue);
+
             foreach (array_keys($currentValue) as $index) {
-                $itemNode = $sourceNode['items'][$index] ?? null;
+                $originalIndex = $listItemMappings[$index] ?? null;
+                $itemNode = is_int($originalIndex)
+                    ? ($sourceNode['items'][$originalIndex] ?? null)
+                    : null;
 
                 if (
                     is_array($itemNode)
                     && isset($itemNode['node'])
-                    && array_key_exists($index, $originalValue)
+                    && is_int($originalIndex)
+                    && array_key_exists($originalIndex, $originalValue)
                 ) {
                     $lines[] = $childIndent
                         . $this->renderMergedValue(
                             $currentValue[$index],
-                            $originalValue[$index],
+                            $originalValue[$originalIndex],
                             $itemNode['node'],
                             $depth + 1
                         )
@@ -192,6 +198,91 @@ final class SceneWriter
         }
 
         return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+    }
+
+    private function buildListItemMappings(array $currentValue, array $originalValue): array
+    {
+        $mappings = [];
+        $availableOriginalIndexes = array_keys($originalValue);
+
+        foreach ($currentValue as $currentIndex => $currentItem) {
+            foreach ($availableOriginalIndexes as $availablePosition => $originalIndex) {
+                if ($currentItem !== $originalValue[$originalIndex]) {
+                    continue;
+                }
+
+                $mappings[$currentIndex] = $originalIndex;
+                unset($availableOriginalIndexes[$availablePosition]);
+                continue 2;
+            }
+        }
+
+        foreach ($currentValue as $currentIndex => $currentItem) {
+            if (array_key_exists($currentIndex, $mappings)) {
+                continue;
+            }
+
+            $currentIdentity = $this->resolveListItemIdentity($currentItem);
+
+            if ($currentIdentity === null) {
+                continue;
+            }
+
+            $matchingOriginalIndexes = [];
+
+            foreach ($availableOriginalIndexes as $originalIndex) {
+                if ($this->resolveListItemIdentity($originalValue[$originalIndex]) === $currentIdentity) {
+                    $matchingOriginalIndexes[] = $originalIndex;
+                }
+            }
+
+            if (count($matchingOriginalIndexes) !== 1) {
+                continue;
+            }
+
+            $matchedOriginalIndex = $matchingOriginalIndexes[0];
+            $mappings[$currentIndex] = $matchedOriginalIndex;
+            $availablePosition = array_search($matchedOriginalIndex, $availableOriginalIndexes, true);
+
+            if ($availablePosition !== false) {
+                unset($availableOriginalIndexes[$availablePosition]);
+            }
+        }
+
+        return $mappings;
+    }
+
+    private function resolveListItemIdentity(mixed $value): ?string
+    {
+        if (is_scalar($value) || $value === null) {
+            return get_debug_type($value) . ':' . var_export($value, true);
+        }
+
+        if (!is_array($value) || array_is_list($value)) {
+            return null;
+        }
+
+        $identity = [];
+
+        foreach (['type', 'class', 'name', 'path', 'relativePath', 'environmentTileMapPath', 'text', 'tag'] as $key) {
+            if (!array_key_exists($key, $value)) {
+                continue;
+            }
+
+            $identityValue = $value[$key];
+
+            if (!is_scalar($identityValue) && $identityValue !== null) {
+                continue;
+            }
+
+            $identity[$key] = $identityValue;
+        }
+
+        if ($identity === []) {
+            return null;
+        }
+
+        return json_encode($identity, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: null;
     }
 
     private function renderArrayKeyPrefix(int|string $key, ?string $keySource): string

@@ -100,6 +100,77 @@ test('inspector panel styles component headers with a white background', functio
     expect($renderedLine)->toContain("\033[30;47m");
 });
 
+test('inspector panel styles focused section headers with a light blue background', function () {
+    $panelWidth = 32;
+    $panel = new InspectorPanel(width: $panelWidth, height: 12);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'value' => [
+            'type' => 'GameObject::class',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 0, 'y' => 0],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [],
+        ],
+    ]);
+
+    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    for ($index = 0; $index < 3; $index++) {
+        $panel->cycleFocusForward();
+    }
+
+    $decorateContentLine = new ReflectionMethod($panel, 'decorateContentLine');
+    $decorateContentLine->setAccessible(true);
+    $line = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
+    $renderedLine = $decorateContentLine->invoke($panel, $line, null, 3);
+
+    expect($renderedLine)->toContain("\033[30;104m");
+});
+
+test('inspector panel renders serialized component data with typed controls', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\PlayerController',
+                    'data' => [
+                        'isPlayerControlled' => true,
+                        'maxBullets' => 10,
+                        'spawnOffset' => ['x' => 2, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    expect($panel->content)->toContain('▼ PlayerController');
+    expect($panel->content)->toContain('  Is Player Controlled: [x]');
+    expect($panel->content)->toContain('  Max Bullets: 10');
+    expect($panel->content)->toContain('  Spawn Offset:');
+    expect($panel->content)->toContain('    X: 2');
+    expect($panel->content)->toContain('    Y: 1');
+});
+
 test('inspector panel resolves texture previews from the configured project directory', function () {
     $workspace = sys_get_temp_dir() . '/sendama-inspector-project-root-' . uniqid();
     mkdir($workspace . '/Assets/Textures', 0777, true);
@@ -280,6 +351,62 @@ test('inspector panel renders editable scene controls', function () {
         'Height: 25',
         'Environment Tile Map: Maps/level',
     ]);
+});
+
+test('inspector panel toggles focused sections with slash', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\PlayerController',
+                    'data' => [
+                        'maxBullets' => 10,
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+
+    for ($index = 0; $index < 3; $index++) {
+        $panel->cycleFocusForward();
+    }
+
+    expect($panel->content)->toContain('▼ Transform');
+    expect($panel->content)->toContain('  Position:');
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue('/');
+    $panel->update();
+
+    expect($panel->content)->toContain('▶ Transform');
+    expect($panel->content)->not->toContain('  Position:');
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue('/');
+    $panel->update();
+
+    expect($panel->content)->toContain('▼ Transform');
+    expect($panel->content)->toContain('  Position:');
 });
 
 test('inspector panel opens the path action modal for path controls', function () {

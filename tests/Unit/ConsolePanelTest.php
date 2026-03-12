@@ -2,7 +2,7 @@
 
 use Sendama\Console\Editor\Widgets\ConsolePanel;
 
-test('console panel loads the last three log lines on startup', function () {
+test('console panel loads the last three debug log lines on startup', function () {
     $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
     mkdir($workspace . '/logs', 0777, true);
 
@@ -22,10 +22,90 @@ test('console panel loads the last three log lines on startup', function () {
         logFilePath: $workspace . '/logs/debug.log',
     );
 
-    expect($panel->content)->toBe([
+    expect($panel->getActiveTab())->toBe('Debug');
+    expect(array_slice($panel->content, 2))->toBe([
         '[2026-03-11 10:00:01] [INFO] - Second',
         '[2026-03-11 10:00:02] [WARN] - Third',
         '[2026-03-11 10:00:03] [ERROR] - Fourth',
+    ]);
+});
+
+test('console panel switches between debug and error tabs', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents(
+        $workspace . '/logs/debug.log',
+        implode(PHP_EOL, [
+            'debug 1',
+            'debug 2',
+            'debug 3',
+        ]) . PHP_EOL
+    );
+
+    file_put_contents(
+        $workspace . '/logs/error.log',
+        implode(PHP_EOL, [
+            'error 1',
+            'error 2',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+        errorLogFilePath: $workspace . '/logs/error.log',
+    );
+
+    expect($panel->content[0])->toContain('Debug');
+    expect($panel->content[0])->toContain('Error');
+    expect(array_slice($panel->content, 2))->toBe([
+        'debug 1',
+        'debug 2',
+        'debug 3',
+    ]);
+
+    $panel->cycleFocusForward();
+
+    expect($panel->getActiveTab())->toBe('Error');
+    expect(array_slice($panel->content, 2))->toBe([
+        'error 1',
+        'error 2',
+    ]);
+
+    $panel->cycleFocusBackward();
+
+    expect($panel->getActiveTab())->toBe('Debug');
+});
+
+test('console panel ignores missing tab log files', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents(
+        $workspace . '/logs/error.log',
+        implode(PHP_EOL, [
+            '[2026-03-11 10:00:01] [ERROR] - First',
+            '[2026-03-11 10:00:02] [ERROR] - Second',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+        errorLogFilePath: $workspace . '/logs/error.log',
+    );
+
+    expect(array_slice($panel->content, 2))->toBe([]);
+
+    $panel->cycleFocusForward();
+
+    expect($panel->getActiveTab())->toBe('Error');
+    expect(array_slice($panel->content, 2))->toBe([
+        '[2026-03-11 10:00:01] [ERROR] - First',
+        '[2026-03-11 10:00:02] [ERROR] - Second',
     ]);
 });
 
@@ -46,11 +126,11 @@ test('console panel scrolls upward through older log lines', function () {
 
     $panel = new ConsolePanel(
         width: 40,
-        height: 6,
+        height: 8,
         logFilePath: $workspace . '/logs/debug.log',
     );
 
-    expect($panel->content)->toBe([
+    expect(array_slice($panel->content, 2))->toBe([
         'line 3',
         'line 4',
         'line 5',
@@ -58,7 +138,7 @@ test('console panel scrolls upward through older log lines', function () {
 
     $panel->scrollUp();
 
-    expect($panel->content)->toBe([
+    expect(array_slice($panel->content, 2))->toBe([
         'line 2',
         'line 3',
         'line 4',
@@ -68,7 +148,7 @@ test('console panel scrolls upward through older log lines', function () {
     $panel->scrollUp();
     $panel->scrollUp();
 
-    expect($panel->content)->toBe([
+    expect(array_slice($panel->content, 2))->toBe([
         'line 1',
         'line 2',
         'line 3',
@@ -93,7 +173,7 @@ test('console panel scrolls down until the last log line is at the top', functio
 
     $panel = new ConsolePanel(
         width: 40,
-        height: 6,
+        height: 8,
         logFilePath: $workspace . '/logs/debug.log',
     );
 
@@ -102,7 +182,159 @@ test('console panel scrolls down until the last log line is at the top', functio
     $panel->scrollDown();
     $panel->scrollDown();
 
-    expect($panel->content)->toBe([
+    expect(array_slice($panel->content, 2))->toBe([
+        'line 5',
+    ]);
+});
+
+test('console panel refreshes the active tab from disk on shift+r when focused', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    $logFilePath = $workspace . '/logs/error.log';
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 40,
+        height: 8,
+        errorLogFilePath: $logFilePath,
+    );
+
+    $panel->cycleFocusForward();
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+            'line 4',
+            'line 5',
+            'line 6',
+        ]) . PHP_EOL
+    );
+
+    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $keyPress->setValue('R');
+
+    $panel->update();
+
+    expect($panel->getActiveTab())->toBe('Error');
+    expect(array_slice($panel->content, 2))->toBe([
+        'line 3',
+        'line 4',
+        'line 5',
+        'line 6',
+    ]);
+});
+
+test('console panel does not auto refresh outside play mode', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    $logFilePath = $workspace . '/logs/debug.log';
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 40,
+        height: 8,
+        logFilePath: $logFilePath,
+        refreshIntervalSeconds: 1.0,
+    );
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+            'line 4',
+            'line 5',
+        ]) . PHP_EOL
+    );
+
+    $lastLogRefreshAt = new ReflectionProperty(ConsolePanel::class, 'lastLogRefreshAt');
+    $lastLogRefreshAt->setAccessible(true);
+    $lastLogRefreshAt->setValue($panel, microtime(true) - 2);
+
+    $panel->update();
+
+    expect(array_slice($panel->content, 2))->toBe([
+        'line 1',
+        'line 2',
+        'line 3',
+    ]);
+});
+
+test('console panel automatically refreshes from the active tab log file during play mode', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    $logFilePath = $workspace . '/logs/debug.log';
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 40,
+        height: 8,
+        logFilePath: $logFilePath,
+        refreshIntervalSeconds: 1.0,
+    );
+
+    $panel->setPlayModeActive(true);
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            'line 1',
+            'line 2',
+            'line 3',
+            'line 4',
+            'line 5',
+        ]) . PHP_EOL
+    );
+
+    $lastLogRefreshAt = new ReflectionProperty(ConsolePanel::class, 'lastLogRefreshAt');
+    $lastLogRefreshAt->setAccessible(true);
+    $lastLogRefreshAt->setValue($panel, microtime(true) - 2);
+
+    $panel->update();
+
+    expect(array_slice($panel->content, 2))->toBe([
+        'line 2',
+        'line 3',
+        'line 4',
         'line 5',
     ]);
 });
