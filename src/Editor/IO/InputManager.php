@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\IO;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\Events\Interfaces\StaticObservableInterface;
 use Atatusoft\Termutil\Events\Traits\StaticObservableTrait;
 use Sendama\Console\Editor\Events\KeyboardEvent;
@@ -23,6 +24,7 @@ class InputManager implements StaticObservableInterface
     private static string $previousKeyPress = "";
     private static array $axes = [];
     private static array $buttons = [];
+    private static ?MouseEvent $mouseEvent = null;
 
     /**
      * Initializes the InputManager.
@@ -32,6 +34,7 @@ class InputManager implements StaticObservableInterface
     public static function init(): void
     {
         self::$previousKeyPress = self::$keyPress = "";
+        self::$mouseEvent = null;
         self::initializeObservers();
     }
 
@@ -88,9 +91,30 @@ class InputManager implements StaticObservableInterface
     public static function handleInput(): void
     {
         self::$previousKeyPress = self::$keyPress;
-        self::$keyPress = fgets(STDIN) ?: '';
+        self::$keyPress = self::normalizeInput(stream_get_contents(STDIN) ?: '');
+        self::$mouseEvent = self::parseMouseEvent(self::$keyPress);
+
+        if (self::$mouseEvent) {
+            self::notify(self::$mouseEvent);
+            return;
+        }
 
         self::notify(new KeyboardEvent(self::$keyPress));
+    }
+
+    public static function getMouseEvent(): ?MouseEvent
+    {
+        return self::$mouseEvent;
+    }
+
+    public static function getCurrentInput(): string
+    {
+        return self::$keyPress;
+    }
+
+    public static function isLeftMouseButtonDown(): bool
+    {
+        return self::$mouseEvent?->buttonIndex === 0;
     }
 
     /**
@@ -108,8 +132,13 @@ class InputManager implements StaticObservableInterface
         return match ($keyPress) {
             "\033[A" => KeyCode::UP->value,
             "\033[B" => KeyCode::DOWN->value,
+            "\033[1;2A", "\033[a" => KeyCode::SHIFT_UP->value,
+            "\033[1;2B", "\033[b" => KeyCode::SHIFT_DOWN->value,
             "\033[C" => KeyCode::RIGHT->value,
             "\033[D" => KeyCode::LEFT->value,
+            "\033[1;2C", "\033[c" => KeyCode::SHIFT_RIGHT->value,
+            "\033[1;2D", "\033[d" => KeyCode::SHIFT_LEFT->value,
+            "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,
             "\010", "\177" => KeyCode::BACKSPACE->value,
@@ -289,5 +318,31 @@ class InputManager implements StaticObservableInterface
     private static function findAxis(string $axisName): ?VirtualAxis
     {
         return array_filter(self::$axes, fn($axis) => $axis->getName() === $axisName)[0] ?? null;
+    }
+
+    private static function parseMouseEvent(string $input): ?MouseEvent
+    {
+        if (preg_match('/\033\[<(\d+);(\d+);(\d+)([Mm])/', $input) !== 1) {
+            return null;
+        }
+
+        return new MouseEvent($input);
+    }
+
+    private static function normalizeInput(string $input): string
+    {
+        if ($input === '') {
+            return '';
+        }
+
+        if (preg_match('/\033\[<(\d+);(\d+);(\d+)([Mm])/', $input, $matches) === 1) {
+            return $matches[0];
+        }
+
+        if (str_starts_with($input, "\033")) {
+            return $input;
+        }
+
+        return mb_substr($input, -1);
     }
 }

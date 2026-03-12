@@ -12,6 +12,11 @@ enum KeyCode: string
     case ENTER      = 'enter';
     case SPACE      = 'space';
     case TAB        = 'tab';
+    case SHIFT_TAB  = 'shift_tab';
+    case SHIFT_UP   = 'shift_up';
+    case SHIFT_RIGHT = 'shift_right';
+    case SHIFT_DOWN = 'shift_down';
+    case SHIFT_LEFT = 'shift_left';
     case BACKSPACE  = 'backspace';
     case ESCAPE     = 'escape';
     case DELETE     = 'delete';
@@ -51,6 +56,7 @@ enum KeyCode: string
     case SELECT     = 'select';
     case PAGE_UP    = 'page_up';
     case PAGE_DOWN  = 'page_down';
+    case PLAY_TOGGLE = '%';
     case a          = 'a';
     case b          = 'b';
     case c          = 'c';

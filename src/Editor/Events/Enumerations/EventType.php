@@ -12,4 +12,5 @@ enum EventType: string
     case EDITOR_RENDERED = 'frame_rendered';
     case EDITOR_INPUT_HANDLED = 'editor_input_handled';
     case KEYBOARD_INPUT = 'keyboard_input';
+    case HIERARCHY_CHANGED = 'hierarchy_changed';
 }

@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\IO;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Sendama\Console\Editor\IO\Enumerations\AxisName;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 
@@ -87,6 +88,21 @@ final class Input
     public static function isKeyUp(KeyCode $keyCode): bool
     {
         return InputManager::isKeyUp($keyCode);
+    }
+
+    public static function getMouseEvent(): ?MouseEvent
+    {
+        return InputManager::getMouseEvent();
+    }
+
+    public static function getCurrentInput(): string
+    {
+        return InputManager::getCurrentInput();
+    }
+
+    public static function isLeftMouseButtonDown(): bool
+    {
+        return InputManager::isLeftMouseButtonDown();
     }
 
     /**
