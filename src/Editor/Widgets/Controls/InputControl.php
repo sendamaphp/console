@@ -26,6 +26,11 @@ abstract class InputControl
         return $this->value;
     }
 
+    public function getIndentLevel(): int
+    {
+        return $this->indentLevel;
+    }
+
     public function setValue(mixed $value): void
     {
         $this->value = $value;

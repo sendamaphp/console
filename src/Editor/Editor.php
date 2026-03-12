@@ -602,6 +602,8 @@ final class Editor implements ObservableInterface
         );
         $this->consolePanel = new ConsolePanel(
             logFilePath: Path::join($this->workingDirectory, 'logs', 'debug.log'),
+            errorLogFilePath: Path::join($this->workingDirectory, 'logs', 'error.log'),
+            refreshIntervalSeconds: $this->settings->consoleRefreshIntervalSeconds,
         );
         $this->inspectorPanel = new InspectorPanel(
             workingDirectory: $this->workingDirectory,

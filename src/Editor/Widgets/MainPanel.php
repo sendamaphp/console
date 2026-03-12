@@ -26,6 +26,7 @@ class MainPanel extends Widget
     private const string SPRITE_CURSOR_FOCUSED_SEQUENCE = "\033[5;30;47m";
     private const string GAME_IDLE_PATTERN_CHARACTER = '/';
     private const string GAME_IDLE_PROMPT = 'Shift+5 to Play';
+    private const string SCENE_PLACEHOLDER_CHARACTER = 'x';
     private const Color DEFAULT_FOCUS_COLOR = Color::LIGHT_CYAN;
     private const Color PLAY_MODE_FOCUS_COLOR = Color::BROWN;
     private const string SPRITE_MODAL_CREATE = 'create_asset';
@@ -744,22 +745,22 @@ class MainPanel extends Widget
 
         $this->syncSelectedScenePath();
 
-        if (Input::isKeyDown(KeyCode::UP)) {
+        if (Input::isKeyPressed(KeyCode::UP)) {
             $this->moveSelectedSceneObject(0, -1);
             return true;
         }
 
-        if (Input::isKeyDown(KeyCode::RIGHT)) {
+        if (Input::isKeyPressed(KeyCode::RIGHT)) {
             $this->moveSelectedSceneObject(1, 0);
             return true;
         }
 
-        if (Input::isKeyDown(KeyCode::DOWN)) {
+        if (Input::isKeyPressed(KeyCode::DOWN)) {
             $this->moveSelectedSceneObject(0, 1);
             return true;
         }
 
-        if (Input::isKeyDown(KeyCode::LEFT)) {
+        if (Input::isKeyPressed(KeyCode::LEFT)) {
             $this->moveSelectedSceneObject(-1, 0);
             return true;
         }
@@ -1056,6 +1057,14 @@ class MainPanel extends Widget
         $highlightText = mb_substr($middle, $highlightStart, $highlightLength);
         $afterHighlight = mb_substr($middle, $highlightStart + $highlightLength);
 
+        if (($highlight['kind'] ?? null) === 'placeholder') {
+            return $this->wrapWithColor($leftBorder, $borderColor)
+                . $this->wrapWithColor($beforeHighlight, $contentColor)
+                . $this->wrapWithColor($highlightText, Color::DARK_GRAY)
+                . $this->wrapWithColor($afterHighlight, $contentColor)
+                . $this->wrapWithColor($rightBorder, $borderColor);
+        }
+
         return $this->wrapWithColor($leftBorder, $borderColor)
             . $this->wrapWithColor($beforeHighlight, $contentColor)
             . $this->wrapWithSequence($highlightText, $this->resolveSceneHighlightSequence())
@@ -1108,6 +1117,24 @@ class MainPanel extends Widget
             $renderLines = is_array($sceneObject['renderLines'] ?? null)
                 ? $sceneObject['renderLines']
                 : [];
+
+            if ($renderLines === []) {
+                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
+                    continue;
+                }
+
+                if ($row < 0 || $row >= $canvasHeight || $column < 0 || $column >= $canvasWidth) {
+                    continue;
+                }
+
+                $canvas[$row][$column] = self::SCENE_PLACEHOLDER_CHARACTER;
+                $this->sceneLineHighlights[2 + $row] = [
+                    'start' => $column,
+                    'length' => 1,
+                    'kind' => 'placeholder',
+                ];
+                continue;
+            }
 
             foreach ($renderLines as $lineOffset => $renderLine) {
                 $targetRow = $row + $lineOffset;
@@ -1222,15 +1249,12 @@ class MainPanel extends Widget
 
             $path = $parentPath . '.' . $index;
             $renderLines = $this->resolveSceneObjectRenderLines($item);
-
-            if ($renderLines !== []) {
-                $flattenedObjects[] = [
-                    'path' => $path,
-                    'item' => $item,
-                    'position' => $this->normalizeVector($item['position'] ?? null),
-                    'renderLines' => $renderLines,
-                ];
-            }
+            $flattenedObjects[] = [
+                'path' => $path,
+                'item' => $item,
+                'position' => $this->normalizeVector($item['position'] ?? null),
+                'renderLines' => $renderLines,
+            ];
 
             if (is_array($item['children'] ?? null) && $item['children'] !== []) {
                 $flattenedObjects = [

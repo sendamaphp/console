@@ -20,6 +20,7 @@ enum KeyCode: string
     case BACKSPACE  = 'backspace';
     case ESCAPE     = 'escape';
     case DELETE     = 'delete';
+    case SLASH      = '/';
     case CTRL_C     = 'ctrl_c';
     case CTRL_S     = 'ctrl_s';
     case CTRL_Y     = 'ctrl_y';

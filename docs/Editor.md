@@ -105,6 +105,7 @@ When the main panel has focus and the `Scene` tab is active, it uses scene-view 
 #### Select Mode
 
 Use Select Mode to move between visible scene objects without changing them.
+If the selected object has no renderable sprite or text, Scene View shows a muted `x` at its transform position.
 
 Controls:
 
@@ -324,6 +325,7 @@ Controls:
 
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
+- `/`: toggle the focused collapsible section, such as `Transform`, `Renderer`, or a component block
 
 #### 2. Property Selection
 
@@ -434,18 +436,28 @@ The Console panel currently reads from:
 
 ```text
 <project_root>/logs/debug.log
+<project_root>/logs/error.log
 ```
 
 Current behavior:
 
-- on editor startup it loads the last three log lines
+- it has two tabs:
+  - `Debug`: reads from `logs/debug.log` if it exists
+  - `Error`: reads from `logs/error.log` if it exists
+- on editor startup each tab loads the last three lines from its own log file
 - log display is clipped to the console viewport
+- it only reads a tab's log file if that file exists
+- it auto-refreshes the console tabs from disk every `editor.console.refreshInterval` seconds while the editor is in Play Mode
 - when the console has focus and the editor is not in play mode, it supports scrolling
+- if no refresh interval is configured, the editor uses a default of `5` seconds
 
 Controls:
 
+- `Tab`: switch to the next console tab
+- `Shift+Tab`: switch to the previous console tab
 - `Up`: scroll up through older log lines
 - `Down`: scroll down through newer log lines
+- `Shift+R`: manually refresh the active log tab from disk and jump to the newest visible lines
 
 The scroll stops:
 
@@ -458,6 +470,18 @@ Current tag colors:
 - `[WARN]`: yellow
 - `[INFO]`: blue
 - `[DEBUG]`: light gray
+
+Configuration:
+
+```json
+{
+  "editor": {
+    "console": {
+      "refreshInterval": 5
+    }
+  }
+}
+```
 
 ## Saving
 

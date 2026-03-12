@@ -12,6 +12,7 @@ use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
 use Sendama\Console\Editor\Widgets\Controls\NumberInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
+use Sendama\Console\Editor\Widgets\Controls\SectionControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
 use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
 
@@ -22,8 +23,8 @@ class InspectorPanel extends Widget
     private const string STATE_CONTROL_EDIT = 'control_edit';
     private const string STATE_PATH_INPUT_ACTION_SELECTION = 'path_input_action_selection';
     private const string STATE_PATH_INPUT_FILE_DIALOG = 'path_input_file_dialog';
-    private const string SECTION_ICON = '▼';
     private const string SECTION_HEADER_SEQUENCE = "\033[30;47m";
+    private const string SECTION_HEADER_SELECTED_SEQUENCE = "\033[30;104m";
     private const string SELECTED_CONTROL_SEQUENCE = "\033[30;46m";
     private const string SELECTED_CONTROL_ACTIVE_SEQUENCE = "\033[5;30;46m";
     private const string EDITING_CONTROL_SEQUENCE = "\033[30;43m";
@@ -317,6 +318,8 @@ class InspectorPanel extends Widget
 
     private function decorateSectionHeaderLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
+        $contentIndex = $lineIndex - $this->padding->topPadding;
+        $lineState = $this->lineStates[$contentIndex] ?? 'normal';
         $visibleLine = mb_substr($line, 0, $this->width);
         $visibleLength = mb_strlen($visibleLine);
 
@@ -328,9 +331,12 @@ class InspectorPanel extends Widget
         $middle = $visibleLength > 2 ? mb_substr($visibleLine, 1, $visibleLength - 2) : '';
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
+        $sectionSequence = $lineState === 'selected' && $this->hasFocus()
+            ? self::SECTION_HEADER_SELECTED_SEQUENCE
+            : self::SECTION_HEADER_SEQUENCE;
 
         return $this->wrapWithColor($leftBorder, $borderColor)
-            . $this->wrapWithSequence($middle, self::SECTION_HEADER_SEQUENCE)
+            . $this->wrapWithSequence($middle, $sectionSequence)
             . $this->wrapWithColor($rightBorder, $borderColor);
     }
 
@@ -376,7 +382,7 @@ class InspectorPanel extends Widget
             ['tag'],
         );
 
-        $this->addSectionHeader('Transform');
+        $this->addControl($this->addSectionHeader('Transform'));
         $this->addBoundControl(
             new VectorInputControl('Position', $this->normalizeVector($item['position'] ?? null), 1),
             ['position'],
@@ -397,7 +403,7 @@ class InspectorPanel extends Widget
             );
         }
 
-        $this->addSectionHeader('Renderer');
+        $this->addControl($this->addSectionHeader('Renderer'));
         $this->addRendererControls($item);
         $this->addScriptComponents($item['components'] ?? []);
     }
@@ -506,31 +512,123 @@ class InspectorPanel extends Widget
                 continue;
             }
 
-            $this->addSectionHeader($this->resolveClassName($component['class'] ?? null, 'Component'));
+            $serializedComponentData = is_array($component['data'] ?? null) ? $component['data'] : null;
 
-            foreach ($component as $key => $value) {
-                if ($key === 'class') {
-                    continue;
-                }
-
-                $this->addBoundControl(
-                    $this->inputControlFactory->create(
-                        $this->humanizeKey((string) $key),
-                        $value,
-                        1,
-                    ),
-                    ['components', $componentIndex, $key],
+            if (is_array($serializedComponentData)) {
+                $this->addControl(
+                    $this->addSectionHeader(
+                        $this->resolveClassName($component['class'] ?? null, 'Component'),
+                    )
                 );
+                $this->addComponentPropertyControls(
+                    $serializedComponentData,
+                    ['components', $componentIndex, 'data'],
+                );
+                continue;
             }
+
+            $legacyComponentData = array_filter(
+                $component,
+                static fn(string $key): bool => $key !== 'class',
+                ARRAY_FILTER_USE_KEY,
+            );
+
+            $this->addControl(
+                $this->addSectionHeader(
+                    $this->resolveClassName($component['class'] ?? null, 'Component'),
+                )
+            );
+
+            if (!is_array($legacyComponentData) || $legacyComponentData === []) {
+                continue;
+            }
+
+            $this->addComponentPropertyControls(
+                $legacyComponentData,
+                ['components', $componentIndex],
+            );
         }
     }
 
-    private function addSectionHeader(string $title): void
+    private function addComponentPropertyControls(array $properties, array $basePath, int $indentLevel = 1): void
     {
-        $this->elements[] = [
-            'kind' => 'section_header',
-            'text' => self::SECTION_ICON . ' ' . $title,
-        ];
+        foreach ($properties as $key => $value) {
+            if (!is_string($key)) {
+                continue;
+            }
+
+            if ($this->shouldRenderNestedComponentProperties($value)) {
+                $this->addControl($this->addSectionHeader(
+                    $this->humanizeKey($key),
+                    $indentLevel,
+                ));
+                $this->addComponentPropertyControls(
+                    $value,
+                    [...$basePath, $key],
+                    $indentLevel + 1,
+                );
+                continue;
+            }
+
+            $this->addBoundControl(
+                $this->inputControlFactory->create(
+                    $this->humanizeKey($key),
+                    $value,
+                    $indentLevel,
+                ),
+                [...$basePath, $key],
+            );
+        }
+    }
+
+    private function shouldRenderNestedComponentProperties(mixed $value): bool
+    {
+        if (!is_array($value) || $value === []) {
+            return false;
+        }
+
+        if ($this->isVectorValue($value) || $this->isScalarListValue($value)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isVectorValue(array $value): bool
+    {
+        foreach (array_keys($value) as $key) {
+            if (!is_string($key) || !in_array($key, ['x', 'y', 'z', 'w'], true)) {
+                return false;
+            }
+        }
+
+        foreach ($value as $item) {
+            if (!is_scalar($item) && $item !== null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isScalarListValue(array $value): bool
+    {
+        if (!array_is_list($value)) {
+            return false;
+        }
+
+        foreach ($value as $item) {
+            if (!is_scalar($item) && $item !== null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function addSectionHeader(string $title, int $indentLevel = 0): SectionControl
+    {
+        return new SectionControl($title, $indentLevel);
     }
 
     private function addControl(InputControl $control): void
@@ -544,8 +642,13 @@ class InspectorPanel extends Widget
 
     private function addBoundControl(InputControl $control, array $valuePath): void
     {
-        $this->controlBindings[spl_object_id($control)] = $valuePath;
+        $this->bindControl($control, $valuePath);
         $this->addControl($control);
+    }
+
+    private function bindControl(InputControl $control, array $valuePath): void
+    {
+        $this->controlBindings[spl_object_id($control)] = $valuePath;
     }
 
     private function refreshContent(): void
@@ -554,27 +657,36 @@ class InspectorPanel extends Widget
         $content = [];
         $lineKinds = [];
         $lineStates = [];
+        $collapsedSectionIndentLevels = [];
 
         foreach ($this->elements as $element) {
-            $kind = $element['kind'] ?? 'plain';
-
-            if ($kind === 'section_header') {
-                $content[] = $element['text'] ?? '';
-                $lineKinds[] = 'section_header';
-                $lineStates[] = 'normal';
-                continue;
-            }
-
             $control = $element['control'] ?? null;
 
             if (!$control instanceof InputControl) {
                 continue;
             }
 
+            $controlIndentLevel = $control->getIndentLevel();
+
+            while (
+                $collapsedSectionIndentLevels !== []
+                && $controlIndentLevel <= end($collapsedSectionIndentLevels)
+            ) {
+                array_pop($collapsedSectionIndentLevels);
+            }
+
+            if ($collapsedSectionIndentLevels !== []) {
+                continue;
+            }
+
             foreach ($control->renderLineDefinitions() as $lineDefinition) {
                 $content[] = $lineDefinition['text'] ?? '';
-                $lineKinds[] = 'control';
+                $lineKinds[] = $lineDefinition['kind'] ?? 'control';
                 $lineStates[] = $lineDefinition['state'] ?? 'normal';
+            }
+
+            if ($control instanceof SectionControl && $control->isCollapsed()) {
+                $collapsedSectionIndentLevels[] = $controlIndentLevel;
             }
         }
 
@@ -638,13 +750,31 @@ class InspectorPanel extends Widget
 
     private function moveControlSelection(int $offset): void
     {
-        if ($this->focusableControls === []) {
+        $visibleControlIndexes = $this->resolveVisibleControlIndexes();
+
+        if ($visibleControlIndexes === []) {
             return;
         }
 
-        $this->selectedControlIndex ??= 0;
-        $this->selectedControlIndex = ($this->selectedControlIndex + $offset + count($this->focusableControls))
-            % count($this->focusableControls);
+        if ($this->selectedControlIndex === null || !in_array($this->selectedControlIndex, $visibleControlIndexes, true)) {
+            $this->selectedControlIndex = $visibleControlIndexes[0];
+            $this->applyControlSelection();
+            $this->refreshContent();
+            return;
+        }
+
+        $visibleControlPosition = array_search($this->selectedControlIndex, $visibleControlIndexes, true);
+
+        if (!is_int($visibleControlPosition)) {
+            $this->selectedControlIndex = $visibleControlIndexes[0];
+            $this->applyControlSelection();
+            $this->refreshContent();
+            return;
+        }
+
+        $nextVisibleControlPosition = ($visibleControlPosition + $offset + count($visibleControlIndexes))
+            % count($visibleControlIndexes);
+        $this->selectedControlIndex = $visibleControlIndexes[$nextVisibleControlPosition];
         $this->applyControlSelection();
         $this->refreshContent();
     }
@@ -658,6 +788,12 @@ class InspectorPanel extends Widget
 
         if (Input::isKeyDown(KeyCode::DOWN)) {
             $this->moveControlSelection(1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::SLASH) && $selectedControl instanceof SectionControl) {
+            $selectedControl->toggleCollapsed();
+            $this->refreshContent();
             return;
         }
 
@@ -1160,6 +1296,45 @@ class InspectorPanel extends Widget
             'path' => $hierarchyPath,
             'value' => $inspectionValue,
         ];
+    }
+
+    private function resolveVisibleControlIndexes(): array
+    {
+        $visibleControlIndexes = [];
+        $collapsedSectionIndentLevels = [];
+
+        foreach ($this->elements as $element) {
+            $control = $element['control'] ?? null;
+
+            if (!$control instanceof InputControl) {
+                continue;
+            }
+
+            $controlIndentLevel = $control->getIndentLevel();
+
+            while (
+                $collapsedSectionIndentLevels !== []
+                && $controlIndentLevel <= end($collapsedSectionIndentLevels)
+            ) {
+                array_pop($collapsedSectionIndentLevels);
+            }
+
+            if ($collapsedSectionIndentLevels !== []) {
+                continue;
+            }
+
+            $controlIndex = array_search($control, $this->focusableControls, true);
+
+            if (is_int($controlIndex)) {
+                $visibleControlIndexes[] = $controlIndex;
+            }
+
+            if ($control instanceof SectionControl && $control->isCollapsed()) {
+                $collapsedSectionIndentLevels[] = $controlIndentLevel;
+            }
+        }
+
+        return $visibleControlIndexes;
     }
 
     private function setNestedValue(array &$value, array $path, mixed $nextValue): void

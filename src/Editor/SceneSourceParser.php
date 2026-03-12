@@ -216,13 +216,28 @@ final class SceneSourceParser
 
     private function findReturnIndex(array $tokens): ?int
     {
+        $braceDepth = 0;
+        $lastTopLevelReturnIndex = null;
+
         foreach ($tokens as $index => $token) {
-            if (is_array($token) && $token[0] === T_RETURN) {
-                return $index;
+            $text = $this->tokenText($token);
+
+            if ($text === '{') {
+                $braceDepth++;
+                continue;
+            }
+
+            if ($text === '}') {
+                $braceDepth = max(0, $braceDepth - 1);
+                continue;
+            }
+
+            if ($braceDepth === 0 && is_array($token) && $token[0] === T_RETURN) {
+                $lastTopLevelReturnIndex = $index;
             }
         }
 
-        return null;
+        return $lastTopLevelReturnIndex;
     }
 
     private function isLongArrayStart(array $tokens, int $index): bool

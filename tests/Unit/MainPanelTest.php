@@ -324,6 +324,42 @@ test('main panel select mode emits an inspection payload as scene selection chan
     ]);
 });
 
+test('main panel shows a muted marker for selected non-renderable scene objects', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Game Manager',
+                'position' => ['x' => 3, 'y' => 2],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 10, 'y' => 4],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('Q');
+    $panel->update();
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x')))->toBeTrue();
+});
+
 test('main panel move mode updates the selected scene object position', function () {
     $workspace = createMainPanelWorkspace();
     $panel = new MainPanel(
@@ -438,6 +474,60 @@ test('main panel move mode emits an updated inspection payload for the selected 
             'position' => ['x' => 3, 'y' => 1],
             'rotation' => ['x' => 0, 'y' => 0],
             'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+});
+
+test('main panel move mode continues moving when repeated direction input is held', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressMainPanelKey('W');
+    $panel->update();
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+
+    $previousKeyPress->setValue("\033[C");
+    $keyPress->setValue("\033[C");
+    $panel->update();
+
+    expect($panel->consumeHierarchyMutation())->toBe([
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'position' => ['x' => 3, 'y' => 1],
             'sprite' => [
                 'texture' => [
                     'path' => 'Textures/player',
