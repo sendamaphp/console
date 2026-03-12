@@ -22,6 +22,8 @@ enum KeyCode: string
     case DELETE     = 'delete';
     case CTRL_C     = 'ctrl_c';
     case CTRL_S     = 'ctrl_s';
+    case CTRL_Y     = 'ctrl_y';
+    case CTRL_Z     = 'ctrl_z';
     case UP         = 'up';
     case DOWN       = 'down';
     case RIGHT      = 'right';

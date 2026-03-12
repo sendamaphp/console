@@ -179,6 +179,22 @@ class AssetsPanel extends Widget
         $this->refreshContent();
     }
 
+    public function selectAssetByAbsolutePath(?string $absolutePath): void
+    {
+        if (!is_string($absolutePath) || $absolutePath === '') {
+            return;
+        }
+
+        $matchedPath = $this->findAssetPathByAbsolutePath($this->assetTree, $absolutePath);
+
+        if ($matchedPath === null) {
+            return;
+        }
+
+        $this->selectedPath = $matchedPath;
+        $this->refreshContent();
+    }
+
     public function handleMouseClick(int $x, int $y): void
     {
         if (!$this->containsPoint($x, $y)) {
@@ -459,6 +475,36 @@ class AssetsPanel extends Widget
         }
 
         return substr($path, 0, $separatorPosition);
+    }
+
+    private function findAssetPathByAbsolutePath(array $items, string $targetAbsolutePath, string $parentPath = ''): ?string
+    {
+        foreach (array_values($items) as $index => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $path = $parentPath === '' ? (string) $index : $parentPath . '.' . $index;
+
+            if (($item['path'] ?? null) === $targetAbsolutePath) {
+                return $path;
+            }
+
+            $children = $item['children'] ?? [];
+
+            if (!is_array($children) || $children === []) {
+                continue;
+            }
+
+            $childPath = $this->findAssetPathByAbsolutePath($children, $targetAbsolutePath, $path);
+
+            if ($childPath !== null) {
+                $this->expandedPaths[$path] = true;
+                return $childPath;
+            }
+        }
+
+        return null;
     }
 
     private function showDeleteConfirmModal(): void

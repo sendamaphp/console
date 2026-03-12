@@ -46,6 +46,7 @@ class InspectorPanel extends Widget
     protected ?PathInputControl $activePathInputControl = null;
     protected array $controlBindings = [];
     protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingAssetMutation = null;
     protected string $projectDirectory;
 
     public function __construct(
@@ -80,6 +81,7 @@ class InspectorPanel extends Widget
         $this->activePathInputControl = null;
         $this->controlBindings = [];
         $this->pendingHierarchyMutation = null;
+        $this->pendingAssetMutation = null;
 
         if ($target === null) {
             $this->content = [];
@@ -95,6 +97,8 @@ class InspectorPanel extends Widget
             $this->buildHierarchyControls($target, $value);
         } elseif ($context === 'scene' && is_array($value)) {
             $this->buildSceneControls($target, $value);
+        } elseif ($context === 'asset' && is_array($value)) {
+            $this->buildAssetControls($target, $value);
         } else {
             $this->buildGenericControls($target);
         }
@@ -168,6 +172,14 @@ class InspectorPanel extends Widget
         return $pendingHierarchyMutation;
     }
 
+    public function consumeAssetMutation(): ?array
+    {
+        $pendingAssetMutation = $this->pendingAssetMutation;
+        $this->pendingAssetMutation = null;
+
+        return $pendingAssetMutation;
+    }
+
     public function syncHierarchyTarget(string $path, array $value): void
     {
         if (
@@ -199,6 +211,23 @@ class InspectorPanel extends Widget
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Scene');
         $target['type'] = 'Scene';
         $target['path'] = 'scene';
+        $target['value'] = $value;
+
+        $this->inspectTarget($target);
+    }
+
+    public function syncAssetTarget(array $value): void
+    {
+        if (
+            !is_array($this->inspectionTarget)
+            || ($this->inspectionTarget['context'] ?? null) !== 'asset'
+        ) {
+            return;
+        }
+
+        $target = $this->inspectionTarget;
+        $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Asset');
+        $target['type'] = ($value['isDirectory'] ?? false) ? 'Folder' : 'File';
         $target['value'] = $value;
 
         $this->inspectTarget($target);
@@ -393,6 +422,7 @@ class InspectorPanel extends Widget
                 'Environment Tile Map',
                 $scene['environmentTileMapPath'] ?? 'Maps/example',
                 $this->resolveAssetsWorkingDirectory(),
+                ['tmap'],
                 0,
             ),
             ['environmentTileMapPath'],
@@ -410,6 +440,26 @@ class InspectorPanel extends Widget
         }
     }
 
+    private function buildAssetControls(array $target, array $asset): void
+    {
+        $isDirectory = (bool) ($asset['isDirectory'] ?? false);
+        $assetName = $asset['name'] ?? $target['name'] ?? 'Unnamed Asset';
+        $assetPath = is_string($asset['path'] ?? null) ? $asset['path'] : '';
+
+        $this->addControl(new TextInputControl('Type', $isDirectory ? 'Folder' : 'File', 0, true));
+
+        if ($isDirectory) {
+            $this->addControl(new TextInputControl('Name', $assetName, 0, true));
+        } else {
+            $this->addBoundControl(
+                new TextInputControl('Name', $assetName, 0),
+                ['name'],
+            );
+        }
+
+        $this->addControl(new TextInputControl('Path', $assetPath, 0, true));
+    }
+
     private function addRendererControls(array $item): void
     {
         $sprite = is_array($item['sprite'] ?? null) ? $item['sprite'] : [];
@@ -424,6 +474,7 @@ class InspectorPanel extends Widget
             'Texture',
             $texturePath,
             $this->resolveAssetsWorkingDirectory(),
+            ['texture'],
             1,
         );
         $this->rendererOffsetControl = new VectorInputControl('Offset', $offset, 1);
@@ -787,6 +838,7 @@ class InspectorPanel extends Widget
                 $this->fileDialogModal->show(
                     $this->activePathInputControl->getWorkingDirectory(),
                     (string) $this->activePathInputControl->getValue(),
+                    $this->activePathInputControl->getAllowedExtensions(),
                 );
                 $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
             }
@@ -1056,7 +1108,6 @@ class InspectorPanel extends Widget
     {
         if (
             !is_array($this->inspectionTarget)
-            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'scene'], true)
             || !isset($this->inspectionTarget['value'])
             || !is_array($this->inspectionTarget['value'])
         ) {
@@ -1075,6 +1126,28 @@ class InspectorPanel extends Widget
 
         if ($valuePath === ['name']) {
             $this->inspectionTarget['name'] = (string) $control->getValue();
+        }
+
+        $context = $this->inspectionTarget['context'] ?? null;
+
+        if ($context === 'asset') {
+            if (
+                $valuePath === ['name']
+                && !($inspectionValue['isDirectory'] ?? false)
+                && is_string($inspectionValue['path'] ?? null)
+            ) {
+                $this->pendingAssetMutation = [
+                    'path' => $inspectionValue['path'],
+                    'relativePath' => $inspectionValue['relativePath'] ?? basename($inspectionValue['path']),
+                    'name' => (string) $control->getValue(),
+                ];
+            }
+
+            return;
+        }
+
+        if (!in_array($context, ['hierarchy', 'scene'], true)) {
+            return;
         }
 
         $hierarchyPath = $this->inspectionTarget['path'] ?? null;

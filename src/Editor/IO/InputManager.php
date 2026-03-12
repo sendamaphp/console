@@ -22,6 +22,7 @@ class InputManager implements StaticObservableInterface
      * @var string The previous key press.
      */
     private static string $previousKeyPress = "";
+    private static array $inputQueue = [];
     private static array $axes = [];
     private static array $buttons = [];
     private static ?MouseEvent $mouseEvent = null;
@@ -35,6 +36,7 @@ class InputManager implements StaticObservableInterface
     public static function init(): void
     {
         self::$previousKeyPress = self::$keyPress = "";
+        self::$inputQueue = [];
         self::$mouseEvent = null;
         self::initializeObservers();
     }
@@ -108,7 +110,11 @@ class InputManager implements StaticObservableInterface
     public static function handleInput(): void
     {
         self::$previousKeyPress = self::$keyPress;
-        self::$keyPress = self::normalizeInput(stream_get_contents(STDIN) ?: '');
+        if (self::$inputQueue === []) {
+            self::$inputQueue = self::tokenizeInput(stream_get_contents(STDIN) ?: '');
+        }
+
+        self::$keyPress = array_shift(self::$inputQueue) ?? '';
         self::$mouseEvent = self::parseMouseEvent(self::$keyPress);
 
         if (self::$mouseEvent) {
@@ -158,6 +164,8 @@ class InputManager implements StaticObservableInterface
             "\033[Z", "\033[1;2Z" => KeyCode::SHIFT_TAB->value,
             "\x03" => KeyCode::CTRL_C->value,
             "\x13" => KeyCode::CTRL_S->value,
+            "\x19" => KeyCode::CTRL_Y->value,
+            "\x1A" => KeyCode::CTRL_Z->value,
             "\n" => KeyCode::ENTER->value,
             " " => KeyCode::SPACE->value,
             "\010", "\177" => KeyCode::BACKSPACE->value,
@@ -350,18 +358,91 @@ class InputManager implements StaticObservableInterface
 
     private static function normalizeInput(string $input): string
     {
+        return self::tokenizeInput($input)[0] ?? '';
+    }
+
+    private static function tokenizeInput(string $input): array
+    {
         if ($input === '') {
-            return '';
+            return [];
         }
 
-        if (preg_match('/\033\[<(\d+);(\d+);(\d+)([Mm])/', $input, $matches) === 1) {
-            return $matches[0];
+        $tokens = [];
+
+        while ($input !== '') {
+            if (preg_match('/^\033\[<(\d+);(\d+);(\d+)([Mm])/', $input, $matches) === 1) {
+                $tokens[] = $matches[0];
+                $input = substr($input, strlen($matches[0]));
+                continue;
+            }
+
+            if (str_starts_with($input, "\033")) {
+                $escapeSequence = self::extractEscapeSequence($input);
+                $tokens[] = $escapeSequence;
+                $input = substr($input, strlen($escapeSequence));
+                continue;
+            }
+
+            $character = mb_substr($input, 0, 1);
+
+            if ($character === '') {
+                break;
+            }
+
+            $tokens[] = $character;
+            $input = substr($input, strlen($character));
         }
 
-        if (str_starts_with($input, "\033")) {
-            return $input;
+        return $tokens;
+    }
+
+    private static function extractEscapeSequence(string $input): string
+    {
+        $knownSequences = [
+            "\033[1;2Z",
+            "\033[1;2A",
+            "\033[1;2B",
+            "\033[1;2C",
+            "\033[1;2D",
+            "\033[24~",
+            "\033[23~",
+            "\033[21~",
+            "\033[20~",
+            "\033[19~",
+            "\033[18~",
+            "\033[17~",
+            "\033[15~",
+            "\033[14~",
+            "\033[13~",
+            "\033[12~",
+            "\033[11~",
+            "\033[10~",
+            "\033[8~",
+            "\033[7~",
+            "\033[6~",
+            "\033[5~",
+            "\033[4~",
+            "\033[3~",
+            "\033[2~",
+            "\033[1~",
+            "\033[Z",
+            "\033[a",
+            "\033[b",
+            "\033[c",
+            "\033[d",
+            "\033[A",
+            "\033[B",
+            "\033[C",
+            "\033[D",
+            "\033",
+        ];
+
+        foreach ($knownSequences as $sequence) {
+            if (str_starts_with($input, $sequence)) {
+                return $sequence;
+            }
         }
 
-        return mb_substr($input, -1);
+        return "\033";
     }
 }

@@ -5,6 +5,7 @@ namespace Sendama\Console\Editor\Widgets;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
+use Sendama\Console\Util\Path;
 
 class MainPanel extends Widget
 {
@@ -21,10 +22,44 @@ class MainPanel extends Widget
     private const string SCENE_MOVE_FOCUSED_SEQUENCE = "\033[5;30;43m";
     private const string SCENE_PAN_SEQUENCE = "\033[30;44m";
     private const string SCENE_PAN_FOCUSED_SEQUENCE = "\033[5;30;44m";
+    private const string SPRITE_CURSOR_SEQUENCE = "\033[30;47m";
+    private const string SPRITE_CURSOR_FOCUSED_SEQUENCE = "\033[5;30;47m";
     private const string GAME_IDLE_PATTERN_CHARACTER = '/';
     private const string GAME_IDLE_PROMPT = 'Shift+5 to Play';
     private const Color DEFAULT_FOCUS_COLOR = Color::LIGHT_CYAN;
     private const Color PLAY_MODE_FOCUS_COLOR = Color::BROWN;
+    private const string SPRITE_MODAL_CREATE = 'create_asset';
+    private const string SPRITE_MODAL_DELETE = 'delete_asset';
+    private const string SPRITE_MODAL_CHARACTER = 'character_picker';
+    private const int DEFAULT_TEXTURE_WIDTH = 16;
+    private const int DEFAULT_TEXTURE_HEIGHT = 16;
+    private const array SPECIAL_CHARACTER_OPTIONS = [
+        '█ Full Block',
+        '▓ Dark Shade',
+        '▒ Medium Shade',
+        '░ Light Shade',
+        '■ Square',
+        '□ Hollow Square',
+        '▲ Triangle Up',
+        '▼ Triangle Down',
+        '◄ Triangle Left',
+        '► Triangle Right',
+        '● Circle',
+        '○ Hollow Circle',
+        '★ Star',
+        '♥ Heart',
+        '│ Vertical',
+        '─ Horizontal',
+        '┌ Corner TL',
+        '┐ Corner TR',
+        '└ Corner BL',
+        '┘ Corner BR',
+        '┼ Cross',
+        '← Arrow Left',
+        '↑ Arrow Up',
+        '→ Arrow Right',
+        '↓ Arrow Down',
+    ];
 
     protected int $activeTabIndex = 0;
     protected int $activeTabOffset = 0;
@@ -47,6 +82,23 @@ class MainPanel extends Widget
     protected int $sceneViewportOffsetX = 0;
     protected int $sceneViewportOffsetY = 0;
     protected string $modeHelpLabel = '';
+    protected array $spriteLineHighlights = [];
+    protected ?array $activeSpriteAsset = null;
+    protected array $spriteGrid = [];
+    protected int $spriteGridWidth = 0;
+    protected int $spriteGridHeight = 0;
+    protected int $spriteCursorX = 0;
+    protected int $spriteCursorY = 0;
+    protected int $spriteViewportOffsetX = 0;
+    protected int $spriteViewportOffsetY = 0;
+    protected array $spriteOriginalGrid = [];
+    protected array $spriteUndoStack = [];
+    protected array $spriteRedoStack = [];
+    protected OptionListModal $createSpriteAssetModal;
+    protected OptionListModal $deleteSpriteAssetModal;
+    protected OptionListModal $characterPickerModal;
+    protected ?string $spriteModalState = null;
+    protected ?array $pendingAssetSyncRequest = null;
 
     public function __construct(
         array $position = ['x' => 37, 'y' => 1],
@@ -61,6 +113,9 @@ class MainPanel extends Widget
     {
         parent::__construct('', '', $position, $width, $height);
         $this->focusBorderColor = self::DEFAULT_FOCUS_COLOR;
+        $this->createSpriteAssetModal = new OptionListModal(title: 'Create Asset');
+        $this->deleteSpriteAssetModal = new OptionListModal(title: 'Delete Asset');
+        $this->characterPickerModal = new OptionListModal(title: 'Insert Character');
         $this->sceneObjects = array_values($sceneObjects);
         $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
             ? $workingDirectory
@@ -148,6 +203,14 @@ class MainPanel extends Widget
         return $pendingHierarchyMutation;
     }
 
+    public function consumeAssetSyncRequest(): ?array
+    {
+        $pendingAssetSyncRequest = $this->pendingAssetSyncRequest;
+        $this->pendingAssetSyncRequest = null;
+
+        return $pendingAssetSyncRequest;
+    }
+
     public function cycleFocusForward(): bool
     {
         $this->activateNextTab();
@@ -173,6 +236,102 @@ class MainPanel extends Widget
             ? self::PLAY_MODE_FOCUS_COLOR
             : self::DEFAULT_FOCUS_COLOR;
         $this->refreshContent();
+    }
+
+    public function hasActiveModal(): bool
+    {
+        return $this->createSpriteAssetModal->isVisible()
+            || $this->deleteSpriteAssetModal->isVisible()
+            || $this->characterPickerModal->isVisible();
+    }
+
+    public function isModalDirty(): bool
+    {
+        return $this->createSpriteAssetModal->isDirty()
+            || $this->deleteSpriteAssetModal->isDirty()
+            || $this->characterPickerModal->isDirty();
+    }
+
+    public function markModalClean(): void
+    {
+        $this->createSpriteAssetModal->markClean();
+        $this->deleteSpriteAssetModal->markClean();
+        $this->characterPickerModal->markClean();
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+        $this->createSpriteAssetModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->deleteSpriteAssetModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->characterPickerModal->syncLayout($terminalWidth, $terminalHeight);
+    }
+
+    public function renderActiveModal(): void
+    {
+        if ($this->createSpriteAssetModal->isVisible()) {
+            $this->createSpriteAssetModal->render();
+        }
+
+        if ($this->deleteSpriteAssetModal->isVisible()) {
+            $this->deleteSpriteAssetModal->render();
+        }
+
+        if ($this->characterPickerModal->isVisible()) {
+            $this->characterPickerModal->render();
+        }
+    }
+
+    public function loadSpriteAsset(?array $asset): void
+    {
+        if (!$this->isEditableSpriteAsset($asset)) {
+            $this->activeSpriteAsset = null;
+            $this->spriteGrid = [];
+            $this->spriteGridWidth = 0;
+            $this->spriteGridHeight = 0;
+            $this->spriteCursorX = 0;
+            $this->spriteCursorY = 0;
+            $this->spriteViewportOffsetX = 0;
+            $this->spriteViewportOffsetY = 0;
+            $this->spriteOriginalGrid = [];
+            $this->spriteUndoStack = [];
+            $this->spriteRedoStack = [];
+            $this->refreshContent();
+            return;
+        }
+
+        $absolutePath = $asset['path'];
+        $grid = $this->loadSpriteGridFromFile(
+            $absolutePath,
+            strtolower((string) pathinfo($absolutePath, PATHINFO_EXTENSION)),
+        );
+        $this->activeSpriteAsset = [
+            'name' => $asset['name'] ?? basename($absolutePath),
+            'path' => $absolutePath,
+            'relativePath' => $asset['relativePath'] ?? basename($absolutePath),
+            'extension' => strtolower((string) pathinfo($absolutePath, PATHINFO_EXTENSION)),
+        ];
+        $this->spriteGrid = $grid['rows'];
+        $this->spriteGridWidth = $grid['width'];
+        $this->spriteGridHeight = $grid['height'];
+        $this->spriteCursorX = 0;
+        $this->spriteCursorY = 0;
+        $this->spriteViewportOffsetX = 0;
+        $this->spriteViewportOffsetY = 0;
+        $this->spriteOriginalGrid = $this->copySpriteGrid($this->spriteGrid);
+        $this->spriteUndoStack = [];
+        $this->spriteRedoStack = [];
+        $this->refreshContent();
+    }
+
+    public function beginSpriteCreateWorkflow(): bool
+    {
+        if (!$this->isSpriteTabActive() || $this->isPlayModeActive || $this->hasActiveModal()) {
+            return false;
+        }
+
+        $this->showCreateSpriteAssetModal();
+
+        return true;
     }
 
     public function update(): void
@@ -211,6 +370,47 @@ class MainPanel extends Widget
             }
         }
 
+        if ($this->hasFocus() && $this->isSpriteTabActive() && !$this->isPlayModeActive) {
+            if ($this->hasActiveModal()) {
+                $this->handleSpriteModalInput();
+                return;
+            }
+
+            if (Input::getCurrentInput() === 'A') {
+                $this->showCreateSpriteAssetModal();
+                return;
+            }
+
+            if (Input::getCurrentInput() === '@') {
+                $this->showCharacterPickerModal();
+                return;
+            }
+
+            if (Input::isKeyDown(KeyCode::DELETE)) {
+                $this->showDeleteSpriteAssetModal();
+                return;
+            }
+
+            if (Input::isKeyDown(KeyCode::CTRL_Z)) {
+                $this->undoSpriteEdit();
+                return;
+            }
+
+            if (Input::isKeyDown(KeyCode::CTRL_Y)) {
+                $this->redoSpriteEdit();
+                return;
+            }
+
+            if (Input::getCurrentInput() === 'R') {
+                $this->resetSpriteEdits();
+                return;
+            }
+
+            if ($this->handleSpriteEditorInput()) {
+                return;
+            }
+        }
+
         $this->refreshContent();
     }
 
@@ -245,6 +445,10 @@ class MainPanel extends Widget
         $contentIndex = $lineIndex - $this->padding->topPadding;
 
         if ($lineIndex !== 1) {
+            if (isset($this->spriteLineHighlights[$contentIndex])) {
+                return $this->decorateSpriteLine($line, $contentColor, $contentIndex);
+            }
+
             if (isset($this->sceneLineHighlights[$contentIndex])) {
                 return $this->decorateSceneLine($line, $contentColor, $contentIndex);
             }
@@ -287,6 +491,52 @@ class MainPanel extends Widget
         }
 
         return $this->buildSplitHelpBorder($this->help, $this->modeHelpLabel);
+    }
+
+    private function decorateSpriteLine(string $line, ?Color $contentColor, int $contentIndex): string
+    {
+        $highlight = $this->spriteLineHighlights[$contentIndex] ?? null;
+
+        if (!is_array($highlight)) {
+            return parent::decorateContentLine($line, $contentColor, $contentIndex);
+        }
+
+        $visibleLine = mb_substr($line, 0, $this->width);
+        $visibleLength = mb_strlen($visibleLine);
+
+        if ($visibleLength <= 1) {
+            return parent::decorateContentLine($line, $contentColor, $contentIndex);
+        }
+
+        $leftBorder = mb_substr($visibleLine, 0, 1);
+        $middle = $visibleLength > 2 ? mb_substr($visibleLine, 1, $visibleLength - 2) : '';
+        $rightBorder = mb_substr($visibleLine, -1);
+        $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
+        $highlightStart = min(
+            max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
+            mb_strlen($middle),
+        );
+        $highlightLength = max(
+            0,
+            min((int) ($highlight['length'] ?? 0), mb_strlen($middle) - $highlightStart),
+        );
+
+        if ($highlightLength === 0) {
+            return parent::decorateContentLine($line, $contentColor, $contentIndex);
+        }
+
+        $beforeHighlight = mb_substr($middle, 0, $highlightStart);
+        $highlightText = mb_substr($middle, $highlightStart, $highlightLength);
+        $afterHighlight = mb_substr($middle, $highlightStart + $highlightLength);
+        $highlightSequence = $this->hasFocus()
+            ? self::SPRITE_CURSOR_FOCUSED_SEQUENCE
+            : self::SPRITE_CURSOR_SEQUENCE;
+
+        return $this->wrapWithColor($leftBorder, $borderColor)
+            . $this->wrapWithColor($beforeHighlight, $contentColor)
+            . $this->wrapWithSequence($highlightText, $highlightSequence)
+            . $this->wrapWithColor($afterHighlight, $contentColor)
+            . $this->wrapWithColor($rightBorder, $borderColor);
     }
 
     private function decorateGameIdleLine(string $line, ?Color $contentColor, int $contentIndex): string
@@ -344,6 +594,7 @@ class MainPanel extends Widget
         $this->gameIdleContentIndexes = [];
         $this->gameIdlePromptContentIndex = null;
         $this->sceneLineHighlights = [];
+        $this->spriteLineHighlights = [];
         $this->visibleSceneObjects = $this->flattenSceneObjects($this->sceneObjects);
         $this->syncSelectedScenePath();
         $this->updateHelpInfo();
@@ -368,6 +619,8 @@ class MainPanel extends Widget
 
         if ($this->isSceneTabActive()) {
             $content = [...$content, ...$this->buildSceneCanvasContent()];
+        } elseif ($this->isSpriteTabActive()) {
+            $content = [...$content, ...$this->buildSpriteEditorContent()];
         } elseif ($this->shouldRenderIdleGameView()) {
             $contentWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
             $idleRows = max(0, $this->innerHeight - count($content));
@@ -417,6 +670,18 @@ class MainPanel extends Widget
             return;
         }
 
+        if ($this->isSpriteTabActive()) {
+            if ($this->activeSpriteAsset === null) {
+                $this->help = 'Select .texture or .tmap  Shift+A new  Shift+2 chars';
+                $this->modeHelpLabel = 'Mode: Sprite Editor';
+                return;
+            }
+
+            $this->help = 'Arrows move  Type draw  Shift+2 chars  Shift+A new  Ctrl+Z/Y undo redo  Shift+R reset  Del delete';
+            $this->modeHelpLabel = 'Mode: Sprite Editor  ' . $this->buildSpriteCursorPositionLabel();
+            return;
+        }
+
         if ($this->getActiveTab() === 'Game') {
             $this->help = 'Tab/Shift+Tab tabs  Shift+5 play';
             $this->modeHelpLabel = 'Mode: Game';
@@ -427,6 +692,11 @@ class MainPanel extends Widget
         $this->modeHelpLabel = 'Mode: ' . $this->getActiveTab();
     }
 
+    private function buildSpriteCursorPositionLabel(): string
+    {
+        return 'Col x Row: ' . ($this->spriteCursorX + 1) . ' x ' . ($this->spriteCursorY + 1);
+    }
+
     private function shouldRenderIdleGameView(): bool
     {
         return $this->getActiveTab() === 'Game' && !$this->isPlayModeActive;
@@ -435,6 +705,11 @@ class MainPanel extends Widget
     private function isSceneTabActive(): bool
     {
         return $this->getActiveTab() === self::SCENE_TAB_TITLE;
+    }
+
+    private function isSpriteTabActive(): bool
+    {
+        return $this->getActiveTab() === 'Sprite';
     }
 
     private function handleSceneSelectModeInput(): bool
@@ -515,6 +790,165 @@ class MainPanel extends Widget
         }
 
         return false;
+    }
+
+    private function handleSpriteEditorInput(): bool
+    {
+        if ($this->activeSpriteAsset === null) {
+            return false;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->moveSpriteCursor(0, -1);
+            return true;
+        }
+
+        if (Input::isKeyDown(KeyCode::RIGHT)) {
+            $this->moveSpriteCursor(1, 0);
+            return true;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->moveSpriteCursor(0, 1);
+            return true;
+        }
+
+        if (Input::isKeyDown(KeyCode::LEFT)) {
+            $this->moveSpriteCursor(-1, 0);
+            return true;
+        }
+
+        if (Input::isKeyDown(KeyCode::BACKSPACE)) {
+            $this->writeSpriteCharacter(' ');
+            return true;
+        }
+
+        if (Input::isKeyDown(KeyCode::SPACE)) {
+            $this->writeSpriteCharacter(' ');
+            return true;
+        }
+
+        $currentInput = Input::getCurrentInput();
+
+        if ($this->isPrintableSpriteCharacter($currentInput)) {
+            $this->writeSpriteCharacter($currentInput);
+            return true;
+        }
+
+        return false;
+    }
+
+    private function showCreateSpriteAssetModal(): void
+    {
+        $this->createSpriteAssetModal->show(['Texture', 'Tile Map', 'Cancel'], 0, 'Create Asset');
+        $this->deleteSpriteAssetModal->hide();
+        $this->spriteModalState = self::SPRITE_MODAL_CREATE;
+    }
+
+    private function showDeleteSpriteAssetModal(): void
+    {
+        if ($this->activeSpriteAsset === null) {
+            return;
+        }
+
+        $this->deleteSpriteAssetModal->show(
+            ['Delete', 'Cancel'],
+            1,
+            'Delete ' . ($this->activeSpriteAsset['name'] ?? 'asset') . '?'
+        );
+        $this->createSpriteAssetModal->hide();
+        $this->characterPickerModal->hide();
+        $this->spriteModalState = self::SPRITE_MODAL_DELETE;
+    }
+
+    private function showCharacterPickerModal(): void
+    {
+        if ($this->activeSpriteAsset === null) {
+            return;
+        }
+
+        $this->characterPickerModal->show(self::SPECIAL_CHARACTER_OPTIONS, 0, 'Insert Character');
+        $this->createSpriteAssetModal->hide();
+        $this->deleteSpriteAssetModal->hide();
+        $this->spriteModalState = self::SPRITE_MODAL_CHARACTER;
+    }
+
+    private function dismissSpriteModals(): void
+    {
+        $this->createSpriteAssetModal->hide();
+        $this->deleteSpriteAssetModal->hide();
+        $this->characterPickerModal->hide();
+        $this->spriteModalState = null;
+    }
+
+    private function handleSpriteModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->dismissSpriteModals();
+            return;
+        }
+
+        $activeModal = match ($this->spriteModalState) {
+            self::SPRITE_MODAL_CREATE => $this->createSpriteAssetModal,
+            self::SPRITE_MODAL_DELETE => $this->deleteSpriteAssetModal,
+            self::SPRITE_MODAL_CHARACTER => $this->characterPickerModal,
+            default => null,
+        };
+
+        if (!$activeModal instanceof OptionListModal) {
+            $this->dismissSpriteModals();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $activeModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $activeModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $activeModal->getSelectedOption();
+
+        if ($selection === null || $selection === 'Cancel') {
+            $this->dismissSpriteModals();
+            return;
+        }
+
+        if ($this->spriteModalState === self::SPRITE_MODAL_CREATE) {
+            $this->createSpriteAsset($selection);
+            $this->dismissSpriteModals();
+            return;
+        }
+
+        if ($this->spriteModalState === self::SPRITE_MODAL_DELETE && $selection === 'Delete') {
+            $this->deleteActiveSpriteAsset();
+        }
+
+        if ($this->spriteModalState === self::SPRITE_MODAL_CHARACTER) {
+            $character = $this->resolveCharacterPickerSelection($selection);
+
+            if ($character !== null) {
+                $this->writeSpriteCharacter($character);
+            }
+        }
+
+        $this->dismissSpriteModals();
+    }
+
+    private function resolveCharacterPickerSelection(?string $selection): ?string
+    {
+        if (!is_string($selection) || $selection === '') {
+            return null;
+        }
+
+        return mb_substr($selection, 0, 1) ?: null;
     }
 
     private function moveSceneSelection(int $offset): void
@@ -725,6 +1159,58 @@ class MainPanel extends Widget
         );
     }
 
+    private function buildSpriteEditorContent(): array
+    {
+        $contentWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
+        $contentHeight = max(0, $this->innerHeight - 2);
+
+        if ($contentWidth <= 0 || $contentHeight <= 0) {
+            return [];
+        }
+
+        if ($this->activeSpriteAsset === null) {
+            return [
+                'Sprite editor',
+                'Select a .texture or .tmap asset in Assets to edit it here.',
+            ];
+        }
+
+        $visibleGridHeight = $contentHeight;
+        $rows = [];
+
+        for ($row = 0; $row < $visibleGridHeight; $row++) {
+            $gridRowIndex = $this->spriteViewportOffsetY + $row;
+
+            if ($gridRowIndex >= $this->spriteGridHeight) {
+                $rows[] = '';
+                continue;
+            }
+
+            $rowCharacters = $this->spriteGrid[$gridRowIndex] ?? [];
+            $line = '';
+
+            for ($column = 0; $column < $contentWidth; $column++) {
+                $gridColumnIndex = $this->spriteViewportOffsetX + $column;
+                $line .= $rowCharacters[$gridColumnIndex] ?? ' ';
+            }
+
+            if (
+                $gridRowIndex === $this->spriteCursorY
+                && $this->spriteCursorX >= $this->spriteViewportOffsetX
+                && $this->spriteCursorX < $this->spriteViewportOffsetX + $contentWidth
+            ) {
+                $this->spriteLineHighlights[2 + $row] = [
+                    'start' => $this->spriteCursorX - $this->spriteViewportOffsetX,
+                    'length' => 1,
+                ];
+            }
+
+            $rows[] = $line;
+        }
+
+        return $rows;
+    }
+
     private function flattenSceneObjects(array $items, string $parentPath = 'scene'): array
     {
         $flattenedObjects = [];
@@ -755,6 +1241,363 @@ class MainPanel extends Widget
         }
 
         return $flattenedObjects;
+    }
+
+    private function isEditableSpriteAsset(?array $asset): bool
+    {
+        if (!is_array($asset) || ($asset['isDirectory'] ?? false) || !is_string($asset['path'] ?? null)) {
+            return false;
+        }
+
+        $extension = strtolower((string) pathinfo((string) $asset['path'], PATHINFO_EXTENSION));
+
+        return in_array($extension, ['texture', 'tmap'], true);
+    }
+
+    private function loadSpriteGridFromFile(string $absolutePath, string $extension): array
+    {
+        $contents = file_get_contents($absolutePath);
+        [$defaultWidth, $defaultHeight] = $this->resolveDefaultSpriteDimensions($extension);
+
+        if ($contents === false) {
+            return $this->createBlankSpriteGrid($defaultWidth, $defaultHeight);
+        }
+
+        $normalizedContents = str_replace(["\r\n", "\r"], "\n", $contents);
+        $lines = explode("\n", rtrim($normalizedContents, "\n"));
+
+        if ($lines === [''] || $lines === []) {
+            return $this->createBlankSpriteGrid($defaultWidth, $defaultHeight);
+        }
+
+        $width = max(1, ...array_map(static fn(string $line): int => mb_strlen($line), $lines));
+        $rows = [];
+
+        foreach ($lines as $line) {
+            $characters = preg_split('//u', $line, -1, PREG_SPLIT_NO_EMPTY);
+            $characters = is_array($characters) ? $characters : [];
+            $rows[] = array_pad($characters, $width, ' ');
+        }
+
+        $grid = [
+            'rows' => $rows,
+            'width' => $width,
+            'height' => count($rows),
+        ];
+
+        if ($extension === 'texture') {
+            return $this->expandSpriteGrid($grid, self::DEFAULT_TEXTURE_WIDTH, self::DEFAULT_TEXTURE_HEIGHT);
+        }
+
+        return $grid;
+    }
+
+    private function createBlankSpriteGrid(int $width, int $height): array
+    {
+        $rows = [];
+
+        for ($row = 0; $row < $height; $row++) {
+            $rows[] = array_fill(0, $width, ' ');
+        }
+
+        return [
+            'rows' => $rows,
+            'width' => $width,
+            'height' => $height,
+        ];
+    }
+
+    private function moveSpriteCursor(int $deltaX, int $deltaY): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteGridWidth <= 0 || $this->spriteGridHeight <= 0) {
+            return;
+        }
+
+        $this->spriteCursorX = max(0, min($this->spriteCursorX + $deltaX, $this->spriteGridWidth - 1));
+        $this->spriteCursorY = max(0, min($this->spriteCursorY + $deltaY, $this->spriteGridHeight - 1));
+        $this->syncSpriteViewport();
+        $this->refreshContent();
+    }
+
+    private function syncSpriteViewport(): void
+    {
+        $contentWidth = max(1, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
+        $visibleGridHeight = max(1, $this->innerHeight - 2);
+        $maxOffsetX = max(0, $this->spriteGridWidth - $contentWidth);
+        $maxOffsetY = max(0, $this->spriteGridHeight - $visibleGridHeight);
+
+        if ($this->spriteCursorX < $this->spriteViewportOffsetX) {
+            $this->spriteViewportOffsetX = $this->spriteCursorX;
+        } elseif ($this->spriteCursorX >= $this->spriteViewportOffsetX + $contentWidth) {
+            $this->spriteViewportOffsetX = $this->spriteCursorX - $contentWidth + 1;
+        }
+
+        if ($this->spriteCursorY < $this->spriteViewportOffsetY) {
+            $this->spriteViewportOffsetY = $this->spriteCursorY;
+        } elseif ($this->spriteCursorY >= $this->spriteViewportOffsetY + $visibleGridHeight) {
+            $this->spriteViewportOffsetY = $this->spriteCursorY - $visibleGridHeight + 1;
+        }
+
+        $this->spriteViewportOffsetX = max(0, min($this->spriteViewportOffsetX, $maxOffsetX));
+        $this->spriteViewportOffsetY = max(0, min($this->spriteViewportOffsetY, $maxOffsetY));
+    }
+
+    private function isPrintableSpriteCharacter(string $input): bool
+    {
+        return mb_strlen($input) === 1 && !preg_match('/[\x00-\x1F\x7F]/', $input);
+    }
+
+    private function writeSpriteCharacter(string $character): void
+    {
+        if ($this->activeSpriteAsset === null) {
+            return;
+        }
+
+        $nextCharacter = mb_substr($character, 0, 1);
+
+        if (($this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] ?? ' ') === $nextCharacter) {
+            return;
+        }
+
+        $this->pushSpriteUndoSnapshot();
+        $this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] = $nextCharacter;
+        $this->persistActiveSpriteAsset();
+
+        if ($this->spriteCursorX < $this->spriteGridWidth - 1) {
+            $this->spriteCursorX++;
+        }
+
+        $this->syncSpriteViewport();
+        $this->refreshContent();
+    }
+
+    private function undoSpriteEdit(): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteUndoStack === []) {
+            return;
+        }
+
+        $this->spriteRedoStack[] = $this->copySpriteGrid($this->spriteGrid);
+        $this->spriteGrid = array_pop($this->spriteUndoStack);
+        $this->persistActiveSpriteAsset();
+        $this->syncSpriteViewport();
+        $this->refreshContent();
+    }
+
+    private function redoSpriteEdit(): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteRedoStack === []) {
+            return;
+        }
+
+        $this->spriteUndoStack[] = $this->copySpriteGrid($this->spriteGrid);
+        $this->spriteGrid = array_pop($this->spriteRedoStack);
+        $this->persistActiveSpriteAsset();
+        $this->syncSpriteViewport();
+        $this->refreshContent();
+    }
+
+    private function resetSpriteEdits(): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteOriginalGrid === []) {
+            return;
+        }
+
+        if ($this->spriteGrid === $this->spriteOriginalGrid) {
+            return;
+        }
+
+        $this->pushSpriteUndoSnapshot();
+        $this->spriteGrid = $this->copySpriteGrid($this->spriteOriginalGrid);
+        $this->persistActiveSpriteAsset();
+        $this->syncSpriteViewport();
+        $this->refreshContent();
+    }
+
+    private function pushSpriteUndoSnapshot(): void
+    {
+        $this->spriteUndoStack[] = $this->copySpriteGrid($this->spriteGrid);
+        $this->spriteRedoStack = [];
+    }
+
+    private function copySpriteGrid(array $grid): array
+    {
+        return array_map(
+            static fn(array $row): array => array_values($row),
+            $grid,
+        );
+    }
+
+    private function resolveDefaultSpriteDimensions(string $extension): array
+    {
+        if ($extension === 'tmap') {
+            $terminalSize = get_max_terminal_size();
+
+            return [
+                max(1, (int) ($terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH)),
+                max(1, (int) ($terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT)),
+            ];
+        }
+
+        return [self::DEFAULT_TEXTURE_WIDTH, self::DEFAULT_TEXTURE_HEIGHT];
+    }
+
+    private function expandSpriteGrid(array $grid, int $targetWidth, int $targetHeight): array
+    {
+        $expandedWidth = max($targetWidth, (int) ($grid['width'] ?? 0));
+        $expandedHeight = max($targetHeight, (int) ($grid['height'] ?? 0));
+        $rows = array_map(
+            static fn(array $row): array => array_pad(array_values($row), $expandedWidth, ' '),
+            is_array($grid['rows'] ?? null) ? $grid['rows'] : [],
+        );
+
+        while (count($rows) < $expandedHeight) {
+            $rows[] = array_fill(0, $expandedWidth, ' ');
+        }
+
+        return [
+            'rows' => $rows,
+            'width' => $expandedWidth,
+            'height' => $expandedHeight,
+        ];
+    }
+
+    private function persistActiveSpriteAsset(): void
+    {
+        if ($this->activeSpriteAsset === null || !is_string($this->activeSpriteAsset['path'] ?? null)) {
+            return;
+        }
+
+        $lines = array_map(
+            static fn(array $row): string => implode('', $row),
+            $this->spriteGrid
+        );
+        file_put_contents($this->activeSpriteAsset['path'], implode("\n", $lines) . "\n");
+    }
+
+    private function createSpriteAsset(string $selection): void
+    {
+        $assetsDirectory = $this->resolveAssetsDirectory();
+
+        if ($assetsDirectory === null) {
+            return;
+        }
+
+        $isTileMap = $selection === 'Tile Map';
+        $targetDirectory = Path::join($assetsDirectory, $isTileMap ? 'Maps' : 'Textures');
+
+        if (!is_dir($targetDirectory)) {
+            mkdir($targetDirectory, 0777, true);
+        }
+
+        $baseName = $isTileMap ? 'new-map' : 'new-texture';
+        $extension = $isTileMap ? 'tmap' : 'texture';
+        $absolutePath = $this->createNextAvailableAssetPath($targetDirectory, $baseName, $extension);
+        [$defaultWidth, $defaultHeight] = $this->resolveDefaultSpriteDimensions($extension);
+        $grid = $this->createBlankSpriteGrid($defaultWidth, $defaultHeight);
+        $this->spriteGrid = $grid['rows'];
+        $this->spriteGridWidth = $grid['width'];
+        $this->spriteGridHeight = $grid['height'];
+        $this->spriteCursorX = 0;
+        $this->spriteCursorY = 0;
+        $this->spriteViewportOffsetX = 0;
+        $this->spriteViewportOffsetY = 0;
+        $this->spriteOriginalGrid = $this->copySpriteGrid($this->spriteGrid);
+        $this->spriteUndoStack = [];
+        $this->spriteRedoStack = [];
+        $this->activeSpriteAsset = [
+            'name' => basename($absolutePath),
+            'path' => $absolutePath,
+            'relativePath' => $this->buildAssetRelativePath($absolutePath),
+            'extension' => $extension,
+        ];
+        $this->persistActiveSpriteAsset();
+        $this->pendingAssetSyncRequest = [
+            'path' => $absolutePath,
+            'inspectionTarget' => [
+                'context' => 'asset',
+                'name' => basename($absolutePath),
+                'type' => 'File',
+                'value' => [
+                    'name' => basename($absolutePath),
+                    'path' => $absolutePath,
+                    'relativePath' => $this->buildAssetRelativePath($absolutePath),
+                    'isDirectory' => false,
+                ],
+            ],
+        ];
+        $this->refreshContent();
+    }
+
+    private function deleteActiveSpriteAsset(): void
+    {
+        if ($this->activeSpriteAsset === null || !is_string($this->activeSpriteAsset['path'] ?? null)) {
+            return;
+        }
+
+        $deletedPath = $this->activeSpriteAsset['path'];
+
+        if (!is_file($deletedPath) || !unlink($deletedPath)) {
+            return;
+        }
+
+        $this->activeSpriteAsset = null;
+        $this->spriteGrid = [];
+        $this->spriteGridWidth = 0;
+        $this->spriteGridHeight = 0;
+        $this->spriteCursorX = 0;
+        $this->spriteCursorY = 0;
+        $this->spriteViewportOffsetX = 0;
+        $this->spriteViewportOffsetY = 0;
+        $this->spriteOriginalGrid = [];
+        $this->spriteUndoStack = [];
+        $this->spriteRedoStack = [];
+        $this->pendingAssetSyncRequest = [
+            'path' => $deletedPath,
+            'clearInspection' => true,
+        ];
+        $this->refreshContent();
+    }
+
+    private function resolveAssetsDirectory(): ?string
+    {
+        $candidates = [
+            Path::join($this->projectDirectory, 'Assets'),
+            Path::join($this->projectDirectory, 'assets'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_dir($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function createNextAvailableAssetPath(string $targetDirectory, string $baseName, string $extension): string
+    {
+        $index = 1;
+
+        do {
+            $candidatePath = Path::join($targetDirectory, $baseName . '-' . $index . '.' . $extension);
+            $index++;
+        } while (file_exists($candidatePath));
+
+        return $candidatePath;
+    }
+
+    private function buildAssetRelativePath(string $absolutePath): string
+    {
+        $assetsDirectory = $this->resolveAssetsDirectory();
+
+        if ($assetsDirectory === null) {
+            return basename($absolutePath);
+        }
+
+        $relativePath = substr($absolutePath, strlen($assetsDirectory));
+
+        return ltrim((string) $relativePath, DIRECTORY_SEPARATOR);
     }
 
     private function syncSelectedScenePath(): void

@@ -48,7 +48,7 @@ These shortcuts work regardless of the currently focused panel unless a modal is
 | `Shift+5` | Toggle play mode globally |
 | `Ctrl+C` | Close the editor gracefully |
 | `Ctrl+S` | Save the loaded scene |
-| `Shift+A` | Open the add-object workflow in the Hierarchy while in edit mode |
+| `Shift+A` | Open the Hierarchy add workflow, or create a Sprite asset when the Sprite tab is focused |
 
 ## Panel List Modal
 
@@ -153,7 +153,49 @@ When play mode is entered:
 
 ### Sprite Tab
 
-The `Sprite` tab is present in the UI, but its dedicated workflow is still minimal at this stage.
+The `Sprite` tab is the asset grid editor for `.texture` and `.tmap` files.
+
+Current behavior:
+
+- selecting a `.texture` or `.tmap` file in `Assets` loads it into the `Sprite` tab
+- the editor works on a character grid backed directly by the selected file
+- the visible canvas is only the editable grid itself; asset metadata is shown in the Inspector
+- textures load into an editable area that can grow up to `16x16`
+- new tile maps are created at the current terminal-size bounds
+- the right side of the main-panel help line shows the live cursor position as `Col x Row`
+- edits are written to the asset file immediately
+
+Controls:
+
+- `Up` / `Right` / `Down` / `Left`: move the sprite cursor
+- type any printable character: draw that character at the cursor
+- `Shift+2`: open the character selector modal for special characters
+- `Space`: place a blank character
+- `Backspace`: erase the current cell
+- `Shift+A`: open the create-asset modal
+- `Ctrl+Z`: undo the last grid change
+- `Ctrl+Y`: redo the last undone grid change
+- `Shift+R`: reset the loaded asset back to the state it had when it was opened
+- `Delete`: open the delete-asset confirmation modal
+
+Create workflow:
+
+- `Shift+A` opens a modal with `Texture`, `Tile Map`, and `Cancel`
+- choosing `Texture` creates a new `.texture` file in `Assets/Textures`
+- choosing `Tile Map` creates a new `.tmap` file in `Assets/Maps`
+- the new asset is loaded into the sprite editor immediately
+
+Delete workflow:
+
+- `Delete` opens a confirmation modal for the currently loaded asset
+- confirming deletes the file and clears the Sprite editor view
+
+Character selector workflow:
+
+- `Shift+2` opens a modal of curated special characters useful for sprites and maps
+- `Up` / `Down`: move selection
+- `Enter`: insert the selected character at the current cursor position
+- `Escape`: close the modal without inserting anything
 
 ## Hierarchy Panel
 
@@ -254,6 +296,14 @@ Current target sources:
 - Hierarchy selection
 - Scene tab selection
 - Assets selection
+
+For file assets, the Inspector currently shows:
+
+- `Type`
+- editable `Name`
+- read-only `Path`
+
+Renaming a texture or tile map from the Inspector renames the file on disk and updates known scene references in memory, such as `sprite.texture.path` and `environmentTileMapPath`.
 
 ### Inspector Hotkeys
 
@@ -359,6 +409,8 @@ Pressing `Enter` on a path input first opens a modal with:
 #### Choose File
 
 Opens a file tree dialog rooted at the control's working directory.
+
+When a control specifies allowed extensions, the dialog limits visible files to matching extensions and hides directories that do not contain any matching files.
 
 Controls:
 

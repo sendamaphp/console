@@ -63,3 +63,32 @@ test('input manager normalizes ctrl+s to the save shortcut', function () {
 
     expect($getKey->invoke(null, "\x13"))->toBe(KeyCode::CTRL_S->value);
 });
+
+test('input manager normalizes ctrl+z to undo', function () {
+    $getKey = new ReflectionMethod(InputManager::class, 'getKey');
+    $getKey->setAccessible(true);
+
+    expect($getKey->invoke(null, "\x1A"))->toBe(KeyCode::CTRL_Z->value);
+});
+
+test('input manager normalizes ctrl+y to redo', function () {
+    $getKey = new ReflectionMethod(InputManager::class, 'getKey');
+    $getKey->setAccessible(true);
+
+    expect($getKey->invoke(null, "\x19"))->toBe(KeyCode::CTRL_Y->value);
+});
+
+test('input manager tokenizes multi-character printable input without dropping earlier characters', function () {
+    $tokenizeInput = new ReflectionMethod(InputManager::class, 'tokenizeInput');
+    $tokenizeInput->setAccessible(true);
+
+    expect($tokenizeInput->invoke(null, '02'))->toBe(['0', '2']);
+    expect($tokenizeInput->invoke(null, 'level02'))->toBe(['l', 'e', 'v', 'e', 'l', '0', '2']);
+});
+
+test('input manager tokenizes mixed escape sequences and printable characters', function () {
+    $tokenizeInput = new ReflectionMethod(InputManager::class, 'tokenizeInput');
+    $tokenizeInput->setAccessible(true);
+
+    expect($tokenizeInput->invoke(null, "\033[B0"))->toBe(["\033[B", '0']);
+});

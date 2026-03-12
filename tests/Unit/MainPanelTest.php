@@ -510,3 +510,227 @@ test('main panel help line shows controls on the left and the active mode on the
     expect($panHelpLine)->toContain('Arrows pan');
     expect($panHelpLine)->toContain('Mode: Scene Pan');
 });
+
+test('main panel sprite tab edits the selected asset grid and persists it', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('Z');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Zbcd')))->toBeTrue();
+});
+
+test('main panel sprite tab expands loaded textures to a 16x16 editing grid', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $spriteGridWidth = new ReflectionProperty(MainPanel::class, 'spriteGridWidth');
+    $spriteGridHeight = new ReflectionProperty(MainPanel::class, 'spriteGridHeight');
+    $spriteGridWidth->setAccessible(true);
+    $spriteGridHeight->setAccessible(true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    expect($spriteGridWidth->getValue($panel))->toBe(16);
+    expect($spriteGridHeight->getValue($panel))->toBe(16);
+});
+
+test('main panel sprite tab can create a new texture asset', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+
+    pressMainPanelKey('A');
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+
+    expect($assetSyncRequest)->toBeArray();
+    expect($assetSyncRequest['path'] ?? null)->toBeString();
+    expect($assetSyncRequest['path'])->toEndWith('.texture');
+    expect(file_exists($assetSyncRequest['path']))->toBeTrue();
+    expect($assetSyncRequest['inspectionTarget']['value']['relativePath'] ?? null)->toBe('Textures/new-texture-1.texture');
+});
+
+test('main panel sprite tab creates tile maps at the current terminal-size bounds', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+
+    pressMainPanelKey('A');
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+    $terminalSize = get_max_terminal_size();
+    $expectedWidth = max(1, (int) ($terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH));
+    $expectedHeight = max(1, (int) ($terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT));
+    $lines = explode("\n", rtrim((string) file_get_contents($assetSyncRequest['path']), "\n"));
+
+    expect($assetSyncRequest['path'])->toEndWith('.tmap');
+    expect(count($lines))->toBe($expectedHeight);
+    expect(mb_strlen($lines[0] ?? ''))->toBe($expectedWidth);
+});
+
+test('main panel sprite tab can delete the active asset after confirmation', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey("\033[3~");
+    $panel->update();
+
+    pressMainPanelKey("\033[A");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    $assetSyncRequest = $panel->consumeAssetSyncRequest();
+
+    expect(file_exists($workspace . '/Assets/Textures/player.texture'))->toBeFalse();
+    expect($assetSyncRequest)->toBe([
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'clearInspection' => true,
+    ]);
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Select a .texture or .tmap asset')))->toBeTrue();
+});
+
+test('main panel sprite tab supports undo redo and reset', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('Z');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+
+    pressMainPanelKey("\x1A");
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("abcd\n");
+
+    pressMainPanelKey("\x19");
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
+
+    pressMainPanelKey('R');
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("abcd\n");
+});
+
+test('main panel sprite tab can insert a special character from the character picker modal', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('@');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("█bcd\n");
+});
+
+test('main panel sprite tab shows the cursor column x row position in the help line', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 84, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+    $buildBorderLine = new ReflectionMethod(MainPanel::class, 'buildBorderLine');
+    $buildBorderLine->setAccessible(true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    $initialHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($initialHelpLine)->toContain('Col x Row: 1 x 1');
+
+    pressMainPanelKey("\033[C");
+    $panel->update();
+
+    pressMainPanelKey("\033[B");
+    $panel->update();
+
+    $updatedHelpLine = $buildBorderLine->invoke($panel, '', false);
+
+    expect($updatedHelpLine)->toContain('Col x Row: 2 x 2');
+});

@@ -63,3 +63,24 @@ test('file dialog modal tracks dirty state across changes', function () {
 
     expect($modal->isDirty())->toBeTrue();
 });
+
+test('file dialog modal filters files and directories by allowed extensions', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-file-dialog-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    mkdir($workspace . '/Assets/Maps', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/player.texture', 'texture');
+    file_put_contents($workspace . '/Assets/Maps/level.tmap', 'tile map');
+    file_put_contents($workspace . '/Assets/notes.txt', 'notes');
+
+    $modal = new FileDialogModal();
+    $modal->show($workspace . '/Assets', allowedExtensions: ['texture']);
+
+    expect($modal->content)->toBe(['► Textures']);
+
+    $modal->expandSelection();
+
+    expect($modal->content)->toBe([
+        '▼ Textures',
+        '  • player.texture',
+    ]);
+});

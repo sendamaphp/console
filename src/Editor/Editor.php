@@ -378,7 +378,9 @@ final class Editor implements ObservableInterface
         $this->synchronizeHierarchyDeletions();
         $this->synchronizeHierarchyAdditions();
         $this->synchronizeMainPanelSceneChanges();
+        $this->synchronizeMainPanelAssetChanges();
         $this->synchronizeInspectorSceneChanges();
+        $this->synchronizeInspectorAssetChanges();
         $this->synchronizeInspectorPanel();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
@@ -690,6 +692,11 @@ final class Editor implements ObservableInterface
         }
 
         if (Input::getCurrentInput() === 'A' && !($this->editorState instanceof PlayState)) {
+            if ($this->focusedPanel === $this->mainPanel && $this->mainPanel->beginSpriteCreateWorkflow()) {
+                $this->shouldRefreshBackgroundUnderModal = true;
+                return;
+            }
+
             $this->setFocusedPanel($this->hierarchyPanel);
             $this->hierarchyPanel->beginAddWorkflow();
             $this->shouldRefreshBackgroundUnderModal = true;
@@ -924,6 +931,8 @@ final class Editor implements ObservableInterface
             $this->mainPanel->selectSceneObject($selectedItem['path']);
         } elseif (($selectedItem['context'] ?? null) === 'scene') {
             $this->hierarchyPanel->selectPath('scene');
+        } elseif (($selectedItem['context'] ?? null) === 'asset') {
+            $this->mainPanel->loadSpriteAsset(is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null);
         }
 
         $this->inspectorPanel->inspectTarget($selectedItem);
@@ -966,6 +975,47 @@ final class Editor implements ObservableInterface
         $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
         $this->mainPanel->selectSceneObject($mutation['path']);
         $this->inspectorPanel->syncHierarchyTarget($mutation['path'], $mutation['value']);
+    }
+
+    private function synchronizeInspectorAssetChanges(): void
+    {
+        $mutation = $this->inspectorPanel->consumeAssetMutation();
+
+        if (
+            !is_array($mutation)
+            || !is_string($mutation['path'] ?? null)
+            || $mutation['path'] === ''
+            || !is_string($mutation['name'] ?? null)
+        ) {
+            return;
+        }
+
+        $renamedAsset = $this->renameAssetAndCascadeReferences(
+            $mutation['path'],
+            $mutation['relativePath'] ?? null,
+            $mutation['name'],
+        );
+
+        if ($renamedAsset === null) {
+            if (is_file($mutation['path'])) {
+                $this->inspectorPanel->syncAssetTarget([
+                    'name' => basename($mutation['path']),
+                    'path' => $mutation['path'],
+                    'relativePath' => is_string($mutation['relativePath'] ?? null)
+                        ? $mutation['relativePath']
+                        : basename($mutation['path']),
+                    'isDirectory' => false,
+                    'children' => [],
+                ]);
+            }
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($renamedAsset['path']);
+        $assetInspectionTarget = $this->buildAssetInspectionTarget($renamedAsset);
+        $this->inspectorPanel->inspectTarget($assetInspectionTarget);
+        $this->mainPanel->loadSpriteAsset($renamedAsset);
     }
 
     private function synchronizeHierarchyAdditions(): void
@@ -1058,6 +1108,30 @@ final class Editor implements ObservableInterface
         $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
         $this->mainPanel->selectSceneObject($mutation['path']);
         $this->inspectorPanel->syncHierarchyTarget($mutation['path'], $mutation['value']);
+    }
+
+    private function synchronizeMainPanelAssetChanges(): void
+    {
+        $assetSyncRequest = $this->mainPanel->consumeAssetSyncRequest();
+
+        if (!is_array($assetSyncRequest)) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+
+        if (is_string($assetSyncRequest['path'] ?? null)) {
+            $this->assetsPanel->selectAssetByAbsolutePath($assetSyncRequest['path']);
+        }
+
+        if (is_array($assetSyncRequest['inspectionTarget'] ?? null)) {
+            $this->inspectorPanel->inspectTarget($assetSyncRequest['inspectionTarget']);
+            return;
+        }
+
+        if (($assetSyncRequest['clearInspection'] ?? false) === true) {
+            $this->inspectorPanel->inspectTarget(null);
+        }
     }
 
     private function applyHierarchyMutation(string $path, array $value): bool
@@ -1190,6 +1264,174 @@ final class Editor implements ObservableInterface
         }
 
         return rmdir($path);
+    }
+
+    private function renameAssetAndCascadeReferences(
+        string $currentAbsolutePath,
+        mixed $currentRelativePath,
+        string $requestedName,
+    ): ?array {
+        if (!is_file($currentAbsolutePath)) {
+            return null;
+        }
+
+        $normalizedName = $this->normalizeAssetFileName($requestedName, $currentAbsolutePath);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        $targetAbsolutePath = Path::join(dirname($currentAbsolutePath), $normalizedName);
+
+        if ($targetAbsolutePath !== $currentAbsolutePath) {
+            if (file_exists($targetAbsolutePath)) {
+                $this->consolePanel->append('[ERROR] - Cannot rename asset: target file already exists.');
+                return null;
+            }
+
+            if (!rename($currentAbsolutePath, $targetAbsolutePath)) {
+                $this->consolePanel->append('[ERROR] - Failed to rename asset.');
+                return null;
+            }
+        }
+
+        $oldRelativePath = is_string($currentRelativePath) && $currentRelativePath !== ''
+            ? str_replace('\\', '/', $currentRelativePath)
+            : $this->buildRelativeAssetPath($currentAbsolutePath);
+        $newRelativePath = $this->buildRelativeAssetPath($targetAbsolutePath);
+
+        if ($this->updateSceneAssetReferences($oldRelativePath, $newRelativePath)) {
+            if ($this->loadedScene instanceof DTOs\SceneDTO) {
+                $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+                $this->loadedScene->rawData['environmentTileMapPath'] = $this->loadedScene->environmentTileMapPath;
+                $this->loadedScene->isDirty = true;
+                $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+                $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+                $this->syncScenePanels(true);
+            }
+        }
+
+        return [
+            'name' => basename($targetAbsolutePath),
+            'path' => $targetAbsolutePath,
+            'relativePath' => $newRelativePath,
+            'isDirectory' => false,
+            'children' => [],
+        ];
+    }
+
+    private function normalizeAssetFileName(string $requestedName, string $currentAbsolutePath): string
+    {
+        $trimmedName = trim(str_replace('\\', '/', $requestedName));
+        $trimmedName = basename($trimmedName);
+        $currentExtension = strtolower((string) pathinfo($currentAbsolutePath, PATHINFO_EXTENSION));
+
+        if ($trimmedName === '') {
+            return basename($currentAbsolutePath);
+        }
+
+        $requestedBaseName = (string) pathinfo($trimmedName, PATHINFO_FILENAME);
+
+        if ($requestedBaseName === '') {
+            $requestedBaseName = (string) pathinfo(basename($currentAbsolutePath), PATHINFO_FILENAME);
+        }
+
+        return $currentExtension !== ''
+            ? $requestedBaseName . '.' . $currentExtension
+            : $requestedBaseName;
+    }
+
+    private function buildRelativeAssetPath(string $absolutePath): string
+    {
+        $assetsDirectory = $this->assetsDirectoryPath;
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            return basename($absolutePath);
+        }
+
+        $relativePath = substr($absolutePath, strlen($assetsDirectory));
+
+        return ltrim(str_replace('\\', '/', (string) $relativePath), '/');
+    }
+
+    private function updateSceneAssetReferences(string $oldRelativePath, string $newRelativePath): bool
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $hasChanges = false;
+        $oldWithExtension = str_replace('\\', '/', $oldRelativePath);
+        $newWithExtension = str_replace('\\', '/', $newRelativePath);
+        $oldWithoutExtension = preg_replace('/\.[^.]+$/', '', $oldWithExtension) ?? $oldWithExtension;
+        $newWithoutExtension = preg_replace('/\.[^.]+$/', '', $newWithExtension) ?? $newWithExtension;
+
+        if ($this->loadedScene->environmentTileMapPath === $oldWithExtension) {
+            $this->loadedScene->environmentTileMapPath = $newWithExtension;
+            $hasChanges = true;
+        } elseif ($this->loadedScene->environmentTileMapPath === $oldWithoutExtension) {
+            $this->loadedScene->environmentTileMapPath = $newWithoutExtension;
+            $hasChanges = true;
+        }
+
+        $this->loadedScene->hierarchy = $this->updateHierarchyAssetReferences(
+            $this->loadedScene->hierarchy,
+            $oldWithExtension,
+            $oldWithoutExtension,
+            $newWithExtension,
+            $newWithoutExtension,
+            $hasChanges,
+        );
+
+        return $hasChanges;
+    }
+
+    private function updateHierarchyAssetReferences(
+        array $items,
+        string $oldWithExtension,
+        string $oldWithoutExtension,
+        string $newWithExtension,
+        string $newWithoutExtension,
+        bool &$hasChanges,
+    ): array {
+        foreach ($items as $index => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            if (is_string($item['sprite']['texture']['path'] ?? null)) {
+                if ($item['sprite']['texture']['path'] === $oldWithExtension) {
+                    $items[$index]['sprite']['texture']['path'] = $newWithExtension;
+                    $hasChanges = true;
+                } elseif ($item['sprite']['texture']['path'] === $oldWithoutExtension) {
+                    $items[$index]['sprite']['texture']['path'] = $newWithoutExtension;
+                    $hasChanges = true;
+                }
+            }
+
+            if (is_array($item['children'] ?? null)) {
+                $items[$index]['children'] = $this->updateHierarchyAssetReferences(
+                    $item['children'],
+                    $oldWithExtension,
+                    $oldWithoutExtension,
+                    $newWithExtension,
+                    $newWithoutExtension,
+                    $hasChanges,
+                );
+            }
+        }
+
+        return array_values($items);
+    }
+
+    private function buildAssetInspectionTarget(array $asset): array
+    {
+        return [
+            'context' => 'asset',
+            'name' => $asset['name'] ?? basename((string) ($asset['path'] ?? '')),
+            'type' => ($asset['isDirectory'] ?? false) ? 'Folder' : 'File',
+            'value' => $asset,
+        ];
     }
 
     private function saveLoadedScene(): void

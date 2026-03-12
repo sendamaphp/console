@@ -196,12 +196,64 @@ test('inspector panel keeps generic asset inspection simple', function () {
         'context' => 'asset',
         'name' => 'Textures',
         'type' => 'Folder',
-        'value' => ['name' => 'Textures'],
+        'value' => [
+            'name' => 'Textures',
+            'path' => '/tmp/project/Assets/Textures',
+            'isDirectory' => true,
+        ],
     ]);
 
     expect($panel->content)->toBe([
         'Type: Folder',
         'Name: Textures',
+        'Path: /tmp/project/Assets/Textures',
+    ]);
+});
+
+test('inspector panel allows file assets to rename through the name control', function () {
+    $panel = new InspectorPanel(width: 48, height: 16);
+
+    $panel->inspectTarget([
+        'context' => 'asset',
+        'name' => 'player.texture',
+        'type' => 'File',
+        'value' => [
+            'name' => 'player.texture',
+            'path' => '/tmp/project/Assets/Textures/player.texture',
+            'relativePath' => 'Textures/player.texture',
+            'isDirectory' => false,
+        ],
+    ]);
+
+    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+
+    $panel->cycleFocusForward();
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+    $panel->update();
+
+    foreach (str_split('2') as $character) {
+        $previousKeyPress->setValue('');
+        $keyPress->setValue($character);
+        $panel->update();
+    }
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+    $panel->update();
+
+    expect($panel->consumeAssetMutation())->toBe([
+        'path' => '/tmp/project/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'name' => 'player.texture2',
     ]);
 });
 
