@@ -12,6 +12,7 @@ class SceneDTO
         public int $width = DEFAULT_TERMINAL_WIDTH,
         public int $height = DEFAULT_TERMINAL_HEIGHT,
         public string $environmentTileMapPath = "Maps/example",
+        public string $environmentCollisionMapPath = "",
         public bool $isDirty = false,
         public array $hierarchy = [],
         public ?string $sourcePath = null,
@@ -28,6 +29,7 @@ class SceneDTO
             "width" => $this->width,
             "height" => $this->height,
             "environmentTileMapPath" => $this->environmentTileMapPath,
+            "environmentCollisionMapPath" => $this->environmentCollisionMapPath,
             "isDirty" => $this->isDirty,
             "hierarchy" => $this->hierarchy,
             "sourcePath" => $this->sourcePath,
@@ -42,6 +44,7 @@ class SceneDTO
         $this->width = $data['width'] ?? DEFAULT_TERMINAL_WIDTH;
         $this->height = $data['height'] ?? DEFAULT_TERMINAL_HEIGHT;
         $this->environmentTileMapPath = $data['environmentTileMapPath'] ?? "Maps/example";
+        $this->environmentCollisionMapPath = $data['environmentCollisionMapPath'] ?? "";
         $this->isDirty = $data['isDirty'] ?? false;
         $this->hierarchy = $data['hierarchy'] ?? [];
         $this->sourcePath = $data['sourcePath'] ?? null;

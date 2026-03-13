@@ -130,6 +130,7 @@ test('hierarchy panel queues the scene root for inspection', function () {
         sceneWidth: 80,
         sceneHeight: 25,
         environmentTileMapPath: 'Maps/level',
+        environmentCollisionMapPath: 'Maps/level.collider',
         hierarchy: [
             ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player'],
         ],
@@ -147,6 +148,7 @@ test('hierarchy panel queues the scene root for inspection', function () {
             'width' => 80,
             'height' => 25,
             'environmentTileMapPath' => 'Maps/level',
+            'environmentCollisionMapPath' => 'Maps/level.collider',
         ],
     ]);
 });

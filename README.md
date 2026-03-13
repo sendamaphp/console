@@ -120,6 +120,16 @@ sendama new mygame
 sendama generate:scene myscene
 ```
 
+### Generate a new prefab
+```bash
+sendama generate:prefab enemy
+```
+
+#### Generate a UI prefab
+```bash
+sendama generate:prefab score-label --kind=label
+```
+
 ### Generate a new texture
 ```bash
 sendama generate:texture mytexture

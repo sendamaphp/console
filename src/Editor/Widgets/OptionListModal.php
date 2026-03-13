@@ -12,6 +12,7 @@ class OptionListModal extends Widget
     protected bool $isDirty = false;
     protected array $options = [];
     protected int $selectedIndex = 0;
+    protected int $scrollOffset = 0;
 
     public function __construct(
         string $title = 'Choose Action',
@@ -38,7 +39,9 @@ class OptionListModal extends Widget
         $this->selectedIndex = $optionCount > 0
             ? max(0, min($selectedIndex, $optionCount - 1))
             : 0;
+        $this->scrollOffset = 0;
         $this->isVisible = true;
+        $this->syncScrollOffset();
         $this->refreshContent();
         $this->markDirty();
     }
@@ -77,6 +80,7 @@ class OptionListModal extends Widget
         }
 
         $this->selectedIndex = ($this->selectedIndex + $offset + $optionCount) % $optionCount;
+        $this->syncScrollOffset();
         $this->refreshContent();
         $this->markDirty();
     }
@@ -115,6 +119,8 @@ class OptionListModal extends Widget
 
         $this->setDimensions($modalWidth, $modalHeight);
         $this->setPosition($modalX, $modalY);
+        $this->syncScrollOffset();
+        $this->refreshContent();
 
         if ($layoutChanged) {
             $this->markDirty();
@@ -127,9 +133,10 @@ class OptionListModal extends Widget
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
-        $selectedLineIndex = $this->padding->topPadding + $this->selectedIndex;
+        $selectedVisibleIndex = $this->selectedIndex - $this->scrollOffset;
+        $selectedLineIndex = $this->padding->topPadding + $selectedVisibleIndex;
 
-        if ($lineIndex !== $selectedLineIndex) {
+        if ($selectedVisibleIndex < 0 || $lineIndex !== $selectedLineIndex) {
             return parent::decorateContentLine($line, $contentColor, $lineIndex);
         }
 
@@ -151,15 +158,53 @@ class OptionListModal extends Widget
 
     private function refreshContent(): void
     {
-        $this->content = array_map(
-            fn(string $option, int $index) => (($index === $this->selectedIndex) ? '>' : ' ') . ' ' . $option,
+        $visibleOptions = array_slice(
             $this->options,
-            array_keys($this->options),
+            $this->scrollOffset,
+            $this->getVisibleOptionCount(),
+        );
+
+        $this->content = array_map(
+            fn(string $option, int $index) => (
+                (($this->scrollOffset + $index) === $this->selectedIndex) ? '>' : ' '
+            ) . ' ' . $option,
+            $visibleOptions,
+            array_keys($visibleOptions),
         );
     }
 
     private function markDirty(): void
     {
         $this->isDirty = true;
+    }
+
+    private function getVisibleOptionCount(): int
+    {
+        return max(1, $this->innerHeight - $this->padding->topPadding - $this->padding->bottomPadding);
+    }
+
+    private function syncScrollOffset(): void
+    {
+        $optionCount = count($this->options);
+
+        if ($optionCount <= 0) {
+            $this->scrollOffset = 0;
+            return;
+        }
+
+        $visibleOptionCount = $this->getVisibleOptionCount();
+        $maxScrollOffset = max(0, $optionCount - $visibleOptionCount);
+        $this->scrollOffset = max(0, min($this->scrollOffset, $maxScrollOffset));
+
+        if ($this->selectedIndex < $this->scrollOffset) {
+            $this->scrollOffset = $this->selectedIndex;
+            return;
+        }
+
+        $visibleEnd = $this->scrollOffset + $visibleOptionCount - 1;
+
+        if ($this->selectedIndex > $visibleEnd) {
+            $this->scrollOffset = $this->selectedIndex - $visibleOptionCount + 1;
+        }
     }
 }

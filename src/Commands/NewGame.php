@@ -3,6 +3,7 @@
 namespace Sendama\Console\Commands;
 
 use RuntimeException;
+use Sendama\Console\Strategies\AssetFileGeneration\SceneFileGenerationStrategy;
 use Sendama\Console\Util\Path;
 use Sendama\Console\Util\ProjectNormalizer;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -93,6 +94,7 @@ class NewGame extends Command
     $this->createSplashScreenTextureFile($assetsDirectory);
     $this->createPlayerTextureFile($assetsDirectory);
     $this->createTheExampleMapFile($this->mapsDirectory);
+    $this->createDefaultSceneFile($assetsDirectory);
     $this->createDocsDirectory($this->targetDirectory);
     $this->createReadmeFile($this->targetDirectory);
 
@@ -143,6 +145,8 @@ class NewGame extends Command
       description: 'A 2D ASCII terminal game.',
       version: '0.0.1',
       mainFile: $mainFilename,
+      loadedScenes: ['Scenes/Level.scene.php'],
+      consoleRefreshInterval: 5.0,
     );
   }
 
@@ -278,6 +282,15 @@ class NewGame extends Command
 
     if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
       throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
+    }
+  }
+
+  private function createDefaultSceneFile(string $assetsDirectory): void
+  {
+    $targetSceneFilename = Path::join($assetsDirectory, 'Scenes', 'Level.scene.php');
+
+    if (false === file_put_contents($targetSceneFilename, SceneFileGenerationStrategy::buildMetaSceneContents())) {
+      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetSceneFilename));
     }
   }
 

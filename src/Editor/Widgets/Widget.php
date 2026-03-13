@@ -139,6 +139,11 @@ abstract class Widget extends Window implements FocusableInterface
     {
     }
 
+    public function consumeModalBackgroundRefreshRequest(): bool
+    {
+        return false;
+    }
+
     public function setTopSibling(?Widget $widget): void
     {
         $this->topSibling = $widget;
@@ -330,7 +335,7 @@ abstract class Widget extends Window implements FocusableInterface
         $rightPadding = max(0, $this->padding->rightPadding);
         $availableTextWidth = max(0, $innerWidth - $leftPadding - $rightPadding);
         $visibleContent = $this->clipContentToWidth($content, $availableTextWidth);
-        $visibleLength = mb_strlen($visibleContent);
+        $visibleLength = $this->getDisplayWidth($visibleContent);
 
         $contentArea = match ($this->alignment->horizontalAlignment) {
             HorizontalAlignment::CENTER => $this->buildCenteredContentArea(
@@ -404,7 +409,7 @@ abstract class Widget extends Window implements FocusableInterface
     protected function padContentArea(string $contentArea, int $innerWidth, int $direction): string
     {
         $visibleArea = $this->clipContentToWidth($contentArea, $innerWidth);
-        $visibleLength = mb_strlen($visibleArea);
+        $visibleLength = $this->getDisplayWidth($visibleArea);
 
         if ($visibleLength >= $innerWidth) {
             return $visibleArea;
@@ -427,18 +432,73 @@ abstract class Widget extends Window implements FocusableInterface
             return '';
         }
 
-        if (mb_strlen($content) <= $maxWidth) {
+        if ($this->getDisplayWidth($content) <= $maxWidth) {
             return $content;
         }
 
-        return mb_substr($content, 0, $maxWidth);
+        return mb_strimwidth($content, 0, $maxWidth, '', 'UTF-8');
+    }
+
+    /**
+     * @return array{before: string, highlight: string, after: string}
+     */
+    protected function splitContentByDisplayWidth(string $content, int $highlightStart, int $highlightLength): array
+    {
+        $highlightStart = max(0, $highlightStart);
+        $highlightLength = max(0, $highlightLength);
+
+        if ($content === '' || $highlightLength === 0) {
+            return [
+                'before' => $content,
+                'highlight' => '',
+                'after' => '',
+            ];
+        }
+
+        $characters = preg_split('//u', $content, -1, PREG_SPLIT_NO_EMPTY);
+
+        if (!is_array($characters) || $characters === []) {
+            return [
+                'before' => $content,
+                'highlight' => '',
+                'after' => '',
+            ];
+        }
+
+        $before = '';
+        $highlight = '';
+        $after = '';
+        $currentWidth = 0;
+        $highlightEnd = $highlightStart + $highlightLength;
+
+        foreach ($characters as $character) {
+            $characterWidth = max(1, $this->getDisplayWidth($character));
+            $characterStart = $currentWidth;
+            $characterEnd = $currentWidth + $characterWidth;
+
+            if ($characterEnd <= $highlightStart) {
+                $before .= $character;
+            } elseif ($characterStart >= $highlightEnd) {
+                $after .= $character;
+            } else {
+                $highlight .= $character;
+            }
+
+            $currentWidth = $characterEnd;
+        }
+
+        return [
+            'before' => $before,
+            'highlight' => $highlight,
+            'after' => $after,
+        ];
     }
 
     protected function buildBorderLine(string $label, bool $isTopBorder): string
     {
         $availableLabelWidth = max(0, $this->width - 3);
-        $visibleLabel = mb_substr($label, 0, $availableLabelWidth);
-        $labelWidth = mb_strlen($visibleLabel);
+        $visibleLabel = $this->clipContentToWidth($label, $availableLabelWidth);
+        $labelWidth = $this->getDisplayWidth($visibleLabel);
         $remainderWidth = max(0, $this->width - $labelWidth - 3);
 
         $leftCorner = $isTopBorder ? $this->borderPack->topLeft : $this->borderPack->bottomLeft;
@@ -449,6 +509,17 @@ abstract class Widget extends Window implements FocusableInterface
             . $visibleLabel
             . str_repeat($this->borderPack->horizontal, $remainderWidth)
             . $rightCorner;
+    }
+
+    protected function getDisplayWidth(string $content): int
+    {
+        if ($content === '') {
+            return 0;
+        }
+
+        return function_exists('mb_strwidth')
+            ? mb_strwidth($content, 'UTF-8')
+            : mb_strlen($content);
     }
 
     protected function wrapWithColor(string $content, ?Color $color): string

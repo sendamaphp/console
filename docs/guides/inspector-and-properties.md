@@ -29,6 +29,7 @@ Controls:
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
 - `Shift+A`: open the add-component menu when a hierarchy object is being inspected
+- `Shift+W`: enter or leave component move mode when a component header is selected
 - `/`: collapse or expand the selected section header
 - `Tab` / `Shift+Tab`: move forward or backward through focusable controls
 
@@ -125,6 +126,23 @@ When you choose a component:
 - any serializable default data the editor can discover is added immediately
 - the new section appears in the Inspector right away
 
+## Removing And Reordering Components
+
+Component headers are interactive controls.
+
+To remove a component:
+
+- focus the component header
+- press `Delete`
+- confirm removal in the modal
+
+To reorder components:
+
+- focus the component header you want to move
+- press `Shift+W` to enter component move mode
+- press `Up` or `Down` to move that component through the list with wraparound
+- press `Escape` or `Shift+W` again to leave move mode
+
 ## Asset Controls
 
 When a file asset is inspected, the Inspector renders:
@@ -133,7 +151,7 @@ When a file asset is inspected, the Inspector renders:
 - editable `Name`
 - read-only `Path`
 
-If the file is a PHP script under `Assets/Scripts`, renaming it in the Inspector also updates the class declaration inside the source file to match the new filename.
+If the file is a PHP class-backed asset under `Assets/Scripts` or `Assets/Events`, renaming it in the Inspector also updates the class declaration inside the source file to match the new filename.
 
 When a folder is inspected, the Inspector renders:
 
@@ -207,8 +225,6 @@ These habits make the Inspector much easier to use:
 
 The Inspector edits what already exists in the loaded data model. It does not currently provide UI for:
 
-- removing components
-- reordering components
 - changing hierarchy parenting
 - creating new nested child objects
 

@@ -38,6 +38,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
     protected int $sceneWidth = DEFAULT_TERMINAL_WIDTH;
     protected int $sceneHeight = DEFAULT_TERMINAL_HEIGHT;
     protected string $environmentTileMapPath = 'Maps/example';
+    protected string $environmentCollisionMapPath = '';
     protected array $hierarchy = [];
     protected array $visibleHierarchy = [];
     protected array $expandedPaths = [];
@@ -60,6 +61,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
         int $sceneWidth = DEFAULT_TERMINAL_WIDTH,
         int $sceneHeight = DEFAULT_TERMINAL_HEIGHT,
         string $environmentTileMapPath = 'Maps/example',
+        string $environmentCollisionMapPath = '',
     )
     {
         $this->initializeObservers();
@@ -72,6 +74,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
         $this->sceneWidth = $sceneWidth;
         $this->sceneHeight = $sceneHeight;
         $this->environmentTileMapPath = $environmentTileMapPath;
+        $this->environmentCollisionMapPath = $environmentCollisionMapPath;
         $this->setHierarchy($hierarchy);
     }
 
@@ -102,6 +105,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
         ?int $sceneWidth = null,
         ?int $sceneHeight = null,
         ?string $environmentTileMapPath = null,
+        ?string $environmentCollisionMapPath = null,
     ): void
     {
         $this->sceneName = $sceneName;
@@ -109,6 +113,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
         $this->sceneWidth = $sceneWidth ?? $this->sceneWidth;
         $this->sceneHeight = $sceneHeight ?? $this->sceneHeight;
         $this->environmentTileMapPath = $environmentTileMapPath ?? $this->environmentTileMapPath;
+        $this->environmentCollisionMapPath = $environmentCollisionMapPath ?? $this->environmentCollisionMapPath;
         $this->refreshContent();
     }
 
@@ -213,6 +218,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
                     'width' => $this->sceneWidth,
                     'height' => $this->sceneHeight,
                     'environmentTileMapPath' => $this->environmentTileMapPath,
+                    'environmentCollisionMapPath' => $this->environmentCollisionMapPath,
                 ],
             ];
             return;

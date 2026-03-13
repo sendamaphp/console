@@ -63,8 +63,40 @@ test('assets panel queues the selected asset for inspection', function () {
             'isDirectory' => false,
             'children' => [],
         ],
+        'openInMainPanel' => true,
     ]);
     expect($panel->consumeInspectionRequest())->toBeNull();
+});
+
+test('assets panel queues inspection when selection changes', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets/Maps', 0777, true);
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    file_put_contents($workspace . '/Assets/Maps/level.tmap', "xx\n");
+    file_put_contents($workspace . '/Assets/Textures/player.texture', ">\n");
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $panel->expandSelection();
+    $panel->moveSelection(1);
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'asset',
+        'name' => 'level.tmap',
+        'type' => 'File',
+        'value' => [
+            'name' => 'level.tmap',
+            'path' => $workspace . '/Assets/Maps/level.tmap',
+            'relativePath' => 'Maps/level.tmap',
+            'isDirectory' => false,
+            'children' => [],
+        ],
+        'openInMainPanel' => false,
+    ]);
 });
 
 test('assets panel reports folders as folder type in inspector payload', function () {
@@ -90,6 +122,7 @@ test('assets panel reports folders as folder type in inspector payload', functio
             'isDirectory' => true,
             'children' => [],
         ],
+        'openInMainPanel' => true,
     ]);
 });
 
@@ -191,6 +224,43 @@ test('assets panel queues the selected asset type for creation when confirmed', 
 
     expect($panel->consumeCreationRequest())->toBe([
         'kind' => 'script',
+        'workingDirectory' => $workspace,
+    ]);
+});
+
+test('assets panel can queue prefab creation requests', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+        workingDirectory: $workspace,
+    );
+
+    $panel->beginCreateWorkflow();
+
+    $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
+    $handleModalInput->setAccessible(true);
+
+    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+
+    $createAssetModal = new ReflectionProperty(AssetsPanel::class, 'createAssetModal');
+    $createAssetModal->setAccessible(true);
+    $modal = $createAssetModal->getValue($panel);
+    $moveSelection = new ReflectionMethod($modal, 'moveSelection');
+    $moveSelection->invoke($modal, 2);
+
+    $previousKeyPress->setValue('');
+    $keyPress->setValue("\n");
+    $handleModalInput->invoke($panel);
+
+    expect($panel->consumeCreationRequest())->toBe([
+        'kind' => 'prefab',
         'workingDirectory' => $workspace,
     ]);
 });

@@ -48,6 +48,7 @@ final class SceneWriter
         $sceneData['width'] = $scene->width;
         $sceneData['height'] = $scene->height;
         $sceneData['environmentTileMapPath'] = $scene->environmentTileMapPath;
+        $sceneData['environmentCollisionMapPath'] = $scene->environmentCollisionMapPath;
         $sceneData['hierarchy'] = $scene->hierarchy;
 
         unset($sceneData['isDirty']);

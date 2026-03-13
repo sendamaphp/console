@@ -13,6 +13,10 @@ class ConsolePanel extends Widget
     private const string DIVIDER_LINE_CHARACTER = '─';
     private const string TAB_DIVIDER_LINE_CHARACTER = '■';
     private const array TAB_TITLES = ['Debug', 'Error'];
+    private const array FILTER_OPTIONS_BY_TAB = [
+        'Debug' => ['ALL', 'DEBUG', 'INFO', 'WARN', 'ERROR'],
+        'Error' => ['ALL', 'ERROR', 'CRITICAL', 'FATAL'],
+    ];
 
     protected array $logMessagesByTab = [
         'Debug' => [],
@@ -35,6 +39,12 @@ class ConsolePanel extends Widget
     protected int $activeTabOffset = 0;
     protected int $activeTabLength = 0;
     protected Color $activeIndicatorColor = Color::LIGHT_CYAN;
+    protected array $activeFiltersByTab = [
+        'Debug' => 'ALL',
+        'Error' => 'ALL',
+    ];
+    protected OptionListModal $filterModal;
+    protected OptionListModal $clearConfirmModal;
 
     public function __construct(
         array $position = ['x' => 37, 'y' => 22],
@@ -46,12 +56,49 @@ class ConsolePanel extends Widget
     )
     {
         parent::__construct('Console', '', $position, $width, $height);
+        $this->filterModal = new OptionListModal('Filter Logs');
+        $this->clearConfirmModal = new OptionListModal('Clear Log');
         $this->refreshIntervalSeconds = $refreshIntervalSeconds > 0
             ? $refreshIntervalSeconds
             : self::DEFAULT_REFRESH_INTERVAL_SECONDS;
         $this->lastLogRefreshAt = microtime(true);
         $this->loadInitialLogTail();
         $this->refreshVisibleContent();
+    }
+
+    public function hasActiveModal(): bool
+    {
+        return $this->filterModal->isVisible()
+            || $this->clearConfirmModal->isVisible();
+    }
+
+    public function isModalDirty(): bool
+    {
+        return $this->filterModal->isDirty()
+            || $this->clearConfirmModal->isDirty();
+    }
+
+    public function markModalClean(): void
+    {
+        $this->filterModal->markClean();
+        $this->clearConfirmModal->markClean();
+    }
+
+    public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
+    {
+        $this->filterModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->clearConfirmModal->syncLayout($terminalWidth, $terminalHeight);
+    }
+
+    public function renderActiveModal(): void
+    {
+        if ($this->filterModal->isVisible()) {
+            $this->filterModal->render();
+        }
+
+        if ($this->clearConfirmModal->isVisible()) {
+            $this->clearConfirmModal->render();
+        }
     }
 
     public function getActiveTab(): string
@@ -75,8 +122,10 @@ class ConsolePanel extends Widget
 
     public function append(string $message): void
     {
-        $tabTitle = $this->resolveSessionTabTitle($message);
-        $this->sessionMessagesByTab[$tabTitle][] = $message;
+        $timestamp = date('Y-m-d H:i:s');
+        $timestampedMessage = "[$timestamp] $message";
+        $tabTitle = $this->resolveSessionTabTitle($timestampedMessage);
+        $this->sessionMessagesByTab[$tabTitle][] = $timestampedMessage;
 
         if ($tabTitle !== $this->getActiveTab()) {
             return;
@@ -144,22 +193,42 @@ class ConsolePanel extends Widget
 
     public function update(): void
     {
+        if ($this->clearConfirmModal->isVisible()) {
+            $this->handleClearConfirmModalInput();
+            return;
+        }
+
+        if ($this->filterModal->isVisible()) {
+            $this->handleFilterModalInput();
+            return;
+        }
+
         if ($this->shouldRefreshFromLogFile()) {
             $this->refreshAllTabsFromLogFiles();
         }
 
-        if ($this->hasFocus() && !$this->isPlayModeActive) {
-            if (Input::isKeyDown(KeyCode::R)) {
+        if ($this->hasFocus()) {
+            if (Input::isKeyDown(KeyCode::F)) {
+                $this->openFilterModal();
+                return;
+            }
+
+            if (Input::isKeyDown(KeyCode::C)) {
+                $this->openClearConfirmModal();
+                return;
+            }
+
+            if (!$this->isPlayModeActive && Input::isKeyDown(KeyCode::R)) {
                 $this->refreshFromLogFile();
                 return;
             }
 
-            if (Input::isKeyDown(KeyCode::UP)) {
+            if (!$this->isPlayModeActive && Input::isKeyDown(KeyCode::UP)) {
                 $this->scrollUp();
                 return;
             }
 
-            if (Input::isKeyDown(KeyCode::DOWN)) {
+            if (!$this->isPlayModeActive && Input::isKeyDown(KeyCode::DOWN)) {
                 $this->scrollDown();
                 return;
             }
@@ -316,7 +385,7 @@ class ConsolePanel extends Widget
 
     private function colorizeLogTag(string $content): string
     {
-        if (preg_match('/\[(ERROR|INFO|WARN|WARNING|DEBUG)\]/', $content, $matches, PREG_OFFSET_CAPTURE) !== 1) {
+        if (preg_match('/\[(ERROR|CRITICAL|FATAL|INFO|WARN|WARNING|DEBUG)\]/', $content, $matches, PREG_OFFSET_CAPTURE) !== 1) {
             return $content;
         }
 
@@ -335,6 +404,7 @@ class ConsolePanel extends Widget
     {
         return match ($level) {
             'ERROR' => Color::LIGHT_RED,
+            'CRITICAL', 'FATAL' => Color::RED,
             'INFO' => Color::LIGHT_BLUE,
             'WARN', 'WARNING' => Color::YELLOW,
             'DEBUG' => Color::LIGHT_GRAY,
@@ -405,10 +475,12 @@ class ConsolePanel extends Widget
 
     private function messagesForTab(string $tabTitle): array
     {
-        return [
+        $messages = [
             ...($this->logMessagesByTab[$tabTitle] ?? []),
             ...($this->sessionMessagesByTab[$tabTitle] ?? []),
         ];
+
+        return $this->applyActiveFilter($tabTitle, $messages);
     }
 
     private function shouldRefreshFromLogFile(): bool
@@ -472,8 +544,8 @@ class ConsolePanel extends Widget
     private function updateHelpInfo(): void
     {
         $this->help = $this->isPlayModeActive
-            ? 'Tab/Shift+Tab tabs  Up/Down scroll  Auto refresh on'
-            : 'Tab/Shift+Tab tabs  Up/Down scroll  Shift+R refresh';
+            ? 'Tab/Shift+Tab tabs  Shift+F filter  Shift+C clear  Auto refresh on'
+            : 'Tab/Shift+Tab tabs  Up/Down scroll  Shift+R refresh  Shift+F filter  Shift+C clear';
     }
 
     private function buildTabsLine(): string
@@ -527,5 +599,171 @@ class ConsolePanel extends Widget
     private function persistScrollOffset(): void
     {
         $this->scrollOffsetsByTab[$this->getActiveTab()] = $this->scrollOffset;
+    }
+
+    private function openFilterModal(): void
+    {
+        $tabTitle = $this->getActiveTab();
+        $options = self::FILTER_OPTIONS_BY_TAB[$tabTitle] ?? ['ALL'];
+        $currentFilter = $this->activeFiltersByTab[$tabTitle] ?? 'ALL';
+        $selectedIndex = array_search($currentFilter, $options, true);
+
+        $this->filterModal->show(
+            $options,
+            is_int($selectedIndex) ? $selectedIndex : 0,
+            $tabTitle . ' Filter'
+        );
+    }
+
+    private function handleFilterModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->filterModal->hide();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->filterModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->filterModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->filterModal->getSelectedOption();
+        $this->filterModal->hide();
+
+        if (!is_string($selection) || $selection === '') {
+            return;
+        }
+
+        $tabTitle = $this->getActiveTab();
+        $this->activeFiltersByTab[$tabTitle] = $selection;
+        $this->scrollOffsetsByTab[$tabTitle] = $this->resolveLatestVisibleScrollOffsetForTab($tabTitle);
+        $this->restoreActiveTabState();
+    }
+
+    private function openClearConfirmModal(): void
+    {
+        $logFilePath = $this->resolveLogFilePathForTab($this->getActiveTab());
+
+        if (!is_string($logFilePath) || $logFilePath === '' || !is_file($logFilePath)) {
+            return;
+        }
+
+        $this->clearConfirmModal->show(
+            ['Cancel', 'Clear'],
+            0,
+            'Clear ' . basename($logFilePath) . '?'
+        );
+    }
+
+    private function handleClearConfirmModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->clearConfirmModal->hide();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->clearConfirmModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->clearConfirmModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->clearConfirmModal->getSelectedOption();
+        $this->clearConfirmModal->hide();
+
+        if ($selection !== 'Clear') {
+            return;
+        }
+
+        $this->rotateAndClearActiveLogFile();
+    }
+
+    private function rotateAndClearActiveLogFile(): void
+    {
+        $tabTitle = $this->getActiveTab();
+        $logFilePath = $this->resolveLogFilePathForTab($tabTitle);
+
+        if (!is_string($logFilePath) || $logFilePath === '' || !is_file($logFilePath)) {
+            return;
+        }
+
+        $contents = file_get_contents($logFilePath);
+
+        if ($contents === false) {
+            return;
+        }
+
+        $rotatedPath = $this->resolveNextRotatedLogPath($logFilePath);
+
+        if (file_put_contents($rotatedPath, $contents) === false) {
+            return;
+        }
+
+        if (file_put_contents($logFilePath, '') === false) {
+            return;
+        }
+
+        $this->logMessagesByTab[$tabTitle] = [];
+        $this->scrollOffsetsByTab[$tabTitle] = 0;
+        $this->lastLogRefreshAt = microtime(true);
+        $this->restoreActiveTabState();
+    }
+
+    private function resolveNextRotatedLogPath(string $logFilePath): string
+    {
+        $index = 1;
+
+        do {
+            $candidatePath = $logFilePath . '.' . $index;
+            $index++;
+        } while (file_exists($candidatePath));
+
+        return $candidatePath;
+    }
+
+    private function applyActiveFilter(string $tabTitle, array $messages): array
+    {
+        $activeFilter = $this->activeFiltersByTab[$tabTitle] ?? 'ALL';
+
+        if ($activeFilter === 'ALL') {
+            return $messages;
+        }
+
+        return array_values(array_filter(
+            $messages,
+            fn(string $message): bool => $this->messageMatchesFilter($message, $activeFilter)
+        ));
+    }
+
+    private function messageMatchesFilter(string $message, string $filter): bool
+    {
+        if (preg_match('/\[(ERROR|CRITICAL|FATAL|INFO|WARN|WARNING|DEBUG)\]/', $message, $matches) !== 1) {
+            return false;
+        }
+
+        $level = $matches[1];
+
+        if ($filter === 'WARN') {
+            return in_array($level, ['WARN', 'WARNING'], true);
+        }
+
+        return $level === $filter;
     }
 }

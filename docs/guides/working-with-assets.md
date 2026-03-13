@@ -23,7 +23,8 @@ What inspection does:
 
 - folders open in the `Inspector` as `Folder`
 - files open in the `Inspector` as `File`
-- `.texture` and `.tmap` files also load into `Main -> Sprite`
+- selecting a `.texture` or `.tmap` also opens `Main -> Sprite` and moves focus there
+- pressing `Enter` on a selected `.prefab.php` opens it in the `Inspector` with the same object-style layout used for hierarchy objects
 
 ## Sprite Tab Overview
 
@@ -35,9 +36,11 @@ The `Sprite` tab is the editor's character-grid workspace for:
 How loading works:
 
 - select a `.texture` or `.tmap` in `Assets`
-- press `Enter`
 - the file opens in `Inspector`
 - the same file loads into `Sprite`
+- focus shifts to `Main -> Sprite`
+- textures expand to a `16x16` editable grid
+- tile maps expand to the current terminal-size bounds
 
 ## Creating New Assets
 
@@ -47,6 +50,7 @@ Current create options:
 
 - `Script`
 - `Scene`
+- `Prefab`
 - `Texture`
 - `Tile Map`
 - `Event`
@@ -62,26 +66,30 @@ Default name families:
 
 - scripts: `new-script-1`, `new-script-2`, and so on
 - scenes: `new-scene-1`, `new-scene-2`, and so on
+- prefabs: `new-prefab-1`, `new-prefab-2`, and so on
 - textures: `new-texture-1`, `new-texture-2`, and so on
 - tile maps: `new-map-1`, `new-map-2`, and so on
 - events: `new-event-1`, `new-event-2`, and so on
 
 If the created asset is a `.texture` or `.tmap`, the editor also loads it into `Main -> Sprite`.
 
-## Quick Create From The Sprite Tab
+## Prefab Assets
 
-There is also a faster create path for art assets.
+Prefab files live under `Assets/Prefabs` and use the `.prefab.php` extension.
 
-When `Main` is focused and the `Sprite` tab is active, press `Shift+A` to create:
+Each prefab returns a single PHP array in the same shape used by one scene `hierarchy` item. That means a prefab can describe:
 
-- `Texture`
-- `Tile Map`
+- a `GameObject`
+- a UI element such as `Label`
+- a UI element such as `Text`
 
-This quick-create flow:
+Current prefab support in the editor is focused on generation and project organization:
 
-- is limited to sprite-editable asset types
-- creates the file immediately under the active asset root's `Textures` or `Maps` directory
-- opens the new asset directly in the sprite editor
+- the `Assets` create menu can generate new prefab files
+- the CLI can generate prefabs directly with `sendama generate:prefab <name>`
+- the generated file is normal scene-style metadata, so it is easy to author by hand too
+- activating a prefab from the `Assets` panel loads its configured object data into the `Inspector`
+- prefab inspection exposes `File Name` separately from the prefab object's `Name`
 
 ## Sprite Editing Controls
 
@@ -138,7 +146,7 @@ Behavior to know:
 - folder names are read-only in the current Inspector UI
 - renaming preserves the current file extension
 - if the current scene references that file through `sprite.texture.path` or `environmentTileMapPath`, those in-memory scene references are updated
-- renaming a script file also rewrites the PHP class declaration inside that file to match the new filename
+- renaming a script or event PHP file also rewrites the class declaration inside that file to match the new filename
 
 Very important:
 

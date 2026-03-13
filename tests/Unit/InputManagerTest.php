@@ -116,14 +116,59 @@ test('input manager coalesces repeated arrow tokens to avoid held-key drift', fu
     expect($coalesceRepeatableTokens->invoke(null, ['0', '0']))->toBe(['0', '0']);
 });
 
-test('input manager treats repeated arrow input as pressed', function () {
+test('input manager treats repeated arrow input as both pressed and down', function () {
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $currentKeyPressWasBuffered = new ReflectionProperty(InputManager::class, 'currentKeyPressWasBuffered');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $currentKeyPressWasBuffered->setAccessible(true);
+    $previousKeyPress->setValue("\033[C");
+    $keyPress->setValue("\033[C");
+    $currentKeyPressWasBuffered->setValue(true);
+
+    expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeTrue();
+    expect(InputManager::isKeyDown(KeyCode::RIGHT))->toBeTrue();
+});
+
+test('input manager still treats repeated non-repeatable input as not down', function () {
     $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
     $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
     $keyPress->setAccessible(true);
     $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue("\n");
+    $keyPress->setValue("\n");
+
+    expect(InputManager::isKeyPressed(KeyCode::ENTER))->toBeTrue();
+    expect(InputManager::isKeyDown(KeyCode::ENTER))->toBeFalse();
+});
+
+test('input manager briefly holds repeatable arrows between raw repeat events', function () {
+    $resolveCurrentKeyPress = new ReflectionMethod(InputManager::class, 'resolveCurrentKeyPress');
+    $heldRepeatableKeyPress = new ReflectionProperty(InputManager::class, 'heldRepeatableKeyPress');
+    $heldRepeatableKeySeenAt = new ReflectionProperty(InputManager::class, 'heldRepeatableKeySeenAt');
+    $resolveCurrentKeyPress->setAccessible(true);
+    $heldRepeatableKeyPress->setAccessible(true);
+    $heldRepeatableKeySeenAt->setAccessible(true);
+
+    $heldRepeatableKeyPress->setValue("\033[C");
+    $heldRepeatableKeySeenAt->setValue(10.0);
+
+    expect($resolveCurrentKeyPress->invoke(null, '', 10.04))->toBe("\033[C");
+    expect($resolveCurrentKeyPress->invoke(null, '', 10.06))->toBe('');
+});
+
+test('input manager does not treat held repeatable fallback frames as pressed or down', function () {
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $currentKeyPressWasBuffered = new ReflectionProperty(InputManager::class, 'currentKeyPressWasBuffered');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $currentKeyPressWasBuffered->setAccessible(true);
     $previousKeyPress->setValue("\033[C");
     $keyPress->setValue("\033[C");
+    $currentKeyPressWasBuffered->setValue(false);
 
-    expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeTrue();
+    expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeFalse();
     expect(InputManager::isKeyDown(KeyCode::RIGHT))->toBeFalse();
 });

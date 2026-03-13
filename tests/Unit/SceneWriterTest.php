@@ -9,6 +9,7 @@ test('scene writer serializes the loaded scene hierarchy to php', function () {
         width: 120,
         height: 40,
         environmentTileMapPath: 'Maps/level',
+        environmentCollisionMapPath: 'Maps/level.collider',
         isDirty: true,
         hierarchy: [
             [
@@ -29,6 +30,7 @@ test('scene writer serializes the loaded scene hierarchy to php', function () {
     expect($serializedScene)->toContain("<?php");
     expect($serializedScene)->toContain("'width' => 120");
     expect($serializedScene)->toContain("'environmentTileMapPath' => 'Maps/level'");
+    expect($serializedScene)->toContain("'environmentCollisionMapPath' => 'Maps/level.collider'");
     expect($serializedScene)->toContain("'name' => 'Player 2'");
     expect($serializedScene)->toContain("'customFlag' => true");
     expect($serializedScene)->not->toContain("'isDirty'");

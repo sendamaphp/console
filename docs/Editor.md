@@ -175,7 +175,7 @@ Current behavior:
 - the editor works on a character grid backed directly by the selected file
 - the visible canvas is only the editable grid itself; asset metadata is shown in the Inspector
 - textures load into an editable area that can grow up to `16x16`
-- new tile maps are created at the current terminal-size bounds
+- tile maps open and create at the current terminal-size bounds
 - the right side of the main-panel help line shows the live cursor position as `Col x Row`
 - edits are written to the asset file immediately
 
@@ -279,6 +279,7 @@ Inspector type mapping:
 
 - directories are shown as `Folder`
 - files are shown as `File`
+- selecting a `.texture` or `.tmap` also opens `Main -> Sprite` and moves focus there
 
 ### Asset Delete Workflow
 
@@ -302,6 +303,7 @@ Current create targets:
 
 - `Script`
 - `Scene`
+- `Prefab`
 - `Texture`
 - `Tile Map`
 - `Event`
@@ -312,6 +314,10 @@ Behavior:
 - the editor creates the asset with the next available default name for that asset family
 - after creation, the Assets tree refreshes, the new asset is selected, and the Inspector loads it
 - if the created asset is a texture or tile map, the Sprite tab loads it too
+- prefab assets are created as `.prefab.php` metadata files under `Assets/Prefabs`
+- prefab metadata returns a single array shaped like one scene `hierarchy` entry, so it can describe either a `GameObject` or a UI element such as `Label` or `Text`
+- pressing `Enter` on a selected prefab loads it into the `Inspector` using the same object-style layout as a hierarchy object
+- prefab inspection keeps `File Name` separate from `Name`, so the prefab file can be renamed independently from the object name stored in the metadata
 
 ## Inspector Panel
 
@@ -330,7 +336,7 @@ For file assets, the Inspector currently shows:
 - read-only `Path`
 
 Renaming a file asset from the Inspector renames the file on disk. If the current scene references that file through `sprite.texture.path` or `environmentTileMapPath`, those scene references are updated in memory and should be saved with `Ctrl+S`.
-If the renamed asset is a PHP script under `Assets/Scripts`, the editor also rewrites the class declaration inside the source file to match the new filename.
+If the renamed asset is a PHP class-backed file under `Assets/Scripts` or `Assets/Events`, the editor also rewrites the class declaration inside the source file to match the new filename.
 
 ### Inspector Hotkeys
 
@@ -525,6 +531,12 @@ Current behavior:
 - it auto-refreshes the console tabs from disk every `editor.console.refreshInterval` seconds while the editor is in Play Mode
 - when the console has focus and the editor is not in play mode, it supports scrolling
 - if no refresh interval is configured, the editor uses a default of `5` seconds
+- each tab can be filtered by log level with a modal picker
+
+Filter options:
+
+- `Debug`: `ALL`, `DEBUG`, `INFO`, `WARN`, `ERROR`
+- `Error`: `ALL`, `ERROR`, `CRITICAL`, `FATAL`
 
 Controls:
 
@@ -533,6 +545,14 @@ Controls:
 - `Up`: scroll up through older log lines
 - `Down`: scroll down through newer log lines
 - `Shift+R`: manually refresh the active log tab from disk and jump to the newest visible lines
+- `Shift+F`: open the log-level filter modal for the active console tab
+- `Shift+C`: open a confirm modal to rotate and clear the active log file
+
+Clear behavior:
+
+- on confirm, the active log file is copied to the next rotated file such as `debug.log.1`
+- after rotation, the active log file is cleared
+- on cancel, nothing changes and the Console panel returns to its normal state
 
 The scroll stops:
 

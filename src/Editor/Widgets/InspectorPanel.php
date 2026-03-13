@@ -64,6 +64,7 @@ class InspectorPanel extends Widget
     protected array $controlBindings = [];
     protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingPrefabMutation = null;
     protected ?array $pendingAssetMutation = null;
     protected string $projectDirectory;
     protected array $sceneHierarchy = [];
@@ -72,6 +73,7 @@ class InspectorPanel extends Widget
     protected bool $isComponentMoveModeActive = false;
     protected ?int $pendingComponentDeletionIndex = null;
     protected string $modeHelpLabel = '';
+    protected bool $shouldRefreshModalBackground = false;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -98,6 +100,11 @@ class InspectorPanel extends Widget
 
     public function inspectTarget(?array $target): void
     {
+        $preserveSelectedControl = $this->shouldPreserveSelectedControl($this->inspectionTarget, $target);
+        $selectedControlSnapshot = $preserveSelectedControl
+            ? $this->captureSelectedControlSnapshot($this->getSelectedControl())
+            : [];
+
         $this->inspectionTarget = $target;
         $this->elements = [];
         $this->focusableControls = [];
@@ -115,6 +122,7 @@ class InspectorPanel extends Widget
         $this->controlBindings = [];
         $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
+        $this->pendingPrefabMutation = null;
         $this->pendingAssetMutation = null;
         $this->componentMenuDefinitions = [];
         $this->isComponentMoveModeActive = false;
@@ -130,7 +138,9 @@ class InspectorPanel extends Widget
         $context = $target['context'] ?? null;
         $value = $target['value'] ?? null;
 
-        if ($context === 'hierarchy' && is_array($value)) {
+        if ($context === 'prefab' && is_array($value)) {
+            $this->buildPrefabControls($target, $value);
+        } elseif ($context === 'hierarchy' && is_array($value)) {
             $this->buildHierarchyControls($target, $value);
         } elseif ($context === 'scene' && is_array($value)) {
             $this->buildSceneControls($target, $value);
@@ -143,6 +153,10 @@ class InspectorPanel extends Widget
         if ($this->focusableControls !== []) {
             $this->selectedControlIndex = 0;
             $this->applyControlSelection();
+        }
+
+        if ($preserveSelectedControl) {
+            $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
         }
 
         $this->refreshContent();
@@ -227,6 +241,14 @@ class InspectorPanel extends Widget
         return $pendingHierarchyMutation;
     }
 
+    public function consumePrefabMutation(): ?array
+    {
+        $pendingPrefabMutation = $this->pendingPrefabMutation;
+        $this->pendingPrefabMutation = null;
+
+        return $pendingPrefabMutation;
+    }
+
     public function consumeAssetMutation(): ?array
     {
         $pendingAssetMutation = $this->pendingAssetMutation;
@@ -252,6 +274,7 @@ class InspectorPanel extends Widget
             : null;
         $shouldPreserveComponentMoveMode = $this->isComponentMoveModeActive
             && $this->isSelectedComponentHeader($selectedControl);
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($selectedControl);
 
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Object');
@@ -268,6 +291,8 @@ class InspectorPanel extends Widget
             if ($componentCount > 0) {
                 $this->focusComponentHeaderByIndex(min($selectedComponentIndex, $componentCount - 1));
             }
+        } else {
+            $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
         }
 
         if ($shouldPreserveComponentMoveMode) {
@@ -285,6 +310,7 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($this->getSelectedControl());
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Scene');
         $target['type'] = 'Scene';
@@ -292,6 +318,7 @@ class InspectorPanel extends Widget
         $target['value'] = $value;
 
         $this->inspectTarget($target);
+        $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
     }
 
     public function syncAssetTarget(array $value): void
@@ -303,12 +330,22 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($this->getSelectedControl());
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Asset');
         $target['type'] = ($value['isDirectory'] ?? false) ? 'Folder' : 'File';
         $target['value'] = $value;
 
         $this->inspectTarget($target);
+        $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
+    }
+
+    public function consumeModalBackgroundRefreshRequest(): bool
+    {
+        $shouldRefreshModalBackground = $this->shouldRefreshModalBackground;
+        $this->shouldRefreshModalBackground = false;
+
+        return $shouldRefreshModalBackground;
     }
 
     public function cycleFocusForward(): bool
@@ -513,6 +550,51 @@ class InspectorPanel extends Widget
         $this->addScriptComponents($item['components'] ?? []);
     }
 
+    private function buildPrefabControls(array $target, array $item): void
+    {
+        $asset = is_array($target['asset'] ?? null) ? $target['asset'] : [];
+        $assetName = $asset['name'] ?? basename((string) ($asset['path'] ?? ''));
+
+        $this->addControl(new TextInputControl('Type', $this->resolveDisplayType($target, $item), 0, true));
+        $this->addControl(
+            new TextInputControl('File Name', $assetName, 0),
+            ['kind' => 'prefab_file_name'],
+        );
+        $this->addBoundControl(
+            new TextInputControl('Name', $item['name'] ?? $target['name'] ?? 'Unnamed Object', 0),
+            ['name'],
+        );
+        $this->addBoundControl(
+            new TextInputControl('Tag', $item['tag'] ?? 'None', 0),
+            ['tag'],
+        );
+
+        $this->addControl($this->addSectionHeader('Transform'));
+        $this->addBoundControl(
+            new VectorInputControl('Position', $this->normalizeVector($item['position'] ?? null), 1),
+            ['position'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Rotation', $this->normalizeVector($item['rotation'] ?? null), 1),
+            ['rotation'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Scale', $this->normalizeVector($item['scale'] ?? ['x' => 1, 'y' => 1]), 1),
+            ['scale'],
+        );
+
+        if (isset($item['size']) && is_array($item['size'])) {
+            $this->addBoundControl(
+                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
+                ['size'],
+            );
+        }
+
+        $this->addControl($this->addSectionHeader('Renderer'));
+        $this->addRendererControls($item);
+        $this->addScriptComponents($item['components'] ?? []);
+    }
+
     private function buildSceneControls(array $target, array $scene): void
     {
         $this->addControl(new TextInputControl('Type', 'Scene', 0, true));
@@ -530,13 +612,23 @@ class InspectorPanel extends Widget
         );
         $this->addBoundControl(
             new PathInputControl(
-                'Environment Tile Map',
+                'Map',
                 $scene['environmentTileMapPath'] ?? 'Maps/example',
                 $this->resolveAssetsWorkingDirectory(),
                 ['tmap'],
                 0,
             ),
             ['environmentTileMapPath'],
+        );
+        $this->addBoundControl(
+            new PathInputControl(
+                'Collider',
+                $scene['environmentCollisionMapPath'] ?? '',
+                $this->resolveAssetsWorkingDirectory(),
+                ['tmap'],
+                0
+            ),
+            ['environmentCollisionMapPath']
         );
     }
 
@@ -865,14 +957,20 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            $this->isComponentMoveModeActive
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             $this->help = 'Up/Down reorder  Shift+W done  Esc cancel';
             $this->modeHelpLabel = 'Mode: Component Move';
             return;
         }
 
         if ($this->isSelectedComponentHeader($selectedControl)) {
-            $this->help = 'Up/Down select  / toggle  Shift+A add  Shift+W move  Del remove';
+            $this->help = $this->canMutateCurrentComponentList()
+                ? 'Up/Down select  / toggle  Shift+A add  Shift+W move  Del remove'
+                : 'Up/Down select  / toggle  Tab next';
             $this->modeHelpLabel = 'Mode: Control Select';
             return;
         }
@@ -897,9 +995,12 @@ class InspectorPanel extends Widget
     {
         $availableLabelWidth = max(0, $this->width - 3);
         $visibleRightLabel = $this->clipContentToWidth($rightLabel, $availableLabelWidth);
-        $remainingWidth = max(0, $availableLabelWidth - mb_strlen($visibleRightLabel));
+        $remainingWidth = max(0, $availableLabelWidth - $this->getDisplayWidth($visibleRightLabel));
         $visibleLeftLabel = $this->clipContentToWidth($leftLabel, $remainingWidth);
-        $fillerWidth = max(0, $availableLabelWidth - mb_strlen($visibleLeftLabel) - mb_strlen($visibleRightLabel));
+        $fillerWidth = max(
+            0,
+            $availableLabelWidth - $this->getDisplayWidth($visibleLeftLabel) - $this->getDisplayWidth($visibleRightLabel),
+        );
 
         return $this->borderPack->bottomLeft
             . $this->borderPack->horizontal
@@ -1006,17 +1107,25 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if (Input::getCurrentInput() === 'W') {
+        if (Input::getCurrentInput() === 'W' && $this->canMutateCurrentComponentList()) {
             $this->handleComponentMoveModeToggle($selectedControl);
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::DELETE) && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            Input::isKeyDown(KeyCode::DELETE)
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             $this->showDeleteComponentModal($selectedControl);
             return;
         }
 
-        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            $this->isComponentMoveModeActive
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             if (Input::isKeyDown(KeyCode::ESCAPE)) {
                 $this->isComponentMoveModeActive = false;
                 return;
@@ -1310,6 +1419,7 @@ class InspectorPanel extends Widget
         }
 
         if ($selectedOption === 'Edit path' && $this->activePathInputControl instanceof PathInputControl) {
+            $this->requestModalBackgroundRefresh();
             $this->pathInputActionModal->hide();
 
             if ($this->activePathInputControl->enterEditMode()) {
@@ -1324,6 +1434,7 @@ class InspectorPanel extends Widget
     private function handlePathInputFileDialogInput(): void
     {
         if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->requestModalBackgroundRefresh();
             $this->fileDialogModal->hide();
 
             if ($this->activePathInputControl instanceof PathInputControl) {
@@ -1391,13 +1502,54 @@ class InspectorPanel extends Widget
         $this->activePathInputControl = null;
     }
 
+    private function requestModalBackgroundRefresh(): void
+    {
+        $this->shouldRefreshModalBackground = true;
+    }
+
     private function canOpenAddComponentModal(): bool
     {
         return is_array($this->inspectionTarget)
-            && ($this->inspectionTarget['context'] ?? null) === 'hierarchy'
+            && in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             && is_string($this->inspectionTarget['path'] ?? null)
             && ($this->inspectionTarget['path'] ?? null) !== 'scene'
             && is_array($this->inspectionTarget['value'] ?? null);
+    }
+
+    private function queueObjectInspectionMutation(array $target, array $inspectionValue): void
+    {
+        $context = $target['context'] ?? null;
+        $path = $target['path'] ?? null;
+
+        if (!is_string($path) || $path === '') {
+            return;
+        }
+
+        if ($context === 'hierarchy') {
+            $this->pendingHierarchyMutation = [
+                'path' => $path,
+                'value' => $inspectionValue,
+            ];
+            return;
+        }
+
+        if ($context !== 'prefab') {
+            return;
+        }
+
+        $asset = is_array($target['asset'] ?? null) ? $target['asset'] : [];
+        $prefabPath = is_string($asset['path'] ?? null) ? $asset['path'] : null;
+
+        if (!is_string($prefabPath) || $prefabPath === '') {
+            return;
+        }
+
+        $this->pendingPrefabMutation = [
+            'path' => $path,
+            'prefabPath' => $prefabPath,
+            'asset' => $asset,
+            'value' => $inspectionValue,
+        ];
     }
 
     private function showAddComponentModal(): void
@@ -1915,7 +2067,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
@@ -1945,10 +2097,7 @@ PHP;
         $updatedTarget = $this->inspectionTarget;
         $updatedTarget['value'] = $inspectionValue;
         $this->inspectTarget($updatedTarget);
-        $this->pendingHierarchyMutation = [
-            'path' => $updatedTarget['path'],
-            'value' => $inspectionValue,
-        ];
+        $this->queueObjectInspectionMutation($updatedTarget, $inspectionValue);
     }
 
     private function getSelectedControlMetadata(?InputControl $control): array
@@ -1958,6 +2107,119 @@ PHP;
         }
 
         return $this->controlMetadata[spl_object_id($control)] ?? [];
+    }
+
+    private function captureSelectedControlSnapshot(?InputControl $control): array
+    {
+        if (!$control instanceof InputControl) {
+            return [];
+        }
+
+        $snapshot = [
+            'class' => $control::class,
+            'label' => $control->getLabel(),
+        ];
+        $bindingPath = $this->controlBindings[spl_object_id($control)] ?? null;
+        $metadata = $this->getSelectedControlMetadata($control);
+
+        if (is_array($bindingPath) && $bindingPath !== []) {
+            $snapshot['bindingPath'] = $bindingPath;
+        }
+
+        if ($metadata !== []) {
+            $snapshot['metadata'] = $metadata;
+        }
+
+        return $snapshot;
+    }
+
+    private function shouldPreserveSelectedControl(?array $currentTarget, ?array $nextTarget): bool
+    {
+        return $this->resolveInspectionIdentity($currentTarget) !== null
+            && $this->resolveInspectionIdentity($currentTarget) === $this->resolveInspectionIdentity($nextTarget);
+    }
+
+    private function resolveInspectionIdentity(?array $target): ?string
+    {
+        if (!is_array($target)) {
+            return null;
+        }
+
+        $context = $target['context'] ?? null;
+
+        if (!is_string($context) || $context === '') {
+            return null;
+        }
+
+        $path = $target['path'] ?? null;
+
+        if (is_string($path) && $path !== '') {
+            return $context . ':' . $path;
+        }
+
+        $value = $target['value'] ?? null;
+        $valuePath = is_array($value) ? ($value['path'] ?? null) : null;
+
+        if (is_string($valuePath) && $valuePath !== '') {
+            return $context . ':' . $valuePath;
+        }
+
+        $name = $target['name'] ?? null;
+
+        if (is_string($name) && $name !== '') {
+            return $context . ':' . $name;
+        }
+
+        return null;
+    }
+
+    private function restoreSelectedControlSnapshot(array $snapshot): bool
+    {
+        if ($snapshot === [] || $this->focusableControls === []) {
+            return false;
+        }
+
+        $bindingPath = $snapshot['bindingPath'] ?? null;
+
+        if (is_array($bindingPath) && $bindingPath !== []) {
+            foreach ($this->focusableControls as $index => $control) {
+                $candidateBindingPath = $this->controlBindings[spl_object_id($control)] ?? null;
+
+                if ($candidateBindingPath === $bindingPath) {
+                    $this->selectControlByIndex($index);
+                    return true;
+                }
+            }
+        }
+
+        $metadata = $snapshot['metadata'] ?? null;
+
+        if (is_array($metadata) && $metadata !== []) {
+            foreach ($this->focusableControls as $index => $control) {
+                $candidateMetadata = $this->getSelectedControlMetadata($control);
+
+                if ($candidateMetadata === $metadata) {
+                    $this->selectControlByIndex($index);
+                    return true;
+                }
+            }
+        }
+
+        $label = $snapshot['label'] ?? null;
+        $class = $snapshot['class'] ?? null;
+
+        if (!is_string($label) || $label === '' || !is_string($class) || $class === '') {
+            return false;
+        }
+
+        foreach ($this->focusableControls as $index => $control) {
+            if ($control instanceof $class && $control->getLabel() === $label) {
+                $this->selectControlByIndex($index);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isSelectedComponentHeader(?InputControl $control): bool
@@ -1974,12 +2236,20 @@ PHP;
 
     private function handleComponentMoveModeToggle(InputControl $selectedControl): void
     {
-        if (!$this->isSelectedComponentHeader($selectedControl)) {
+        if (!$this->isSelectedComponentHeader($selectedControl) || !$this->canMutateCurrentComponentList()) {
             $this->isComponentMoveModeActive = false;
             return;
         }
 
         $this->isComponentMoveModeActive = !$this->isComponentMoveModeActive;
+    }
+
+    private function canMutateCurrentComponentList(): bool
+    {
+        return is_array($this->inspectionTarget)
+            && in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
+            && is_string($this->inspectionTarget['path'] ?? null)
+            && $this->inspectionTarget['path'] !== '';
     }
 
     private function showDeleteComponentModal(InputControl $selectedControl): void
@@ -2021,7 +2291,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
@@ -2057,7 +2327,7 @@ PHP;
             !is_int($componentIndex)
             || !in_array($direction, [-1, 1], true)
             || !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
             return;
@@ -2090,7 +2360,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
         ) {
             return;
@@ -2107,10 +2377,7 @@ PHP;
         }
 
         $this->isComponentMoveModeActive = $preserveMoveMode && is_int($focusComponentIndex);
-        $this->pendingHierarchyMutation = [
-            'path' => $updatedTarget['path'],
-            'value' => $inspectionValue,
-        ];
+        $this->queueObjectInspectionMutation($updatedTarget, $inspectionValue);
     }
 
     private function focusComponentHeaderByIndex(int $componentIndex): void
@@ -2126,12 +2393,21 @@ PHP;
                 ($metadata['kind'] ?? null) === 'component_header'
                 && ($metadata['componentIndex'] ?? null) === $componentIndex
             ) {
-                $this->selectedControlIndex = $index;
-                $this->applyControlSelection();
-                $this->refreshContent();
+                $this->selectControlByIndex($index);
                 return;
             }
         }
+    }
+
+    private function selectControlByIndex(int $index): void
+    {
+        if (!isset($this->focusableControls[$index])) {
+            return;
+        }
+
+        $this->selectedControlIndex = $index;
+        $this->applyControlSelection();
+        $this->refreshContent();
     }
 
     private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
@@ -2312,9 +2588,32 @@ PHP;
 
     private function applyControlValueToInspectionTarget(InputControl $control): void
     {
+        if (!is_array($this->inspectionTarget)) {
+            return;
+        }
+
+        $controlMetadata = $this->getSelectedControlMetadata($control);
+        $context = $this->inspectionTarget['context'] ?? null;
+
         if (
-            !is_array($this->inspectionTarget)
-            || !isset($this->inspectionTarget['value'])
+            ($controlMetadata['kind'] ?? null) === 'prefab_file_name'
+            && $context === 'prefab'
+            && is_array($this->inspectionTarget['asset'] ?? null)
+        ) {
+            $asset = $this->inspectionTarget['asset'];
+            $asset['name'] = (string) $control->getValue();
+            $this->inspectionTarget['asset'] = $asset;
+            $this->pendingAssetMutation = [
+                'path' => $asset['path'] ?? null,
+                'relativePath' => $asset['relativePath'] ?? null,
+                'name' => (string) $control->getValue(),
+                'activatePrefab' => true,
+            ];
+            return;
+        }
+
+        if (
+            !isset($this->inspectionTarget['value'])
             || !is_array($this->inspectionTarget['value'])
         ) {
             return;
@@ -2334,8 +2633,6 @@ PHP;
             $this->inspectionTarget['name'] = (string) $control->getValue();
         }
 
-        $context = $this->inspectionTarget['context'] ?? null;
-
         if ($context === 'asset') {
             if (
                 $valuePath === ['name']
@@ -2353,6 +2650,10 @@ PHP;
         }
 
         if (!in_array($context, ['hierarchy', 'scene'], true)) {
+            if ($context === 'prefab') {
+                $this->queueObjectInspectionMutation($this->inspectionTarget, $inspectionValue);
+            }
+
             return;
         }
 

@@ -26,12 +26,23 @@ final class SceneLoader
         $sceneDataBundle = $this->loadSceneDataBundle($scenePath);
         $sceneData = $sceneDataBundle['editor'] ?? [];
         $sourceSceneData = $sceneDataBundle['source'] ?? $sceneData;
+        $normalizedEnvironmentTileMapPath = $this->normalizeEnvironmentTileMapPath(
+            $sceneData['environmentTileMapPath'] ?? $sourceSceneData['environmentTileMapPath'] ?? 'Maps/example',
+        );
+        $normalizedEnvironmentCollisionMapPath = $this->normalizeEnvironmentCollisionMapPath(
+            $sceneData['environmentCollisionMapPath'] ?? $sourceSceneData['environmentCollisionMapPath'] ?? '',
+        );
+        $sceneData['environmentTileMapPath'] = $normalizedEnvironmentTileMapPath;
+        $sourceSceneData['environmentTileMapPath'] = $normalizedEnvironmentTileMapPath;
+        $sceneData['environmentCollisionMapPath'] = $normalizedEnvironmentCollisionMapPath;
+        $sourceSceneData['environmentCollisionMapPath'] = $normalizedEnvironmentCollisionMapPath;
 
         return new SceneDTO(
             name: basename($scenePath, '.scene.php'),
             width: $sceneData['width'] ?? DEFAULT_TERMINAL_WIDTH,
             height: $sceneData['height'] ?? DEFAULT_TERMINAL_HEIGHT,
-            environmentTileMapPath: $sceneData['environmentTileMapPath'] ?? 'Maps/example',
+            environmentTileMapPath: $normalizedEnvironmentTileMapPath,
+            environmentCollisionMapPath: $normalizedEnvironmentCollisionMapPath,
             isDirty: $sceneData['isDirty'] ?? false,
             hierarchy: $sceneData['hierarchy'] ?? [],
             sourcePath: $scenePath,
@@ -80,6 +91,36 @@ final class SceneLoader
         }
 
         return null;
+    }
+
+    private function normalizeEnvironmentTileMapPath(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return 'Maps/example';
+        }
+
+        $normalizedValue = trim(str_replace('\\', '/', $value));
+
+        if ($normalizedValue === '') {
+            return 'Maps/example';
+        }
+
+        return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
+    }
+
+    private function normalizeEnvironmentCollisionMapPath(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $normalizedValue = trim(str_replace('\\', '/', $value));
+
+        if ($normalizedValue === '') {
+            return '';
+        }
+
+        return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
     }
 
     private function resolveConfiguredScenePath(
@@ -529,6 +570,8 @@ PHP;
             return [];
         }
 
+        preg_match('/["\']environmentTileMapPath["\']\s*=>\s*["\']([^"\']+)["\']/', $source, $tileMapPathMatch);
+        preg_match('/["\']environmentCollisionMapPath["\']\s*=>\s*["\']([^"\']+)["\']/', $source, $collisionMapPathMatch);
         preg_match_all('/["\']name["\']\s*=>\s*["\']([^"\']+)["\']/', $source, $nameMatches);
         preg_match_all(
             '/["\']type["\']\s*=>\s*(?:"([^"]+)"|\'([^\']+)\'|([A-Za-z_\\\\][A-Za-z0-9_\\\\]*::class))/',
@@ -554,6 +597,8 @@ PHP;
         }
 
         return [
+            'environmentTileMapPath' => $this->normalizeEnvironmentTileMapPath($tileMapPathMatch[1] ?? 'Maps/example'),
+            'environmentCollisionMapPath' => $this->normalizeEnvironmentCollisionMapPath($collisionMapPathMatch[1] ?? ''),
             'hierarchy' => $hierarchy,
         ];
     }

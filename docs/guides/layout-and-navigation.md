@@ -81,7 +81,6 @@ The editor uses modals for focused tasks such as:
 - add-object flow
 - asset creation
 - delete confirmations
-- sprite quick creation
 - add-component selection
 - special character selection
 - path input actions

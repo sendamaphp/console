@@ -97,3 +97,25 @@ test('widget clips long content lines to the available window width', function (
     expect(mb_strlen($lines[0]))->toBe(20);
     expect(mb_substr($lines[0], -1))->toBe('│');
 });
+
+test('widget keeps borders intact when content contains wide multibyte glyphs', function () {
+    $widget = new class extends Widget {
+        public function __construct()
+        {
+            parent::__construct('Scene', '', ['x' => 1, 'y' => 1], 12, 6);
+            $this->content = ['  👾   x'];
+        }
+
+        public function update(): void
+        {
+        }
+    };
+
+    $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
+    $buildRenderedContentLines->setAccessible(true);
+    $lines = $buildRenderedContentLines->invoke($widget);
+
+    expect($lines)->toHaveCount(4);
+    expect(mb_strwidth($lines[0], 'UTF-8'))->toBe(12);
+    expect(mb_substr($lines[0], -1))->toBe('│');
+});
