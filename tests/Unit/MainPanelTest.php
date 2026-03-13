@@ -201,6 +201,54 @@ test('main panel preserves scene row width when a sprite uses a wide multibyte g
     expect(mb_substr($renderedLines[3], -1))->toBe('│');
 });
 
+test('main panel scene selection highlight stays aligned for wide multibyte glyphs', function () {
+    $workspace = createMainPanelWorkspace();
+    file_put_contents($workspace . '/Assets/Textures/enemy.texture', "👾\n");
+
+    $panel = new MainPanel(
+        width: 24,
+        height: 10,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $selectedScenePath = new ReflectionProperty(MainPanel::class, 'selectedScenePath');
+    $decorateSceneLine = new ReflectionMethod(MainPanel::class, 'decorateSceneLine');
+    $buildRenderedContentLines = new ReflectionMethod($panel, 'buildRenderedContentLines');
+    $highlightSequence = (new ReflectionClass(MainPanel::class))
+        ->getReflectionConstant('SCENE_SELECTION_FOCUSED_SEQUENCE')
+        ?->getValue();
+    $hasFocus->setAccessible(true);
+    $selectedScenePath->setAccessible(true);
+    $decorateSceneLine->setAccessible(true);
+    $buildRenderedContentLines->setAccessible(true);
+
+    $hasFocus->setValue($panel, true);
+    $selectedScenePath->setValue($panel, 'scene.0');
+    $panel->selectTab('Scene');
+    $renderedLines = $buildRenderedContentLines->invoke($panel);
+    $decoratedLine = $decorateSceneLine->invoke($panel, $renderedLines[3], null, 2);
+
+    expect(substr_count($decoratedLine, '👾'))->toBe(1);
+    expect(is_string($highlightSequence))->toBeTrue();
+    expect(substr_count($decoratedLine, $highlightSequence))->toBe(1);
+    expect(substr_count($decoratedLine, $highlightSequence . ' '))->toBe(0);
+});
+
 test('main panel resolves scene textures from the configured project directory', function () {
     $workspace = createMainPanelWorkspace();
     $originalWorkingDirectory = getcwd();
@@ -799,6 +847,30 @@ test('main panel sprite tab expands loaded textures to a 16x16 editing grid', fu
 
     expect($spriteGridWidth->getValue($panel))->toBe(16);
     expect($spriteGridHeight->getValue($panel))->toBe(16);
+});
+
+test('main panel sprite tab expands loaded tile maps to the current terminal-size bounds', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $spriteGridWidth = new ReflectionProperty(MainPanel::class, 'spriteGridWidth');
+    $spriteGridHeight = new ReflectionProperty(MainPanel::class, 'spriteGridHeight');
+    $spriteGridWidth->setAccessible(true);
+    $spriteGridHeight->setAccessible(true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'level.tmap',
+        'path' => $workspace . '/Assets/Maps/level.tmap',
+        'relativePath' => 'Maps/level.tmap',
+        'isDirectory' => false,
+    ]);
+
+    $terminalSize = get_max_terminal_size();
+    $expectedWidth = max(1, (int) ($terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH));
+    $expectedHeight = max(1, (int) ($terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT));
+
+    expect($spriteGridWidth->getValue($panel))->toBe($expectedWidth);
+    expect($spriteGridHeight->getValue($panel))->toBe($expectedHeight);
 });
 
 test('main panel sprite create workflow can create a new texture asset', function () {

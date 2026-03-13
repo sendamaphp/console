@@ -24,6 +24,7 @@ What inspection does:
 - folders open in the `Inspector` as `Folder`
 - files open in the `Inspector` as `File`
 - selecting a `.texture` or `.tmap` also opens `Main -> Sprite` and moves focus there
+- pressing `Enter` on a selected `.prefab.php` opens it in the `Inspector` with the same object-style layout used for hierarchy objects
 
 ## Sprite Tab Overview
 
@@ -38,6 +39,8 @@ How loading works:
 - the file opens in `Inspector`
 - the same file loads into `Sprite`
 - focus shifts to `Main -> Sprite`
+- textures expand to a `16x16` editable grid
+- tile maps expand to the current terminal-size bounds
 
 ## Creating New Assets
 
@@ -85,6 +88,8 @@ Current prefab support in the editor is focused on generation and project organi
 - the `Assets` create menu can generate new prefab files
 - the CLI can generate prefabs directly with `sendama generate:prefab <name>`
 - the generated file is normal scene-style metadata, so it is easy to author by hand too
+- activating a prefab from the `Assets` panel loads its configured object data into the `Inspector`
+- prefab inspection exposes `File Name` separately from the prefab object's `Name`
 
 ## Sprite Editing Controls
 

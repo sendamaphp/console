@@ -61,6 +61,52 @@ PHP
     expect($scene->sourceData['environmentTileMapPath'])->toBe('Maps/level');
 });
 
+test('scene loader normalizes environment collision map paths and supports empty values', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-collision-map-path-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents($workspace . '/vendor/autoload.php', "<?php\n");
+    file_put_contents(
+        $workspace . '/Assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+return [
+    'environmentTileMapPath' => 'Maps/level.tmap',
+    'environmentCollisionMapPath' => 'Maps/level.collider.tmap',
+    'hierarchy' => [],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->environmentCollisionMapPath)->toBe('Maps/level.collider');
+    expect($scene->rawData['environmentCollisionMapPath'])->toBe('Maps/level.collider');
+    expect($scene->sourceData['environmentCollisionMapPath'])->toBe('Maps/level.collider');
+
+    file_put_contents(
+        $workspace . '/Assets/Scenes/level02.scene.php',
+        <<<'PHP'
+<?php
+
+return [
+    'environmentTileMapPath' => 'Maps/level.tmap',
+    'environmentCollisionMapPath' => '',
+    'hierarchy' => [],
+];
+PHP
+    );
+
+    $emptyScene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level02']));
+
+    expect($emptyScene)->not->toBeNull();
+    expect($emptyScene->environmentCollisionMapPath)->toBe('');
+});
+
 test('scene loader evaluates scene metadata in an isolated project context', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
     mkdir($workspace . '/assets/Scenes', 0777, true);

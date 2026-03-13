@@ -40,7 +40,7 @@ Add-object types:
 | `Up` / `Down` | Move selection |
 | `Right` | Expand folder or move into children |
 | `Left` | Collapse folder or move to parent |
-| `Enter` | Inspect file or folder |
+| `Enter` | Inspect file or folder, or load a prefab into the object-style Inspector view |
 | `Shift+A` | Create asset from the Assets create menu |
 | `Delete` | Delete selected asset |
 

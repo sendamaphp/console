@@ -556,33 +556,36 @@ class MainPanel extends Widget
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        $visibleLine = mb_substr($line, 0, $this->width);
-        $visibleLength = mb_strlen($visibleLine);
+        $visibleLine = $this->clipContentToWidth($line, $this->width);
+        $visibleCharacterLength = mb_strlen($visibleLine);
 
-        if ($visibleLength <= 1) {
+        if ($visibleCharacterLength <= 1) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
         $leftBorder = mb_substr($visibleLine, 0, 1);
-        $middle = $visibleLength > 2 ? mb_substr($visibleLine, 1, $visibleLength - 2) : '';
+        $middle = $visibleCharacterLength > 2 ? mb_substr($visibleLine, 1, $visibleCharacterLength - 2) : '';
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
+        $middleWidth = $this->getDisplayWidth($middle);
         $highlightStart = min(
             max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
-            mb_strlen($middle),
+            $middleWidth,
         );
         $highlightLength = max(
             0,
-            min((int) ($highlight['length'] ?? 0), mb_strlen($middle) - $highlightStart),
+            min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
         );
 
         if ($highlightLength === 0) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        $beforeHighlight = mb_substr($middle, 0, $highlightStart);
-        $highlightText = mb_substr($middle, $highlightStart, $highlightLength);
-        $afterHighlight = mb_substr($middle, $highlightStart + $highlightLength);
+        [
+            'before' => $beforeHighlight,
+            'highlight' => $highlightText,
+            'after' => $afterHighlight,
+        ] = $this->splitContentByDisplayWidth($middle, $highlightStart, $highlightLength);
         $highlightSequence = $this->hasFocus()
             ? self::SPRITE_CURSOR_FOCUSED_SEQUENCE
             : self::SPRITE_CURSOR_SEQUENCE;
@@ -1115,33 +1118,36 @@ class MainPanel extends Widget
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        $visibleLine = mb_substr($line, 0, $this->width);
-        $visibleLength = mb_strlen($visibleLine);
+        $visibleLine = $this->clipContentToWidth($line, $this->width);
+        $visibleCharacterLength = mb_strlen($visibleLine);
 
-        if ($visibleLength <= 1) {
+        if ($visibleCharacterLength <= 1) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
         $leftBorder = mb_substr($visibleLine, 0, 1);
-        $middle = $visibleLength > 2 ? mb_substr($visibleLine, 1, $visibleLength - 2) : '';
+        $middle = $visibleCharacterLength > 2 ? mb_substr($visibleLine, 1, $visibleCharacterLength - 2) : '';
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
+        $middleWidth = $this->getDisplayWidth($middle);
         $highlightStart = min(
             max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
-            mb_strlen($middle),
+            $middleWidth,
         );
         $highlightLength = max(
             0,
-            min((int) ($highlight['length'] ?? 0), mb_strlen($middle) - $highlightStart),
+            min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
         );
 
         if ($highlightLength === 0) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        $beforeHighlight = mb_substr($middle, 0, $highlightStart);
-        $highlightText = mb_substr($middle, $highlightStart, $highlightLength);
-        $afterHighlight = mb_substr($middle, $highlightStart + $highlightLength);
+        [
+            'before' => $beforeHighlight,
+            'highlight' => $highlightText,
+            'after' => $afterHighlight,
+        ] = $this->splitContentByDisplayWidth($middle, $highlightStart, $highlightLength);
 
         if (($highlight['kind'] ?? null) === 'placeholder') {
             return $this->wrapWithColor($leftBorder, $borderColor)
@@ -1382,6 +1388,10 @@ class MainPanel extends Widget
 
         if ($extension === 'texture') {
             return $this->expandSpriteGrid($grid, self::DEFAULT_TEXTURE_WIDTH, self::DEFAULT_TEXTURE_HEIGHT);
+        }
+
+        if ($extension === 'tmap') {
+            return $this->expandSpriteGrid($grid, $defaultWidth, $defaultHeight);
         }
 
         return $grid;

@@ -139,6 +139,11 @@ abstract class Widget extends Window implements FocusableInterface
     {
     }
 
+    public function consumeModalBackgroundRefreshRequest(): bool
+    {
+        return false;
+    }
+
     public function setTopSibling(?Widget $widget): void
     {
         $this->topSibling = $widget;
@@ -432,6 +437,61 @@ abstract class Widget extends Window implements FocusableInterface
         }
 
         return mb_strimwidth($content, 0, $maxWidth, '', 'UTF-8');
+    }
+
+    /**
+     * @return array{before: string, highlight: string, after: string}
+     */
+    protected function splitContentByDisplayWidth(string $content, int $highlightStart, int $highlightLength): array
+    {
+        $highlightStart = max(0, $highlightStart);
+        $highlightLength = max(0, $highlightLength);
+
+        if ($content === '' || $highlightLength === 0) {
+            return [
+                'before' => $content,
+                'highlight' => '',
+                'after' => '',
+            ];
+        }
+
+        $characters = preg_split('//u', $content, -1, PREG_SPLIT_NO_EMPTY);
+
+        if (!is_array($characters) || $characters === []) {
+            return [
+                'before' => $content,
+                'highlight' => '',
+                'after' => '',
+            ];
+        }
+
+        $before = '';
+        $highlight = '';
+        $after = '';
+        $currentWidth = 0;
+        $highlightEnd = $highlightStart + $highlightLength;
+
+        foreach ($characters as $character) {
+            $characterWidth = max(1, $this->getDisplayWidth($character));
+            $characterStart = $currentWidth;
+            $characterEnd = $currentWidth + $characterWidth;
+
+            if ($characterEnd <= $highlightStart) {
+                $before .= $character;
+            } elseif ($characterStart >= $highlightEnd) {
+                $after .= $character;
+            } else {
+                $highlight .= $character;
+            }
+
+            $currentWidth = $characterEnd;
+        }
+
+        return [
+            'before' => $before,
+            'highlight' => $highlight,
+            'after' => $after,
+        ];
     }
 
     protected function buildBorderLine(string $label, bool $isTopBorder): string

@@ -37,6 +37,7 @@ class InputManager implements StaticObservableInterface
     private static ?string $terminalModeSnapshot = null;
     private static string $heldRepeatableKeyPress = '';
     private static float $heldRepeatableKeySeenAt = 0.0;
+    private static bool $currentKeyPressWasBuffered = false;
 
     /**
      * Initializes the InputManager.
@@ -50,6 +51,7 @@ class InputManager implements StaticObservableInterface
         self::$mouseEvent = null;
         self::$heldRepeatableKeyPress = '';
         self::$heldRepeatableKeySeenAt = 0.0;
+        self::$currentKeyPressWasBuffered = false;
         self::initializeObservers();
     }
 
@@ -133,6 +135,7 @@ class InputManager implements StaticObservableInterface
 
         self::$inputQueue = self::coalesceRepeatableTokens(self::$inputQueue);
         $nextKeyPress = array_shift(self::$inputQueue) ?? '';
+        self::$currentKeyPressWasBuffered = $nextKeyPress !== '';
         self::$keyPress = self::resolveCurrentKeyPress($nextKeyPress, microtime(true));
         self::$mouseEvent = self::parseMouseEvent(self::$keyPress);
 
@@ -279,7 +282,7 @@ class InputManager implements StaticObservableInterface
         }
 
         if (in_array($keyCodeValue, self::COALESCED_REPEATABLE_KEYS, true)) {
-            return true;
+            return self::$currentKeyPressWasBuffered || $previousKey !== $key;
         }
 
         return $previousKey !== $key;
@@ -304,7 +307,17 @@ class InputManager implements StaticObservableInterface
      */
     public static function isKeyPressed(KeyCode $keyCode): bool
     {
-        return self::getKey(self::$keyPress) === $keyCode->value;
+        $key = self::getKey(self::$keyPress);
+
+        if ($key !== $keyCode->value) {
+            return false;
+        }
+
+        if (!in_array($keyCode->value, self::COALESCED_REPEATABLE_KEYS, true)) {
+            return true;
+        }
+
+        return self::$currentKeyPressWasBuffered || self::getKey(self::$previousKeyPress) !== $key;
     }
 
     /**

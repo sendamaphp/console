@@ -64,6 +64,7 @@ class InspectorPanel extends Widget
     protected array $controlBindings = [];
     protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingPrefabMutation = null;
     protected ?array $pendingAssetMutation = null;
     protected string $projectDirectory;
     protected array $sceneHierarchy = [];
@@ -72,6 +73,7 @@ class InspectorPanel extends Widget
     protected bool $isComponentMoveModeActive = false;
     protected ?int $pendingComponentDeletionIndex = null;
     protected string $modeHelpLabel = '';
+    protected bool $shouldRefreshModalBackground = false;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -120,6 +122,7 @@ class InspectorPanel extends Widget
         $this->controlBindings = [];
         $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
+        $this->pendingPrefabMutation = null;
         $this->pendingAssetMutation = null;
         $this->componentMenuDefinitions = [];
         $this->isComponentMoveModeActive = false;
@@ -135,7 +138,9 @@ class InspectorPanel extends Widget
         $context = $target['context'] ?? null;
         $value = $target['value'] ?? null;
 
-        if ($context === 'hierarchy' && is_array($value)) {
+        if ($context === 'prefab' && is_array($value)) {
+            $this->buildPrefabControls($target, $value);
+        } elseif ($context === 'hierarchy' && is_array($value)) {
             $this->buildHierarchyControls($target, $value);
         } elseif ($context === 'scene' && is_array($value)) {
             $this->buildSceneControls($target, $value);
@@ -236,6 +241,14 @@ class InspectorPanel extends Widget
         return $pendingHierarchyMutation;
     }
 
+    public function consumePrefabMutation(): ?array
+    {
+        $pendingPrefabMutation = $this->pendingPrefabMutation;
+        $this->pendingPrefabMutation = null;
+
+        return $pendingPrefabMutation;
+    }
+
     public function consumeAssetMutation(): ?array
     {
         $pendingAssetMutation = $this->pendingAssetMutation;
@@ -325,6 +338,14 @@ class InspectorPanel extends Widget
 
         $this->inspectTarget($target);
         $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
+    }
+
+    public function consumeModalBackgroundRefreshRequest(): bool
+    {
+        $shouldRefreshModalBackground = $this->shouldRefreshModalBackground;
+        $this->shouldRefreshModalBackground = false;
+
+        return $shouldRefreshModalBackground;
     }
 
     public function cycleFocusForward(): bool
@@ -494,6 +515,51 @@ class InspectorPanel extends Widget
     private function buildHierarchyControls(array $target, array $item): void
     {
         $this->addControl(new TextInputControl('Type', $this->resolveDisplayType($target, $item), 0, true));
+        $this->addBoundControl(
+            new TextInputControl('Name', $item['name'] ?? $target['name'] ?? 'Unnamed Object', 0),
+            ['name'],
+        );
+        $this->addBoundControl(
+            new TextInputControl('Tag', $item['tag'] ?? 'None', 0),
+            ['tag'],
+        );
+
+        $this->addControl($this->addSectionHeader('Transform'));
+        $this->addBoundControl(
+            new VectorInputControl('Position', $this->normalizeVector($item['position'] ?? null), 1),
+            ['position'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Rotation', $this->normalizeVector($item['rotation'] ?? null), 1),
+            ['rotation'],
+        );
+        $this->addBoundControl(
+            new VectorInputControl('Scale', $this->normalizeVector($item['scale'] ?? ['x' => 1, 'y' => 1]), 1),
+            ['scale'],
+        );
+
+        if (isset($item['size']) && is_array($item['size'])) {
+            $this->addBoundControl(
+                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
+                ['size'],
+            );
+        }
+
+        $this->addControl($this->addSectionHeader('Renderer'));
+        $this->addRendererControls($item);
+        $this->addScriptComponents($item['components'] ?? []);
+    }
+
+    private function buildPrefabControls(array $target, array $item): void
+    {
+        $asset = is_array($target['asset'] ?? null) ? $target['asset'] : [];
+        $assetName = $asset['name'] ?? basename((string) ($asset['path'] ?? ''));
+
+        $this->addControl(new TextInputControl('Type', $this->resolveDisplayType($target, $item), 0, true));
+        $this->addControl(
+            new TextInputControl('File Name', $assetName, 0),
+            ['kind' => 'prefab_file_name'],
+        );
         $this->addBoundControl(
             new TextInputControl('Name', $item['name'] ?? $target['name'] ?? 'Unnamed Object', 0),
             ['name'],
@@ -891,14 +957,20 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            $this->isComponentMoveModeActive
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             $this->help = 'Up/Down reorder  Shift+W done  Esc cancel';
             $this->modeHelpLabel = 'Mode: Component Move';
             return;
         }
 
         if ($this->isSelectedComponentHeader($selectedControl)) {
-            $this->help = 'Up/Down select  / toggle  Shift+A add  Shift+W move  Del remove';
+            $this->help = $this->canMutateCurrentComponentList()
+                ? 'Up/Down select  / toggle  Shift+A add  Shift+W move  Del remove'
+                : 'Up/Down select  / toggle  Tab next';
             $this->modeHelpLabel = 'Mode: Control Select';
             return;
         }
@@ -1035,17 +1107,25 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if (Input::getCurrentInput() === 'W') {
+        if (Input::getCurrentInput() === 'W' && $this->canMutateCurrentComponentList()) {
             $this->handleComponentMoveModeToggle($selectedControl);
             return;
         }
 
-        if (Input::isKeyDown(KeyCode::DELETE) && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            Input::isKeyDown(KeyCode::DELETE)
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             $this->showDeleteComponentModal($selectedControl);
             return;
         }
 
-        if ($this->isComponentMoveModeActive && $this->isSelectedComponentHeader($selectedControl)) {
+        if (
+            $this->isComponentMoveModeActive
+            && $this->isSelectedComponentHeader($selectedControl)
+            && $this->canMutateCurrentComponentList()
+        ) {
             if (Input::isKeyDown(KeyCode::ESCAPE)) {
                 $this->isComponentMoveModeActive = false;
                 return;
@@ -1339,6 +1419,7 @@ class InspectorPanel extends Widget
         }
 
         if ($selectedOption === 'Edit path' && $this->activePathInputControl instanceof PathInputControl) {
+            $this->requestModalBackgroundRefresh();
             $this->pathInputActionModal->hide();
 
             if ($this->activePathInputControl->enterEditMode()) {
@@ -1353,6 +1434,7 @@ class InspectorPanel extends Widget
     private function handlePathInputFileDialogInput(): void
     {
         if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->requestModalBackgroundRefresh();
             $this->fileDialogModal->hide();
 
             if ($this->activePathInputControl instanceof PathInputControl) {
@@ -1420,13 +1502,54 @@ class InspectorPanel extends Widget
         $this->activePathInputControl = null;
     }
 
+    private function requestModalBackgroundRefresh(): void
+    {
+        $this->shouldRefreshModalBackground = true;
+    }
+
     private function canOpenAddComponentModal(): bool
     {
         return is_array($this->inspectionTarget)
-            && ($this->inspectionTarget['context'] ?? null) === 'hierarchy'
+            && in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             && is_string($this->inspectionTarget['path'] ?? null)
             && ($this->inspectionTarget['path'] ?? null) !== 'scene'
             && is_array($this->inspectionTarget['value'] ?? null);
+    }
+
+    private function queueObjectInspectionMutation(array $target, array $inspectionValue): void
+    {
+        $context = $target['context'] ?? null;
+        $path = $target['path'] ?? null;
+
+        if (!is_string($path) || $path === '') {
+            return;
+        }
+
+        if ($context === 'hierarchy') {
+            $this->pendingHierarchyMutation = [
+                'path' => $path,
+                'value' => $inspectionValue,
+            ];
+            return;
+        }
+
+        if ($context !== 'prefab') {
+            return;
+        }
+
+        $asset = is_array($target['asset'] ?? null) ? $target['asset'] : [];
+        $prefabPath = is_string($asset['path'] ?? null) ? $asset['path'] : null;
+
+        if (!is_string($prefabPath) || $prefabPath === '') {
+            return;
+        }
+
+        $this->pendingPrefabMutation = [
+            'path' => $path,
+            'prefabPath' => $prefabPath,
+            'asset' => $asset,
+            'value' => $inspectionValue,
+        ];
     }
 
     private function showAddComponentModal(): void
@@ -1944,7 +2067,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
@@ -1974,10 +2097,7 @@ PHP;
         $updatedTarget = $this->inspectionTarget;
         $updatedTarget['value'] = $inspectionValue;
         $this->inspectTarget($updatedTarget);
-        $this->pendingHierarchyMutation = [
-            'path' => $updatedTarget['path'],
-            'value' => $inspectionValue,
-        ];
+        $this->queueObjectInspectionMutation($updatedTarget, $inspectionValue);
     }
 
     private function getSelectedControlMetadata(?InputControl $control): array
@@ -2116,12 +2236,20 @@ PHP;
 
     private function handleComponentMoveModeToggle(InputControl $selectedControl): void
     {
-        if (!$this->isSelectedComponentHeader($selectedControl)) {
+        if (!$this->isSelectedComponentHeader($selectedControl) || !$this->canMutateCurrentComponentList()) {
             $this->isComponentMoveModeActive = false;
             return;
         }
 
         $this->isComponentMoveModeActive = !$this->isComponentMoveModeActive;
+    }
+
+    private function canMutateCurrentComponentList(): bool
+    {
+        return is_array($this->inspectionTarget)
+            && in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
+            && is_string($this->inspectionTarget['path'] ?? null)
+            && $this->inspectionTarget['path'] !== '';
     }
 
     private function showDeleteComponentModal(InputControl $selectedControl): void
@@ -2163,7 +2291,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
@@ -2199,7 +2327,7 @@ PHP;
             !is_int($componentIndex)
             || !in_array($direction, [-1, 1], true)
             || !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_array($this->inspectionTarget['value'] ?? null)
         ) {
             return;
@@ -2232,7 +2360,7 @@ PHP;
     {
         if (
             !is_array($this->inspectionTarget)
-            || ($this->inspectionTarget['context'] ?? null) !== 'hierarchy'
+            || !in_array($this->inspectionTarget['context'] ?? null, ['hierarchy', 'prefab'], true)
             || !is_string($this->inspectionTarget['path'] ?? null)
         ) {
             return;
@@ -2249,10 +2377,7 @@ PHP;
         }
 
         $this->isComponentMoveModeActive = $preserveMoveMode && is_int($focusComponentIndex);
-        $this->pendingHierarchyMutation = [
-            'path' => $updatedTarget['path'],
-            'value' => $inspectionValue,
-        ];
+        $this->queueObjectInspectionMutation($updatedTarget, $inspectionValue);
     }
 
     private function focusComponentHeaderByIndex(int $componentIndex): void
@@ -2463,9 +2588,32 @@ PHP;
 
     private function applyControlValueToInspectionTarget(InputControl $control): void
     {
+        if (!is_array($this->inspectionTarget)) {
+            return;
+        }
+
+        $controlMetadata = $this->getSelectedControlMetadata($control);
+        $context = $this->inspectionTarget['context'] ?? null;
+
         if (
-            !is_array($this->inspectionTarget)
-            || !isset($this->inspectionTarget['value'])
+            ($controlMetadata['kind'] ?? null) === 'prefab_file_name'
+            && $context === 'prefab'
+            && is_array($this->inspectionTarget['asset'] ?? null)
+        ) {
+            $asset = $this->inspectionTarget['asset'];
+            $asset['name'] = (string) $control->getValue();
+            $this->inspectionTarget['asset'] = $asset;
+            $this->pendingAssetMutation = [
+                'path' => $asset['path'] ?? null,
+                'relativePath' => $asset['relativePath'] ?? null,
+                'name' => (string) $control->getValue(),
+                'activatePrefab' => true,
+            ];
+            return;
+        }
+
+        if (
+            !isset($this->inspectionTarget['value'])
             || !is_array($this->inspectionTarget['value'])
         ) {
             return;
@@ -2485,8 +2633,6 @@ PHP;
             $this->inspectionTarget['name'] = (string) $control->getValue();
         }
 
-        $context = $this->inspectionTarget['context'] ?? null;
-
         if ($context === 'asset') {
             if (
                 $valuePath === ['name']
@@ -2504,6 +2650,10 @@ PHP;
         }
 
         if (!in_array($context, ['hierarchy', 'scene'], true)) {
+            if ($context === 'prefab') {
+                $this->queueObjectInspectionMutation($this->inspectionTarget, $inspectionValue);
+            }
+
             return;
         }
 

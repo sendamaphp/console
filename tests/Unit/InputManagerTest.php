@@ -119,10 +119,13 @@ test('input manager coalesces repeated arrow tokens to avoid held-key drift', fu
 test('input manager treats repeated arrow input as both pressed and down', function () {
     $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
     $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $currentKeyPressWasBuffered = new ReflectionProperty(InputManager::class, 'currentKeyPressWasBuffered');
     $keyPress->setAccessible(true);
     $previousKeyPress->setAccessible(true);
+    $currentKeyPressWasBuffered->setAccessible(true);
     $previousKeyPress->setValue("\033[C");
     $keyPress->setValue("\033[C");
+    $currentKeyPressWasBuffered->setValue(true);
 
     expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeTrue();
     expect(InputManager::isKeyDown(KeyCode::RIGHT))->toBeTrue();
@@ -153,4 +156,19 @@ test('input manager briefly holds repeatable arrows between raw repeat events', 
 
     expect($resolveCurrentKeyPress->invoke(null, '', 10.04))->toBe("\033[C");
     expect($resolveCurrentKeyPress->invoke(null, '', 10.06))->toBe('');
+});
+
+test('input manager does not treat held repeatable fallback frames as pressed or down', function () {
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $currentKeyPressWasBuffered = new ReflectionProperty(InputManager::class, 'currentKeyPressWasBuffered');
+    $keyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $currentKeyPressWasBuffered->setAccessible(true);
+    $previousKeyPress->setValue("\033[C");
+    $keyPress->setValue("\033[C");
+    $currentKeyPressWasBuffered->setValue(false);
+
+    expect(InputManager::isKeyPressed(KeyCode::RIGHT))->toBeFalse();
+    expect(InputManager::isKeyDown(KeyCode::RIGHT))->toBeFalse();
 });

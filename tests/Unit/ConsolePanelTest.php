@@ -1,6 +1,17 @@
 <?php
 
 use Sendama\Console\Editor\Widgets\ConsolePanel;
+use Sendama\Console\Editor\Widgets\Widget;
+
+function pressConsoleKey(string $keyPress): void
+{
+    $currentKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
+    $currentKeyPress->setAccessible(true);
+    $previousKeyPress->setAccessible(true);
+    $previousKeyPress->setValue('');
+    $currentKeyPress->setValue($keyPress);
+}
 
 test('console panel loads the last three debug log lines on startup', function () {
     $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
@@ -337,4 +348,164 @@ test('console panel automatically refreshes from the active tab log file during 
         'line 4',
         'line 5',
     ]);
+});
+
+test('console panel opens a filter modal on shift+f and filters debug logs by level', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents(
+        $workspace . '/logs/debug.log',
+        implode(PHP_EOL, [
+            '[2026-03-13 10:00:00] [DEBUG] - First',
+            '[2026-03-13 10:00:01] [INFO] - Second',
+            '[2026-03-13 10:00:02] [WARN] - Third',
+            '[2026-03-13 10:00:03] [ERROR] - Fourth',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressConsoleKey('F');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect(array_slice($panel->content, 2))->toBe([
+        '[2026-03-13 10:00:01] [INFO] - Second',
+    ]);
+});
+
+test('console panel filters error logs with error-tab-specific levels', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents(
+        $workspace . '/logs/error.log',
+        implode(PHP_EOL, [
+            '[2026-03-13 10:00:00] [ERROR] - First',
+            '[2026-03-13 10:00:01] [CRITICAL] - Second',
+            '[2026-03-13 10:00:02] [FATAL] - Third',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        errorLogFilePath: $workspace . '/logs/error.log',
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->cycleFocusForward();
+
+    pressConsoleKey('F');
+    $panel->update();
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\n");
+    $panel->update();
+
+    expect($panel->getActiveTab())->toBe('Error');
+    expect(array_slice($panel->content, 2))->toBe([
+        '[2026-03-13 10:00:02] [FATAL] - Third',
+    ]);
+});
+
+test('console panel rotates and clears the active log file on confirmed shift+c', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+    $logFilePath = $workspace . '/logs/debug.log';
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            '[2026-03-13 10:00:00] [DEBUG] - First',
+            '[2026-03-13 10:00:01] [INFO] - Second',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        logFilePath: $logFilePath,
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    pressConsoleKey('C');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    pressConsoleKey("\033[B");
+    $panel->update();
+    pressConsoleKey("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect(file_get_contents($logFilePath))->toBe('');
+    expect(file_get_contents($logFilePath . '.1'))->toContain('[2026-03-13 10:00:00] [DEBUG] - First');
+    expect(array_slice($panel->content, 2))->toBe([]);
+});
+
+test('console panel leaves the active log file unchanged when clear is cancelled', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+    $logFilePath = $workspace . '/logs/error.log';
+
+    file_put_contents(
+        $logFilePath,
+        implode(PHP_EOL, [
+            '[2026-03-13 10:00:00] [ERROR] - First',
+            '[2026-03-13 10:00:01] [FATAL] - Second',
+        ]) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        errorLogFilePath: $logFilePath,
+    );
+
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+    $panel->cycleFocusForward();
+
+    pressConsoleKey('C');
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    pressConsoleKey("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect(file_get_contents($logFilePath))->toContain('[2026-03-13 10:00:01] [FATAL] - Second');
+    expect(file_exists($logFilePath . '.1'))->toBeFalse();
 });

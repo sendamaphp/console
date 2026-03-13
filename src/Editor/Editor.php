@@ -144,6 +144,7 @@ final class Editor implements ObservableInterface
     protected bool $shouldRefreshBackgroundUnderModal = false;
     protected bool $didRenderOverlayLastFrame = false;
     protected SceneWriter $sceneWriter;
+    protected PrefabWriter $prefabWriter;
     protected ?ProjectNormalizer $projectNormalizer = null;
     protected array $projectDiscrepancies = [];
 
@@ -169,6 +170,7 @@ final class Editor implements ObservableInterface
             $this->initializeManagers();
             $this->initializeConsole();
             $this->sceneWriter = new SceneWriter();
+            $this->prefabWriter = new PrefabWriter();
             $this->initializeWidgets();
             $this->initializeEditorStates();
             $this->initializeProjectIntegrityCheck();
@@ -404,6 +406,7 @@ final class Editor implements ObservableInterface
         $this->synchronizeMainPanelSceneChanges();
         $this->synchronizeMainPanelAssetChanges();
         $this->synchronizeInspectorSceneChanges();
+        $this->synchronizeInspectorPrefabChanges();
         $this->synchronizeInspectorAssetChanges();
         $this->synchronizeInspectorPanel();
 
@@ -451,8 +454,15 @@ final class Editor implements ObservableInterface
             $this->didRenderOverlayLastFrame = true;
             $this->focusedPanel->syncModalLayout($this->terminalWidth, $this->terminalHeight);
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty()) {
+            if ($this->focusedPanel->consumeModalBackgroundRefreshRequest()) {
+                $this->shouldRefreshBackgroundUnderModal = true;
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal) {
                 $this->renderEditorFrame();
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty()) {
                 $this->focusedPanel->renderActiveModal();
                 $this->focusedPanel->markModalClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
@@ -656,6 +666,7 @@ final class Editor implements ObservableInterface
             sceneWidth: $this->loadedScene?->width ?? DEFAULT_TERMINAL_WIDTH,
             sceneHeight: $this->loadedScene?->height ?? DEFAULT_TERMINAL_HEIGHT,
             environmentTileMapPath: $this->loadedScene?->environmentTileMapPath ?? 'Maps/example',
+            environmentCollisionMapPath: $this->loadedScene?->environmentCollisionMapPath ?? '',
         );
         $this->assetsPanel = new AssetsPanel(
             assetsDirectoryPath: $this->assetsDirectoryPath,
@@ -1065,8 +1076,12 @@ final class Editor implements ObservableInterface
             $this->hierarchyPanel->selectPath('scene');
         } elseif (($selectedItem['context'] ?? null) === 'asset') {
             $asset = is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null;
+            $openInMainPanel = ($selectedItem['openInMainPanel'] ?? false) === true;
+            $selectedItem = is_array($asset)
+                ? $this->buildAssetInspectionTarget($asset, $openInMainPanel)
+                : $selectedItem;
 
-            if (($selectedItem['openInMainPanel'] ?? false) === true && $this->isEditableSpriteAsset($asset)) {
+            if ($openInMainPanel && $this->isEditableSpriteAsset($asset)) {
                 $this->mainPanel->loadSpriteAsset($asset);
                 $this->mainPanel->selectTab('Sprite');
                 $this->setFocusedPanel($this->mainPanel);
@@ -1136,7 +1151,7 @@ final class Editor implements ObservableInterface
 
         if ($renamedAsset === null) {
             if (is_file($mutation['path'])) {
-                $this->inspectorPanel->syncAssetTarget([
+                $fallbackAsset = [
                     'name' => basename($mutation['path']),
                     'path' => $mutation['path'],
                     'relativePath' => is_string($mutation['relativePath'] ?? null)
@@ -1144,16 +1159,70 @@ final class Editor implements ObservableInterface
                         : basename($mutation['path']),
                     'isDirectory' => false,
                     'children' => [],
-                ]);
+                ];
+
+                if (($mutation['activatePrefab'] ?? false) === true) {
+                    $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($fallbackAsset, true));
+                } else {
+                    $this->inspectorPanel->syncAssetTarget($fallbackAsset);
+                }
             }
             return;
         }
 
         $this->assetsPanel->reloadAssets();
         $this->assetsPanel->selectAssetByAbsolutePath($renamedAsset['path']);
-        $assetInspectionTarget = $this->buildAssetInspectionTarget($renamedAsset);
+        $this->assetsPanel->consumeInspectionRequest();
+        $assetInspectionTarget = $this->buildAssetInspectionTarget(
+            $renamedAsset,
+            ($mutation['activatePrefab'] ?? false) === true
+        );
         $this->inspectorPanel->inspectTarget($assetInspectionTarget);
-        $this->mainPanel->loadSpriteAsset($renamedAsset);
+
+        if ($this->isEditableSpriteAsset($renamedAsset)) {
+            $this->mainPanel->loadSpriteAsset($renamedAsset);
+        }
+    }
+
+    private function synchronizeInspectorPrefabChanges(): void
+    {
+        $mutation = $this->inspectorPanel->consumePrefabMutation();
+
+        if (
+            !is_array($mutation)
+            || !is_string($mutation['prefabPath'] ?? null)
+            || $mutation['prefabPath'] === ''
+            || !is_array($mutation['value'] ?? null)
+        ) {
+            return;
+        }
+
+        if (!isset($this->prefabWriter)) {
+            $this->prefabWriter = new PrefabWriter();
+        }
+
+        if (!$this->prefabWriter->save($mutation['prefabPath'], $mutation['value'])) {
+            $this->consolePanel->append('[ERROR] - Failed to save prefab ' . basename($mutation['prefabPath']) . '.');
+            return;
+        }
+
+        $asset = is_array($mutation['asset'] ?? null)
+            ? $mutation['asset']
+            : [
+                'name' => basename($mutation['prefabPath']),
+                'path' => $mutation['prefabPath'],
+                'relativePath' => basename($mutation['prefabPath']),
+                'isDirectory' => false,
+                'children' => [],
+            ];
+        $asset['name'] = basename($mutation['prefabPath']);
+        $asset['path'] = $mutation['prefabPath'];
+        $asset['relativePath'] = $this->buildRelativeAssetPath($mutation['prefabPath']);
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($mutation['prefabPath']);
+        $this->assetsPanel->consumeInspectionRequest();
+        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($asset, true));
     }
 
     private function synchronizeHierarchyAdditions(): void
@@ -1730,6 +1799,7 @@ final class Editor implements ObservableInterface
             if ($this->loadedScene instanceof DTOs\SceneDTO) {
                 $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
                 $this->loadedScene->rawData['environmentTileMapPath'] = $this->loadedScene->environmentTileMapPath;
+                $this->loadedScene->rawData['environmentCollisionMapPath'] = $this->loadedScene->environmentCollisionMapPath;
                 $this->loadedScene->isDirty = true;
                 $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
                 $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
@@ -1855,21 +1925,38 @@ final class Editor implements ObservableInterface
     {
         $trimmedName = trim(str_replace('\\', '/', $requestedName));
         $trimmedName = basename($trimmedName);
-        $currentExtension = strtolower((string) pathinfo($currentAbsolutePath, PATHINFO_EXTENSION));
+        $fileNameSuffix = $this->resolveAssetFileNameSuffix($currentAbsolutePath);
 
         if ($trimmedName === '') {
             return basename($currentAbsolutePath);
         }
 
-        $requestedBaseName = (string) pathinfo($trimmedName, PATHINFO_FILENAME);
+        $requestedBaseName = str_ends_with(strtolower($trimmedName), strtolower($fileNameSuffix))
+            ? substr($trimmedName, 0, -strlen($fileNameSuffix))
+            : (string) pathinfo($trimmedName, PATHINFO_FILENAME);
 
         if ($requestedBaseName === '') {
-            $requestedBaseName = (string) pathinfo(basename($currentAbsolutePath), PATHINFO_FILENAME);
+            $requestedBaseName = basename(basename($currentAbsolutePath), $fileNameSuffix);
         }
 
-        return $currentExtension !== ''
-            ? $requestedBaseName . '.' . $currentExtension
-            : $requestedBaseName;
+        return $requestedBaseName . $fileNameSuffix;
+    }
+
+    private function resolveAssetFileNameSuffix(string $absolutePath): string
+    {
+        $normalizedBaseName = strtolower(basename(str_replace('\\', '/', $absolutePath)));
+
+        foreach (['.prefab.php', '.scene.php'] as $compoundSuffix) {
+            if (str_ends_with($normalizedBaseName, $compoundSuffix)) {
+                return substr(basename($absolutePath), -strlen($compoundSuffix));
+            }
+        }
+
+        $extension = pathinfo($absolutePath, PATHINFO_EXTENSION);
+
+        return $extension !== ''
+            ? '.' . $extension
+            : '';
     }
 
     private function buildRelativeAssetPath(string $absolutePath): string
@@ -1902,6 +1989,14 @@ final class Editor implements ObservableInterface
             $hasChanges = true;
         } elseif ($this->loadedScene->environmentTileMapPath === $oldWithoutExtension) {
             $this->loadedScene->environmentTileMapPath = $newWithoutExtension;
+            $hasChanges = true;
+        }
+
+        if ($this->loadedScene->environmentCollisionMapPath === $oldWithExtension) {
+            $this->loadedScene->environmentCollisionMapPath = $newWithExtension;
+            $hasChanges = true;
+        } elseif ($this->loadedScene->environmentCollisionMapPath === $oldWithoutExtension) {
+            $this->loadedScene->environmentCollisionMapPath = $newWithoutExtension;
             $hasChanges = true;
         }
 
@@ -1955,14 +2050,101 @@ final class Editor implements ObservableInterface
         return array_values($items);
     }
 
-    private function buildAssetInspectionTarget(array $asset): array
+    private function buildAssetInspectionTarget(array $asset, bool $activatePrefab = false): array
     {
+        if ($activatePrefab && $this->isPrefabAsset($asset)) {
+            $prefabInspectionTarget = $this->buildPrefabInspectionTarget($asset);
+
+            if (is_array($prefabInspectionTarget)) {
+                return $prefabInspectionTarget;
+            }
+        }
+
         return [
             'context' => 'asset',
             'name' => $asset['name'] ?? basename((string) ($asset['path'] ?? '')),
             'type' => ($asset['isDirectory'] ?? false) ? 'Folder' : 'File',
             'value' => $asset,
         ];
+    }
+
+    private function buildPrefabInspectionTarget(array $asset): ?array
+    {
+        $prefabPath = is_string($asset['path'] ?? null) ? $asset['path'] : null;
+
+        if (!is_string($prefabPath) || $prefabPath === '') {
+            return null;
+        }
+
+        $prefabData = (new PrefabLoader($this->resolveProjectDirectoryForAsset($asset)))->load($prefabPath);
+
+        if (!is_array($prefabData)) {
+            return null;
+        }
+
+        return [
+            'context' => 'prefab',
+            'path' => $asset['relativePath'] ?? basename($prefabPath),
+            'name' => $prefabData['name'] ?? ($asset['name'] ?? basename($prefabPath)),
+            'type' => $this->resolveClassReferenceDisplayName($prefabData['type'] ?? null, 'Prefab'),
+            'value' => $prefabData,
+            'asset' => $asset,
+        ];
+    }
+
+    private function isPrefabAsset(?array $asset): bool
+    {
+        if (!is_array($asset) || ($asset['isDirectory'] ?? false)) {
+            return false;
+        }
+
+        $assetPath = is_string($asset['relativePath'] ?? null)
+            ? $asset['relativePath']
+            : (is_string($asset['path'] ?? null) ? $asset['path'] : null);
+
+        return is_string($assetPath) && str_ends_with(strtolower($assetPath), '.prefab.php');
+    }
+
+    private function resolveProjectDirectoryForAsset(array $asset): string
+    {
+        if (isset($this->workingDirectory) && is_string($this->workingDirectory) && $this->workingDirectory !== '') {
+            return $this->workingDirectory;
+        }
+
+        $assetPath = is_string($asset['path'] ?? null) ? Path::normalize($asset['path']) : null;
+        $relativePath = is_string($asset['relativePath'] ?? null)
+            ? Path::normalize($asset['relativePath'])
+            : null;
+
+        if (!is_string($assetPath) || $assetPath === '' || !is_string($relativePath) || $relativePath === '') {
+            return '.';
+        }
+
+        if (!str_ends_with($assetPath, $relativePath)) {
+            return dirname($assetPath);
+        }
+
+        $normalizedAssetRoot = rtrim(substr($assetPath, 0, -strlen($relativePath)), '/');
+
+        if (str_ends_with(strtolower($normalizedAssetRoot), '/assets')) {
+            return dirname($normalizedAssetRoot);
+        }
+
+        return dirname($assetPath);
+    }
+
+    private function resolveClassReferenceDisplayName(mixed $classReference, string $default = 'Unknown'): string
+    {
+        if (!is_string($classReference) || $classReference === '') {
+            return $default;
+        }
+
+        $normalizedClassReference = ltrim($classReference, '\\');
+        $normalizedClassReference = preg_replace('/::class$/', '', $normalizedClassReference)
+            ?? $normalizedClassReference;
+        $classSegments = explode('\\', $normalizedClassReference);
+
+        return end($classSegments) ?: $default;
     }
 
     private function isEditableSpriteAsset(?array $asset): bool
@@ -2057,9 +2239,16 @@ final class Editor implements ObservableInterface
             );
         }
 
+        if (is_string($value['environmentCollisionMapPath'] ?? null)) {
+            $this->loadedScene->environmentCollisionMapPath = $this->normalizeEnvironmentCollisionMapPath(
+                $value['environmentCollisionMapPath']
+            );
+        }
+
         $this->loadedScene->rawData['width'] = $this->loadedScene->width;
         $this->loadedScene->rawData['height'] = $this->loadedScene->height;
         $this->loadedScene->rawData['environmentTileMapPath'] = $this->loadedScene->environmentTileMapPath;
+        $this->loadedScene->rawData['environmentCollisionMapPath'] = $this->loadedScene->environmentCollisionMapPath;
 
         return true;
     }
@@ -2075,6 +2264,7 @@ final class Editor implements ObservableInterface
             'width' => $this->loadedScene->width,
             'height' => $this->loadedScene->height,
             'environmentTileMapPath' => $this->loadedScene->environmentTileMapPath,
+            'environmentCollisionMapPath' => $this->loadedScene->environmentCollisionMapPath,
         ];
     }
 
@@ -2093,6 +2283,21 @@ final class Editor implements ObservableInterface
         return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
     }
 
+    private function normalizeEnvironmentCollisionMapPath(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $normalizedValue = trim(str_replace('\\', '/', $value));
+
+        if ($normalizedValue === '') {
+            return '';
+        }
+
+        return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
+    }
+
     private function syncScenePanels(bool $isDirty): void
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
@@ -2105,6 +2310,7 @@ final class Editor implements ObservableInterface
             $this->loadedScene->width,
             $this->loadedScene->height,
             $this->loadedScene->environmentTileMapPath,
+            $this->loadedScene->environmentCollisionMapPath,
         );
         $this->inspectorPanel->setSceneHierarchy($this->loadedScene->hierarchy);
         $this->mainPanel->setSceneDimensions($this->loadedScene->width, $this->loadedScene->height);
