@@ -12,7 +12,7 @@ This page gathers the most useful shortcuts, file locations, persistence rules, 
 | `Shift+Left` | Focus panel to the left |
 | `Shift+1` | Open panel list |
 | `Shift+5` | Toggle play state |
-| `Shift+A` | Panel-local create action in `Hierarchy`, `Assets`, `Inspector`, and `Main -> Sprite` |
+| `Shift+A` | Panel-local create action in `Hierarchy`, `Assets`, and `Inspector` |
 | `Ctrl+S` | Save the loaded scene |
 | `Ctrl+C` | Close the editor |
 
@@ -48,6 +48,7 @@ Create targets:
 
 - `Script`
 - `Scene`
+- `Prefab`
 - `Texture`
 - `Tile Map`
 - `Event`
@@ -181,14 +182,14 @@ Tree-style modals also use:
 | scene-view moves | active `.scene.php` file | when you press `Ctrl+S` |
 | hierarchy additions and deletions | active `.scene.php` file | when you press `Ctrl+S` |
 | scene rename | renamed `.scene.php` file | when you press `Ctrl+S` |
-| asset creation from `Assets` or `Sprite` | generated asset file | immediately |
+| asset creation from `Assets` | generated asset file | immediately |
 | texture and tile map drawing | selected asset file | immediately |
 | file asset rename | selected asset file path | immediately |
 | asset delete | selected file or folder | immediately |
 
 Special rename behavior:
 
-- renaming a script under `Assets/Scripts` also rewrites its PHP class declaration immediately
+- renaming a PHP class-backed asset under `Assets/Scripts` or `Assets/Events` also rewrites its class declaration immediately
 
 ## Current Editor Limits
 

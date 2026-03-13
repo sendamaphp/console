@@ -189,9 +189,12 @@ Selecting a component:
 - loads any serializable default data the editor can discover
 - immediately refreshes the Inspector so you can keep editing the new component
 
-Current limit:
+Components can also be managed after they are added:
 
-- components can be added, but they cannot yet be removed or reordered from the editor UI
+- focus a component header and press `Delete` to open the remove confirmation dialog
+- focus a component header and press `Shift+W` to enter component move mode
+- while move mode is active, use `Up` / `Down` to reorder the selected component with wraparound
+- press `Escape` or `Shift+W` again to leave move mode
 
 For a full breakdown, continue with [Inspector and Properties](inspector-and-properties.md).
 

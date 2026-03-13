@@ -26,12 +26,17 @@ final class SceneLoader
         $sceneDataBundle = $this->loadSceneDataBundle($scenePath);
         $sceneData = $sceneDataBundle['editor'] ?? [];
         $sourceSceneData = $sceneDataBundle['source'] ?? $sceneData;
+        $normalizedEnvironmentTileMapPath = $this->normalizeEnvironmentTileMapPath(
+            $sceneData['environmentTileMapPath'] ?? $sourceSceneData['environmentTileMapPath'] ?? 'Maps/example',
+        );
+        $sceneData['environmentTileMapPath'] = $normalizedEnvironmentTileMapPath;
+        $sourceSceneData['environmentTileMapPath'] = $normalizedEnvironmentTileMapPath;
 
         return new SceneDTO(
             name: basename($scenePath, '.scene.php'),
             width: $sceneData['width'] ?? DEFAULT_TERMINAL_WIDTH,
             height: $sceneData['height'] ?? DEFAULT_TERMINAL_HEIGHT,
-            environmentTileMapPath: $sceneData['environmentTileMapPath'] ?? 'Maps/example',
+            environmentTileMapPath: $normalizedEnvironmentTileMapPath,
             isDirty: $sceneData['isDirty'] ?? false,
             hierarchy: $sceneData['hierarchy'] ?? [],
             sourcePath: $scenePath,
@@ -80,6 +85,21 @@ final class SceneLoader
         }
 
         return null;
+    }
+
+    private function normalizeEnvironmentTileMapPath(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return 'Maps/example';
+        }
+
+        $normalizedValue = trim(str_replace('\\', '/', $value));
+
+        if ($normalizedValue === '') {
+            return 'Maps/example';
+        }
+
+        return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
     }
 
     private function resolveConfiguredScenePath(

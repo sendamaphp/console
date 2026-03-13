@@ -57,6 +57,24 @@ function inspectorComponentHeaders(InspectorPanel $panel): array
     ));
 }
 
+function selectedInspectorControlLabel(InspectorPanel $panel): ?string
+{
+    $focusableControls = new ReflectionProperty(InspectorPanel::class, 'focusableControls');
+    $selectedControlIndex = new ReflectionProperty(InspectorPanel::class, 'selectedControlIndex');
+    $focusableControls->setAccessible(true);
+    $selectedControlIndex->setAccessible(true);
+
+    /** @var array<int, InputControl> $controls */
+    $controls = $focusableControls->getValue($panel);
+    $selectedIndex = $selectedControlIndex->getValue($panel);
+
+    if (!is_int($selectedIndex) || !isset($controls[$selectedIndex])) {
+        return null;
+    }
+
+    return $controls[$selectedIndex]->getLabel();
+}
+
 function createInspectorComponentWorkspace(): string
 {
     $workspace = sys_get_temp_dir() . '/sendama-inspector-components-' . uniqid();
@@ -838,6 +856,130 @@ test('inspector panel emits scene mutations when scene details are committed', f
             'environmentTileMapPath' => 'Maps/level',
         ],
     ]);
+});
+
+test('inspector panel preserves the selected hierarchy control across syncs', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Tag');
+
+    $panel->syncHierarchyTarget('scene.0', [
+        'type' => 'Sendama\\Engine\\Core\\GameObject',
+        'name' => 'Player',
+        'tag' => 'Hero',
+        'position' => ['x' => 4, 'y' => 12],
+        'rotation' => ['x' => 0, 'y' => 0],
+        'scale' => ['x' => 1, 'y' => 1],
+    ]);
+
+    expect(selectedInspectorControlLabel($panel))->toBe('Tag');
+});
+
+test('inspector panel preserves the selected scene control across syncs', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'scene',
+        'name' => 'level01',
+        'type' => 'Scene',
+        'path' => 'scene',
+        'value' => [
+            'name' => 'level01',
+            'width' => 80,
+            'height' => 25,
+            'environmentTileMapPath' => 'Maps/level',
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Height');
+
+    $panel->syncSceneTarget([
+        'name' => 'level01',
+        'width' => 80,
+        'height' => 30,
+        'environmentTileMapPath' => 'Maps/level',
+    ]);
+
+    expect(selectedInspectorControlLabel($panel))->toBe('Height');
+});
+
+test('inspector panel preserves the selected asset control across syncs', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+
+    $panel->inspectTarget([
+        'context' => 'asset',
+        'name' => 'level01.tmap',
+        'type' => 'File',
+        'value' => [
+            'name' => 'level01.tmap',
+            'path' => '/tmp/project/Assets/Maps/level01.tmap',
+            'relativePath' => 'Maps/level01.tmap',
+            'isDirectory' => false,
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Name');
+
+    $panel->syncAssetTarget([
+        'name' => 'level02.tmap',
+        'path' => '/tmp/project/Assets/Maps/level02.tmap',
+        'relativePath' => 'Maps/level02.tmap',
+        'isDirectory' => false,
+    ]);
+
+    expect(selectedInspectorControlLabel($panel))->toBe('Name');
+});
+
+test('inspector panel preserves the selected control when the same target is re-inspected', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+    $target = [
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 5],
+                ],
+            ],
+        ],
+    ];
+
+    $panel->inspectTarget($target);
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Offset');
+
+    $target['value']['sprite']['texture']['position']['x'] = 1;
+    $panel->inspectTarget($target);
+
+    expect(selectedInspectorControlLabel($panel))->toBe('Offset');
 });
 
 test('inspector panel opens a component menu with shift+a and appends the selected component', function () {

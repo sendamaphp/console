@@ -34,6 +34,33 @@ PHP
     expect($scene->hierarchy[1]['name'])->toBe('Player');
 });
 
+test('scene loader normalizes environment tile map paths to extensionless asset paths', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-map-path-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents($workspace . '/vendor/autoload.php', "<?php\n");
+    file_put_contents(
+        $workspace . '/Assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+return [
+    'environmentTileMapPath' => 'Maps/level.tmap',
+    'hierarchy' => [],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->environmentTileMapPath)->toBe('Maps/level');
+    expect($scene->rawData['environmentTileMapPath'])->toBe('Maps/level');
+    expect($scene->sourceData['environmentTileMapPath'])->toBe('Maps/level');
+});
+
 test('scene loader evaluates scene metadata in an isolated project context', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-loader-' . uniqid();
     mkdir($workspace . '/assets/Scenes', 0777, true);

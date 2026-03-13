@@ -100,8 +100,9 @@ A good first session looks like this:
 3. In `Inspector`, set the scene `Name`, `Width`, `Height`, and `Environment Tile Map`.
 4. In `Assets`, inspect your existing textures and maps.
 5. In `Hierarchy`, press `Shift+A` to create your first scene object.
-6. In `Assets`, press `Shift+A` if you need a new script, scene, texture, tile map, or event file.
-7. Press `Ctrl+S` after your first scene change so you know where persistence happens.
+6. In `Assets`, press `Shift+A` if you need a new script, scene, prefab, texture, tile map, or event file.
+7. Select a texture or tile map in `Assets` and notice that `Main -> Sprite` opens automatically.
+8. Press `Ctrl+S` after your first scene change so you know where persistence happens.
 
 ## What Gets Saved, And When
 

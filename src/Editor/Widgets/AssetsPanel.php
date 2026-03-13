@@ -64,6 +64,7 @@ class AssetsPanel extends Widget
         $nextIndex = max(0, min($selectedIndex + $offset, count($this->visibleAssets) - 1));
         $this->selectedPath = $this->visibleAssets[$nextIndex]['path'] ?? $this->selectedPath;
         $this->refreshContent();
+        $this->queueInspectionTarget();
     }
 
     public function expandSelection(): void
@@ -90,6 +91,7 @@ class AssetsPanel extends Widget
             ) {
                 $this->selectedPath = $entry['path'];
                 $this->refreshContent();
+                $this->queueInspectionTarget();
                 return;
             }
         }
@@ -117,9 +119,15 @@ class AssetsPanel extends Widget
 
         $this->selectedPath = $parentPath;
         $this->refreshContent();
+        $this->queueInspectionTarget();
     }
 
     public function activateSelection(): void
+    {
+        $this->queueInspectionTarget(true);
+    }
+
+    private function queueInspectionTarget(bool $openInMainPanel = false): void
     {
         $selectedAsset = $this->getSelectedAssetEntry();
 
@@ -132,6 +140,7 @@ class AssetsPanel extends Widget
             'name' => $selectedAsset['name'] ?? 'Unnamed Asset',
             'type' => ($selectedAsset['isDirectory'] ?? false) ? 'Folder' : 'File',
             'value' => $selectedAsset,
+            'openInMainPanel' => $openInMainPanel,
         ];
     }
 
@@ -163,7 +172,7 @@ class AssetsPanel extends Widget
     {
         $this->modalState = self::CREATE_MODAL_ASSET_KIND;
         $this->createAssetModal->show(
-            ['Script', 'Scene', 'Texture', 'Tile Map', 'Event'],
+            ['Script', 'Scene', 'Prefab', 'Texture', 'Tile Map', 'Event'],
             title: 'Create Asset',
         );
     }
@@ -222,6 +231,7 @@ class AssetsPanel extends Widget
 
         $this->selectedPath = $matchedPath;
         $this->refreshContent();
+        $this->queueInspectionTarget();
     }
 
     public function handleMouseClick(int $x, int $y): void
@@ -238,7 +248,7 @@ class AssetsPanel extends Widget
 
         $this->selectedPath = $this->visibleAssets[$index]['path'] ?? $this->selectedPath;
         $this->refreshContent();
-        $this->activateSelection();
+        $this->queueInspectionTarget();
     }
 
     public function update(): void
@@ -603,6 +613,7 @@ class AssetsPanel extends Widget
             $assetKind = match ($selection) {
                 'Script' => 'script',
                 'Scene' => 'scene',
+                'Prefab' => 'prefab',
                 'Texture' => 'texture',
                 'Tile Map' => 'tilemap',
                 'Event' => 'event',

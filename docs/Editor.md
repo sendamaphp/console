@@ -279,6 +279,7 @@ Inspector type mapping:
 
 - directories are shown as `Folder`
 - files are shown as `File`
+- selecting a `.texture` or `.tmap` also opens `Main -> Sprite` and moves focus there
 
 ### Asset Delete Workflow
 
@@ -302,6 +303,7 @@ Current create targets:
 
 - `Script`
 - `Scene`
+- `Prefab`
 - `Texture`
 - `Tile Map`
 - `Event`
@@ -312,6 +314,8 @@ Behavior:
 - the editor creates the asset with the next available default name for that asset family
 - after creation, the Assets tree refreshes, the new asset is selected, and the Inspector loads it
 - if the created asset is a texture or tile map, the Sprite tab loads it too
+- prefab assets are created as `.prefab.php` metadata files under `Assets/Prefabs`
+- prefab metadata returns a single array shaped like one scene `hierarchy` entry, so it can describe either a `GameObject` or a UI element such as `Label` or `Text`
 
 ## Inspector Panel
 
@@ -330,7 +334,7 @@ For file assets, the Inspector currently shows:
 - read-only `Path`
 
 Renaming a file asset from the Inspector renames the file on disk. If the current scene references that file through `sprite.texture.path` or `environmentTileMapPath`, those scene references are updated in memory and should be saved with `Ctrl+S`.
-If the renamed asset is a PHP script under `Assets/Scripts`, the editor also rewrites the class declaration inside the source file to match the new filename.
+If the renamed asset is a PHP class-backed file under `Assets/Scripts` or `Assets/Events`, the editor also rewrites the class declaration inside the source file to match the new filename.
 
 ### Inspector Hotkeys
 

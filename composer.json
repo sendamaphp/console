@@ -35,5 +35,8 @@
   ],
   "scripts": {
     "test": "vendor/bin/pest tests"
+  },
+  "require-dev": {
+    "pestphp/pest": "^4.4"
   }
 }

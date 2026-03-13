@@ -1,14 +1,17 @@
 {
-  "project": {
-    "name": "game",
-    "description": "A simple ASCII terminal game",
-    "version": "0.0.1",
-    "main": "game.php",
-    "player": {
-      "screen": {
-        "width": 110,
-        "height": 30
-      }
+  "name": "game",
+  "description": "A 2D ASCII terminal game.",
+  "version": "0.0.1",
+  "main": "game.php",
+  "editor": {
+    "scenes": {
+      "active": 0,
+      "loaded": [
+        "Scenes/Level.scene.php"
+      ]
+    },
+    "console": {
+      "refreshInterval": 5
     }
   }
 }

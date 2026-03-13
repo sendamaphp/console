@@ -42,25 +42,68 @@ class MainPanel extends Widget
         '░ Light Shade',
         '■ Square',
         '□ Hollow Square',
+        '▣ Filled Outline Square',
+        '▢ Dotted Outline Square',
         '▲ Triangle Up',
         '▼ Triangle Down',
         '◄ Triangle Left',
         '► Triangle Right',
+        '◢ Triangle Lower Right',
+        '◣ Triangle Lower Left',
+        '◤ Triangle Upper Left',
+        '◥ Triangle Upper Right',
         '● Circle',
         '○ Hollow Circle',
         '★ Star',
+        '☆ Hollow Star',
+        '◆ Diamond',
+        '◇ Hollow Diamond',
         '♥ Heart',
+        '♦ Diamond Suit',
+        '♣ Club',
+        '♠ Spade',
+        '• Bullet',
+        '◦ Hollow Bullet',
+        '· Dot',
         '│ Vertical',
         '─ Horizontal',
         '┌ Corner TL',
         '┐ Corner TR',
         '└ Corner BL',
         '┘ Corner BR',
+        '├ Tee Left',
+        '┤ Tee Right',
+        '┬ Tee Down',
+        '┴ Tee Up',
         '┼ Cross',
+        '╭ Rounded Corner TL',
+        '╮ Rounded Corner TR',
+        '╰ Rounded Corner BL',
+        '╯ Rounded Corner BR',
+        '║ Double Vertical',
+        '═ Double Horizontal',
+        '╔ Double Corner TL',
+        '╗ Double Corner TR',
+        '╚ Double Corner BL',
+        '╝ Double Corner BR',
+        '╠ Double Tee Left',
+        '╣ Double Tee Right',
+        '╦ Double Tee Down',
+        '╩ Double Tee Up',
+        '╬ Double Cross',
+        '╱ Diagonal Slash',
+        '╲ Diagonal Backslash',
+        '╳ Diagonal Cross',
         '← Arrow Left',
         '↑ Arrow Up',
         '→ Arrow Right',
         '↓ Arrow Down',
+        '↔ Arrow Left Right',
+        '↕ Arrow Up Down',
+        '⇐ Double Arrow Left',
+        '⇑ Double Arrow Up',
+        '⇒ Double Arrow Right',
+        '⇓ Double Arrow Down',
     ];
 
     protected int $activeTabIndex = 0;
@@ -101,6 +144,7 @@ class MainPanel extends Widget
     protected OptionListModal $characterPickerModal;
     protected ?string $spriteModalState = null;
     protected ?array $pendingAssetSyncRequest = null;
+    protected ?string $lastPrintedSpriteCharacter = null;
 
     public function __construct(
         array $position = ['x' => 37, 'y' => 1],
@@ -309,6 +353,7 @@ class MainPanel extends Widget
             $this->spriteOriginalGrid = [];
             $this->spriteUndoStack = [];
             $this->spriteRedoStack = [];
+            $this->lastPrintedSpriteCharacter = null;
             $this->refreshContent();
             return;
         }
@@ -334,6 +379,7 @@ class MainPanel extends Widget
         $this->spriteOriginalGrid = $this->copySpriteGrid($this->spriteGrid);
         $this->spriteUndoStack = [];
         $this->spriteRedoStack = [];
+        $this->lastPrintedSpriteCharacter = null;
         $this->refreshContent();
     }
 
@@ -827,6 +873,15 @@ class MainPanel extends Widget
             return true;
         }
 
+        if (Input::isKeyDown(KeyCode::ENTER)) {
+            if ($this->lastPrintedSpriteCharacter === null) {
+                return false;
+            }
+
+            $this->writeSpriteCharacter($this->lastPrintedSpriteCharacter);
+            return true;
+        }
+
         if (Input::isKeyDown(KeyCode::BACKSPACE)) {
             $this->writeSpriteCharacter(' ');
             return true;
@@ -876,7 +931,11 @@ class MainPanel extends Widget
             return;
         }
 
-        $this->characterPickerModal->show(self::SPECIAL_CHARACTER_OPTIONS, 0, 'Insert Character');
+        $this->characterPickerModal->show(
+            self::SPECIAL_CHARACTER_OPTIONS,
+            $this->resolveCharacterPickerSelectedIndex(),
+            'Insert Character'
+        );
         $this->createSpriteAssetModal->hide();
         $this->deleteSpriteAssetModal->hide();
         $this->spriteModalState = self::SPRITE_MODAL_CHARACTER;
@@ -958,6 +1017,21 @@ class MainPanel extends Widget
         }
 
         return mb_substr($selection, 0, 1) ?: null;
+    }
+
+    private function resolveCharacterPickerSelectedIndex(): int
+    {
+        if ($this->lastPrintedSpriteCharacter === null) {
+            return 0;
+        }
+
+        foreach (self::SPECIAL_CHARACTER_OPTIONS as $index => $option) {
+            if (mb_substr($option, 0, 1) === $this->lastPrintedSpriteCharacter) {
+                return $index;
+            }
+        }
+
+        return 0;
     }
 
     private function moveSceneSelection(int $offset): void
@@ -1155,39 +1229,24 @@ class MainPanel extends Widget
                     continue;
                 }
 
-                $characters = preg_split('//u', $renderLine, -1, PREG_SPLIT_NO_EMPTY);
-
-                if (!is_array($characters) || $characters === []) {
-                    continue;
-                }
-
-                $startCharacterIndex = max(0, -$column);
-                $targetColumn = max(0, $column);
-
-                for (
-                    $characterIndex = $startCharacterIndex;
-                    $characterIndex < count($characters) && $targetColumn < $canvasWidth;
-                    $characterIndex++, $targetColumn++
-                ) {
-                    $canvas[$targetRow][$targetColumn] = $characters[$characterIndex];
-                }
+                $placement = $this->writeRenderLineToCanvas(
+                    $canvas[$targetRow],
+                    $renderLine,
+                    $column,
+                    $canvasWidth,
+                );
 
                 if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
                     continue;
                 }
 
-                $visibleLength = min(
-                    count($characters) - $startCharacterIndex,
-                    $canvasWidth - max(0, $column),
-                );
-
-                if ($visibleLength <= 0) {
+                if (($placement['length'] ?? 0) <= 0) {
                     continue;
                 }
 
                 $this->sceneLineHighlights[2 + $targetRow] = [
-                    'start' => max(0, $column),
-                    'length' => $visibleLength,
+                    'start' => $placement['start'] ?? max(0, $column),
+                    'length' => $placement['length'],
                 ];
             }
         }
@@ -1391,6 +1450,12 @@ class MainPanel extends Widget
 
         $nextCharacter = mb_substr($character, 0, 1);
 
+        if ($nextCharacter === '') {
+            return;
+        }
+
+        $this->lastPrintedSpriteCharacter = $nextCharacter;
+
         if (($this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] ?? ' ') === $nextCharacter) {
             return;
         }
@@ -1541,6 +1606,7 @@ class MainPanel extends Widget
         $this->spriteOriginalGrid = $this->copySpriteGrid($this->spriteGrid);
         $this->spriteUndoStack = [];
         $this->spriteRedoStack = [];
+        $this->lastPrintedSpriteCharacter = null;
         $this->activeSpriteAsset = [
             'name' => basename($absolutePath),
             'path' => $absolutePath,
@@ -1588,6 +1654,7 @@ class MainPanel extends Widget
         $this->spriteOriginalGrid = [];
         $this->spriteUndoStack = [];
         $this->spriteRedoStack = [];
+        $this->lastPrintedSpriteCharacter = null;
         $this->pendingAssetSyncRequest = [
             'path' => $deletedPath,
             'clearInspection' => true,
@@ -1922,23 +1989,78 @@ class MainPanel extends Widget
                 continue;
             }
 
-            $characters = preg_split('//u', $tileMapLine, -1, PREG_SPLIT_NO_EMPTY);
+            $this->writeRenderLineToCanvas(
+                $canvas[$targetRow],
+                $tileMapLine,
+                -$this->sceneViewportOffsetX,
+                $canvasWidth,
+            );
+        }
+    }
 
-            if (!is_array($characters) || $characters === []) {
+    private function writeRenderLineToCanvas(
+        array &$targetRow,
+        string $renderLine,
+        int $startColumn,
+        int $canvasWidth,
+    ): array {
+        $characters = preg_split('//u', $renderLine, -1, PREG_SPLIT_NO_EMPTY);
+
+        if (!is_array($characters) || $characters === []) {
+            return ['start' => max(0, $startColumn), 'length' => 0];
+        }
+
+        $column = $startColumn;
+        $firstVisibleColumn = null;
+        $lastVisibleColumn = null;
+
+        foreach ($characters as $character) {
+            $characterWidth = max(1, $this->getDisplayWidth($character));
+
+            if (($column + $characterWidth) <= 0) {
+                $column += $characterWidth;
                 continue;
             }
 
-            $startCharacterIndex = max(0, $this->sceneViewportOffsetX);
-            $targetColumn = 0;
-
-            for (
-                $characterIndex = $startCharacterIndex;
-                $characterIndex < count($characters) && $targetColumn < $canvasWidth;
-                $characterIndex++, $targetColumn++
-            ) {
-                $canvas[$targetRow][$targetColumn] = $characters[$characterIndex];
+            if ($column >= $canvasWidth) {
+                break;
             }
+
+            $visibleColumn = max(0, $column);
+            $remainingWidth = $canvasWidth - $visibleColumn;
+
+            if ($remainingWidth <= 0) {
+                break;
+            }
+
+            if ($column >= 0 && $characterWidth > $remainingWidth) {
+                break;
+            }
+
+            $occupyWidth = min($characterWidth, $remainingWidth);
+            $targetRow[$visibleColumn] = $character;
+
+            for ($paddingColumn = 1; $paddingColumn < $occupyWidth; $paddingColumn++) {
+                if (!array_key_exists($visibleColumn + $paddingColumn, $targetRow)) {
+                    break;
+                }
+
+                $targetRow[$visibleColumn + $paddingColumn] = '';
+            }
+
+            $firstVisibleColumn ??= $visibleColumn;
+            $lastVisibleColumn = $visibleColumn + $occupyWidth - 1;
+            $column += $characterWidth;
         }
+
+        if ($firstVisibleColumn === null || $lastVisibleColumn === null) {
+            return ['start' => max(0, $startColumn), 'length' => 0];
+        }
+
+        return [
+            'start' => $firstVisibleColumn,
+            'length' => max(0, $lastVisibleColumn - $firstVisibleColumn + 1),
+        ];
     }
 
     private function buildEnvironmentTileMapLines(): array
@@ -1968,9 +2090,12 @@ class MainPanel extends Widget
     {
         $availableLabelWidth = max(0, $this->width - 3);
         $visibleRightLabel = $this->clipContentToWidth($rightLabel, $availableLabelWidth);
-        $remainingWidth = max(0, $availableLabelWidth - mb_strlen($visibleRightLabel));
+        $remainingWidth = max(0, $availableLabelWidth - $this->getDisplayWidth($visibleRightLabel));
         $visibleLeftLabel = $this->clipContentToWidth($leftLabel, $remainingWidth);
-        $fillerWidth = max(0, $availableLabelWidth - mb_strlen($visibleLeftLabel) - mb_strlen($visibleRightLabel));
+        $fillerWidth = max(
+            0,
+            $availableLabelWidth - $this->getDisplayWidth($visibleLeftLabel) - $this->getDisplayWidth($visibleRightLabel),
+        );
 
         return $this->borderPack->bottomLeft
             . $this->borderPack->horizontal

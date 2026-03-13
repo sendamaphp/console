@@ -105,6 +105,8 @@ final class ProjectNormalizer
             );
         }
 
+        $loadedScenes = $this->resolveLoadedScenes($assetsDirectory);
+
         $this->ensureFile(
             Path::join($this->projectRoot, 'sendama.json'),
             self::buildSendamaConfiguration(
@@ -112,6 +114,7 @@ final class ProjectNormalizer
                 description: $projectMetadata['description'],
                 version: $projectMetadata['version'],
                 mainFile: $projectMetadata['main'],
+                loadedScenes: $loadedScenes,
             ),
             'Created sendama.json.',
             $changes,
@@ -153,12 +156,23 @@ final class ProjectNormalizer
         string $description = 'A 2D ASCII terminal game.',
         string $version = '0.0.1',
         string $mainFile = 'main.php',
+        array $loadedScenes = [],
+        float $consoleRefreshInterval = 5.0,
     ): string {
         return json_encode([
             'name' => $projectName,
             'description' => $description,
             'version' => $version,
             'main' => $mainFile,
+            'editor' => [
+                'scenes' => [
+                    'active' => 0,
+                    'loaded' => array_values($loadedScenes),
+                ],
+                'console' => [
+                    'refreshInterval' => $consoleRefreshInterval,
+                ],
+            ],
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
     }
 
@@ -248,6 +262,27 @@ final class ProjectNormalizer
         }
 
         return $defaultMetadata;
+    }
+
+    /**
+     * @param string $assetsDirectory
+     * @return string[]
+     */
+    private function resolveLoadedScenes(string $assetsDirectory): array
+    {
+        $sceneDirectory = Path::join($assetsDirectory, 'Scenes');
+
+        if (!is_dir($sceneDirectory)) {
+            return [];
+        }
+
+        $sceneFiles = glob(Path::join($sceneDirectory, '*.scene.php')) ?: [];
+        sort($sceneFiles);
+
+        return array_map(
+            static fn(string $sceneFile) => 'Scenes/' . basename($sceneFile),
+            $sceneFiles,
+        );
     }
 
     private function guessProjectName(): string

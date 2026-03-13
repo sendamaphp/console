@@ -1,6 +1,7 @@
 <?php
 
 use Sendama\Console\Commands\GenerateScene;
+use Sendama\Console\Commands\GeneratePrefab;
 use Sendama\Console\Commands\GenerateScript;
 use Sendama\Console\Commands\GenerateTexture;
 use Sendama\Console\Commands\NewGame;
@@ -88,6 +89,18 @@ test('new game composer configuration uses Assets autoload path', function () {
     expect($configuration['autoload']['psr-4']['SendamaEngine\\TestGame\\'])->toBe('Assets/');
 });
 
+test('new game project configuration includes editor defaults for the Level scene and console refresh', function () {
+    $command = new NewGame();
+    $method = new ReflectionMethod(NewGame::class, 'getProjectConfiguration');
+    $method->setAccessible(true);
+
+    $configuration = json_decode($method->invoke($command, 'Test Game'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($configuration['editor']['scenes']['active'])->toBe(0);
+    expect($configuration['editor']['scenes']['loaded'])->toBe(['Scenes/Level.scene.php']);
+    expect($configuration['editor']['console']['refreshInterval'])->toBe(5);
+});
+
 test('new game creates an Assets directory', function () {
     $workspace = sys_get_temp_dir() . '/sendama-new-game-assets-' . uniqid();
     mkdir($workspace, 0777, true);
@@ -128,6 +141,46 @@ test('new game creates configuration json content for new projects', function ()
     expect($configuration['project']['main'])->toBe('test-game.php');
 });
 
+test('new game creates a default Level scene metadata file', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-new-game-scene-' . uniqid();
+    mkdir($workspace, 0777, true);
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+
+    $command = new NewGame();
+    $property = new ReflectionProperty(NewGame::class, 'targetDirectory');
+    $property->setAccessible(true);
+    $property->setValue($command, $workspace);
+
+    $method = new ReflectionMethod(NewGame::class, 'createDefaultSceneFile');
+    $method->setAccessible(true);
+    $method->invoke($command, $workspace . '/Assets');
+
+    $sceneContents = file_get_contents($workspace . '/Assets/Scenes/Level.scene.php');
+
+    expect(is_file($workspace . '/Assets/Scenes/Level.scene.php'))->toBeTrue();
+    expect($sceneContents)->toContain('"environmentTileMapPath" => "Maps/example"');
+    expect($sceneContents)->toContain('"position" => ["x" => 0, "y" => 0]');
+});
+
+test('new game main template loads the default Level scene metadata file', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-new-game-main-' . uniqid();
+    mkdir($workspace, 0777, true);
+
+    $command = new NewGame();
+    $property = new ReflectionProperty(NewGame::class, 'targetDirectory');
+    $property->setAccessible(true);
+    $property->setValue($command, $workspace);
+
+    $method = new ReflectionMethod(NewGame::class, 'createMainFile');
+    $method->setAccessible(true);
+    $method->invoke($command, 'Test Game');
+
+    $mainContents = file_get_contents($workspace . '/' . basename($workspace) . '.php');
+
+    expect($mainContents)->toContain("loadScenes('Scenes/Level')");
+    expect($mainContents)->not->toContain('ExampleScene');
+});
+
 test('generate script creates files under Assets', function () {
     $workspace = createCliAssetsWorkspace();
     $exitCode = runGeneratorCommandInWorkspace(
@@ -162,6 +215,41 @@ test('generate scene creates files under Assets', function () {
 
     expect($exitCode)->toBe(0);
     expect(is_file($workspace . '/Assets/Scenes/level01.scene.php'))->toBeTrue();
+});
+
+test('generate prefab creates metadata prefab files under Assets', function () {
+    $workspace = createCliAssetsWorkspace();
+    $exitCode = runGeneratorCommandInWorkspace(
+        new GeneratePrefab(),
+        $workspace,
+        ['name' => 'enemy'],
+    );
+
+    $prefabPath = $workspace . '/Assets/Prefabs/enemy.prefab.php';
+    $prefabContents = file_get_contents($prefabPath);
+
+    expect($exitCode)->toBe(0);
+    expect(is_file($prefabPath))->toBeTrue();
+    expect($prefabContents)->toContain("'type' => GameObject::class");
+    expect($prefabContents)->toContain("'name' => 'Enemy'");
+});
+
+test('generate prefab can create ui element prefab metadata', function () {
+    $workspace = createCliAssetsWorkspace();
+    $exitCode = runGeneratorCommandInWorkspace(
+        new GeneratePrefab(),
+        $workspace,
+        ['name' => 'score-label', '--kind' => 'label'],
+    );
+
+    $prefabPath = $workspace . '/Assets/Prefabs/score-label.prefab.php';
+    $prefabContents = file_get_contents($prefabPath);
+
+    expect($exitCode)->toBe(0);
+    expect(is_file($prefabPath))->toBeTrue();
+    expect($prefabContents)->toContain("'type' => Label::class");
+    expect($prefabContents)->toContain("'tag' => 'UI'");
+    expect($prefabContents)->toContain("'text' => 'Score Label'");
 });
 
 test('working directory assets path prefers Assets', function () {

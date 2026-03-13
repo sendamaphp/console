@@ -75,8 +75,10 @@ class ConsolePanel extends Widget
 
     public function append(string $message): void
     {
-        $tabTitle = $this->resolveSessionTabTitle($message);
-        $this->sessionMessagesByTab[$tabTitle][] = $message;
+        $timestamp = date(DATE_ATOM);
+        $timestampedMessage = "[$timestamp] $message";
+        $tabTitle = $this->resolveSessionTabTitle($timestampedMessage);
+        $this->sessionMessagesByTab[$tabTitle][] = $timestampedMessage;
 
         if ($tabTitle !== $this->getActiveTab()) {
             return;

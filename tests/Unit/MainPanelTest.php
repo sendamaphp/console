@@ -160,6 +160,47 @@ test('main panel renders the environment tile map behind scene objects', functio
     expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x a x')))->toBeTrue();
 });
 
+test('main panel preserves scene row width when a sprite uses a wide multibyte glyph', function () {
+    $workspace = createMainPanelWorkspace();
+    file_put_contents($workspace . '/Assets/Textures/enemy.texture', "👾\n");
+
+    $panel = new MainPanel(
+        width: 24,
+        height: 10,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+        environmentTileMapPath: 'Maps/level',
+    );
+
+    $buildSceneCanvasContent = new ReflectionMethod(MainPanel::class, 'buildSceneCanvasContent');
+    $buildSceneCanvasContent->setAccessible(true);
+    $sceneRows = $buildSceneCanvasContent->invoke($panel);
+
+    expect($sceneRows[1])->toContain('👾');
+    expect(mb_strwidth($sceneRows[1], 'UTF-8'))->toBe(mb_strlen($sceneRows[1]) + 1);
+    expect(rtrim($sceneRows[1]))->toEndWith('x');
+
+    $buildRenderedContentLines = new ReflectionMethod($panel, 'buildRenderedContentLines');
+    $buildRenderedContentLines->setAccessible(true);
+    $renderedLines = $buildRenderedContentLines->invoke($panel);
+
+    expect(mb_strwidth($renderedLines[3], 'UTF-8'))->toBe(24);
+    expect(mb_substr($renderedLines[3], -1))->toBe('│');
+});
+
 test('main panel resolves scene textures from the configured project directory', function () {
     $workspace = createMainPanelWorkspace();
     $originalWorkingDirectory = getcwd();
@@ -920,6 +961,33 @@ test('main panel sprite tab can insert a special character from the character pi
 
     expect($panel->hasActiveModal())->toBeFalse();
     expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("█bcd\n");
+});
+
+test('main panel sprite tab repeats the last printed special character when enter is pressed', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+
+    pressMainPanelKey('@');
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    pressMainPanelKey("\n");
+    $panel->update();
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("██cd\n");
 });
 
 test('main panel sprite tab shows the cursor column x row position in the help line', function () {

@@ -98,6 +98,11 @@ class InspectorPanel extends Widget
 
     public function inspectTarget(?array $target): void
     {
+        $preserveSelectedControl = $this->shouldPreserveSelectedControl($this->inspectionTarget, $target);
+        $selectedControlSnapshot = $preserveSelectedControl
+            ? $this->captureSelectedControlSnapshot($this->getSelectedControl())
+            : [];
+
         $this->inspectionTarget = $target;
         $this->elements = [];
         $this->focusableControls = [];
@@ -143,6 +148,10 @@ class InspectorPanel extends Widget
         if ($this->focusableControls !== []) {
             $this->selectedControlIndex = 0;
             $this->applyControlSelection();
+        }
+
+        if ($preserveSelectedControl) {
+            $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
         }
 
         $this->refreshContent();
@@ -252,6 +261,7 @@ class InspectorPanel extends Widget
             : null;
         $shouldPreserveComponentMoveMode = $this->isComponentMoveModeActive
             && $this->isSelectedComponentHeader($selectedControl);
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($selectedControl);
 
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Object');
@@ -268,6 +278,8 @@ class InspectorPanel extends Widget
             if ($componentCount > 0) {
                 $this->focusComponentHeaderByIndex(min($selectedComponentIndex, $componentCount - 1));
             }
+        } else {
+            $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
         }
 
         if ($shouldPreserveComponentMoveMode) {
@@ -285,6 +297,7 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($this->getSelectedControl());
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Scene');
         $target['type'] = 'Scene';
@@ -292,6 +305,7 @@ class InspectorPanel extends Widget
         $target['value'] = $value;
 
         $this->inspectTarget($target);
+        $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
     }
 
     public function syncAssetTarget(array $value): void
@@ -303,12 +317,14 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $selectedControlSnapshot = $this->captureSelectedControlSnapshot($this->getSelectedControl());
         $target = $this->inspectionTarget;
         $target['name'] = $value['name'] ?? ($target['name'] ?? 'Unnamed Asset');
         $target['type'] = ($value['isDirectory'] ?? false) ? 'Folder' : 'File';
         $target['value'] = $value;
 
         $this->inspectTarget($target);
+        $this->restoreSelectedControlSnapshot($selectedControlSnapshot);
     }
 
     public function cycleFocusForward(): bool
@@ -530,13 +546,23 @@ class InspectorPanel extends Widget
         );
         $this->addBoundControl(
             new PathInputControl(
-                'Environment Tile Map',
+                'Map',
                 $scene['environmentTileMapPath'] ?? 'Maps/example',
                 $this->resolveAssetsWorkingDirectory(),
                 ['tmap'],
                 0,
             ),
             ['environmentTileMapPath'],
+        );
+        $this->addBoundControl(
+            new PathInputControl(
+                'Collider',
+                $scene['environmentCollisionMapPath'] ?? '',
+                $this->resolveAssetsWorkingDirectory(),
+                ['tmap'],
+                0
+            ),
+            ['environmentCollisionMapPath']
         );
     }
 
@@ -897,9 +923,12 @@ class InspectorPanel extends Widget
     {
         $availableLabelWidth = max(0, $this->width - 3);
         $visibleRightLabel = $this->clipContentToWidth($rightLabel, $availableLabelWidth);
-        $remainingWidth = max(0, $availableLabelWidth - mb_strlen($visibleRightLabel));
+        $remainingWidth = max(0, $availableLabelWidth - $this->getDisplayWidth($visibleRightLabel));
         $visibleLeftLabel = $this->clipContentToWidth($leftLabel, $remainingWidth);
-        $fillerWidth = max(0, $availableLabelWidth - mb_strlen($visibleLeftLabel) - mb_strlen($visibleRightLabel));
+        $fillerWidth = max(
+            0,
+            $availableLabelWidth - $this->getDisplayWidth($visibleLeftLabel) - $this->getDisplayWidth($visibleRightLabel),
+        );
 
         return $this->borderPack->bottomLeft
             . $this->borderPack->horizontal
@@ -1960,6 +1989,119 @@ PHP;
         return $this->controlMetadata[spl_object_id($control)] ?? [];
     }
 
+    private function captureSelectedControlSnapshot(?InputControl $control): array
+    {
+        if (!$control instanceof InputControl) {
+            return [];
+        }
+
+        $snapshot = [
+            'class' => $control::class,
+            'label' => $control->getLabel(),
+        ];
+        $bindingPath = $this->controlBindings[spl_object_id($control)] ?? null;
+        $metadata = $this->getSelectedControlMetadata($control);
+
+        if (is_array($bindingPath) && $bindingPath !== []) {
+            $snapshot['bindingPath'] = $bindingPath;
+        }
+
+        if ($metadata !== []) {
+            $snapshot['metadata'] = $metadata;
+        }
+
+        return $snapshot;
+    }
+
+    private function shouldPreserveSelectedControl(?array $currentTarget, ?array $nextTarget): bool
+    {
+        return $this->resolveInspectionIdentity($currentTarget) !== null
+            && $this->resolveInspectionIdentity($currentTarget) === $this->resolveInspectionIdentity($nextTarget);
+    }
+
+    private function resolveInspectionIdentity(?array $target): ?string
+    {
+        if (!is_array($target)) {
+            return null;
+        }
+
+        $context = $target['context'] ?? null;
+
+        if (!is_string($context) || $context === '') {
+            return null;
+        }
+
+        $path = $target['path'] ?? null;
+
+        if (is_string($path) && $path !== '') {
+            return $context . ':' . $path;
+        }
+
+        $value = $target['value'] ?? null;
+        $valuePath = is_array($value) ? ($value['path'] ?? null) : null;
+
+        if (is_string($valuePath) && $valuePath !== '') {
+            return $context . ':' . $valuePath;
+        }
+
+        $name = $target['name'] ?? null;
+
+        if (is_string($name) && $name !== '') {
+            return $context . ':' . $name;
+        }
+
+        return null;
+    }
+
+    private function restoreSelectedControlSnapshot(array $snapshot): bool
+    {
+        if ($snapshot === [] || $this->focusableControls === []) {
+            return false;
+        }
+
+        $bindingPath = $snapshot['bindingPath'] ?? null;
+
+        if (is_array($bindingPath) && $bindingPath !== []) {
+            foreach ($this->focusableControls as $index => $control) {
+                $candidateBindingPath = $this->controlBindings[spl_object_id($control)] ?? null;
+
+                if ($candidateBindingPath === $bindingPath) {
+                    $this->selectControlByIndex($index);
+                    return true;
+                }
+            }
+        }
+
+        $metadata = $snapshot['metadata'] ?? null;
+
+        if (is_array($metadata) && $metadata !== []) {
+            foreach ($this->focusableControls as $index => $control) {
+                $candidateMetadata = $this->getSelectedControlMetadata($control);
+
+                if ($candidateMetadata === $metadata) {
+                    $this->selectControlByIndex($index);
+                    return true;
+                }
+            }
+        }
+
+        $label = $snapshot['label'] ?? null;
+        $class = $snapshot['class'] ?? null;
+
+        if (!is_string($label) || $label === '' || !is_string($class) || $class === '') {
+            return false;
+        }
+
+        foreach ($this->focusableControls as $index => $control) {
+            if ($control instanceof $class && $control->getLabel() === $label) {
+                $this->selectControlByIndex($index);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function isSelectedComponentHeader(?InputControl $control): bool
     {
         if (!$control instanceof SectionControl) {
@@ -2126,12 +2268,21 @@ PHP;
                 ($metadata['kind'] ?? null) === 'component_header'
                 && ($metadata['componentIndex'] ?? null) === $componentIndex
             ) {
-                $this->selectedControlIndex = $index;
-                $this->applyControlSelection();
-                $this->refreshContent();
+                $this->selectControlByIndex($index);
                 return;
             }
         }
+    }
+
+    private function selectControlByIndex(int $index): void
+    {
+        if (!isset($this->focusableControls[$index])) {
+            return;
+        }
+
+        $this->selectedControlIndex = $index;
+        $this->applyControlSelection();
+        $this->refreshContent();
     }
 
     private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array

@@ -8,6 +8,7 @@ use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Console\Console;
 use Atatusoft\Termutil\UI\Windows\Window;
 use Sendama\Console\Commands\GenerateEvent;
+use Sendama\Console\Commands\GeneratePrefab;
 use Sendama\Console\Commands\GenerateScene;
 use Sendama\Console\Commands\GenerateScript;
 use Sendama\Console\Commands\GenerateTexture;
@@ -226,7 +227,8 @@ final class Editor implements ObservableInterface
 
         Console::saveSettings();
 
-        Console::setName($this->gameSettings?->name ?? "Sendama Editor | Unknown Game");
+        $terminalTitle = "Sendama Editor | ";
+        Console::setName($terminalTitle . ($this->gameSettings?->name ?? "Unknown Game"));
 
         Console::setSize($this->terminalWidth, $this->terminalHeight);
 
@@ -1062,7 +1064,13 @@ final class Editor implements ObservableInterface
         } elseif (($selectedItem['context'] ?? null) === 'scene') {
             $this->hierarchyPanel->selectPath('scene');
         } elseif (($selectedItem['context'] ?? null) === 'asset') {
-            $this->mainPanel->loadSpriteAsset(is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null);
+            $asset = is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null;
+
+            if (($selectedItem['openInMainPanel'] ?? false) === true && $this->isEditableSpriteAsset($asset)) {
+                $this->mainPanel->loadSpriteAsset($asset);
+                $this->mainPanel->selectTab('Sprite');
+                $this->setFocusedPanel($this->mainPanel);
+            }
         }
 
         $this->inspectorPanel->inspectTarget($selectedItem);
@@ -1474,6 +1482,10 @@ final class Editor implements ObservableInterface
                 'command' => GenerateScene::class,
                 'baseName' => 'new-scene',
             ],
+            'prefab' => [
+                'command' => GeneratePrefab::class,
+                'baseName' => 'new-prefab',
+            ],
             'texture' => [
                 'command' => GenerateTexture::class,
                 'baseName' => 'new-texture',
@@ -1702,7 +1714,7 @@ final class Editor implements ObservableInterface
             : $this->buildRelativeAssetPath($currentAbsolutePath);
         $newRelativePath = $this->buildRelativeAssetPath($targetAbsolutePath);
 
-        if (!$this->synchronizeScriptClassNameWithFileRename($targetAbsolutePath, $oldRelativePath, $newRelativePath)) {
+        if (!$this->synchronizePhpAssetClassNameWithFileRename($targetAbsolutePath, $oldRelativePath, $newRelativePath)) {
             if (
                 $targetAbsolutePath !== $currentAbsolutePath
                 && is_file($targetAbsolutePath)
@@ -1734,12 +1746,15 @@ final class Editor implements ObservableInterface
         ];
     }
 
-    private function synchronizeScriptClassNameWithFileRename(
+    private function synchronizePhpAssetClassNameWithFileRename(
         string $targetAbsolutePath,
         string $oldRelativePath,
         string $newRelativePath,
     ): bool {
-        if (!$this->isScriptAssetPath($oldRelativePath) && !$this->isScriptAssetPath($newRelativePath)) {
+        if (
+            !$this->isPhpClassBackedAssetPath($oldRelativePath)
+            && !$this->isPhpClassBackedAssetPath($newRelativePath)
+        ) {
             return true;
         }
 
@@ -1750,7 +1765,7 @@ final class Editor implements ObservableInterface
         $source = file_get_contents($targetAbsolutePath);
 
         if (!is_string($source) || $source === '') {
-            $this->consolePanel->append('[ERROR] - Failed to update the renamed script source.');
+            $this->consolePanel->append('[ERROR] - Failed to update the renamed asset source.');
             return false;
         }
 
@@ -1758,7 +1773,7 @@ final class Editor implements ObservableInterface
         $newClassName = $this->derivePhpAssetClassNameFromRelativePath($newRelativePath);
 
         if ($newClassName === '') {
-            $this->consolePanel->append('[ERROR] - Failed to derive the renamed script class name.');
+            $this->consolePanel->append('[ERROR] - Failed to derive the renamed asset class name.');
             return false;
         }
 
@@ -1774,7 +1789,7 @@ final class Editor implements ObservableInterface
             );
 
             if (!is_string($updatedSource)) {
-                $this->consolePanel->append('[ERROR] - Failed to update the renamed script class.');
+                $this->consolePanel->append('[ERROR] - Failed to update the renamed asset class.');
                 return false;
             }
 
@@ -1792,22 +1807,25 @@ final class Editor implements ObservableInterface
             );
 
             if (!is_string($updatedSource) || $updatedSource === $source) {
-                $this->consolePanel->append('[ERROR] - Failed to locate the script class declaration after rename.');
+                $this->consolePanel->append('[ERROR] - Failed to locate the asset class declaration after rename.');
                 return false;
             }
         }
 
         if (file_put_contents($targetAbsolutePath, $updatedSource) === false) {
-            $this->consolePanel->append('[ERROR] - Failed to write the renamed script source.');
+            $this->consolePanel->append('[ERROR] - Failed to write the renamed asset source.');
             return false;
         }
 
         return true;
     }
 
-    private function isScriptAssetPath(string $relativePath): bool
+    private function isPhpClassBackedAssetPath(string $relativePath): bool
     {
-        return str_starts_with(str_replace('\\', '/', $relativePath), 'Scripts/');
+        $normalizedPath = str_replace('\\', '/', $relativePath);
+
+        return str_starts_with($normalizedPath, 'Scripts/')
+            || str_starts_with($normalizedPath, 'Events/');
     }
 
     private function derivePhpAssetClassNameFromRelativePath(string $relativePath): string
@@ -1947,6 +1965,25 @@ final class Editor implements ObservableInterface
         ];
     }
 
+    private function isEditableSpriteAsset(?array $asset): bool
+    {
+        if (!is_array($asset) || ($asset['isDirectory'] ?? false)) {
+            return false;
+        }
+
+        $assetPath = is_string($asset['path'] ?? null)
+            ? $asset['path']
+            : (is_string($asset['relativePath'] ?? null) ? $asset['relativePath'] : null);
+
+        if (!is_string($assetPath) || $assetPath === '') {
+            return false;
+        }
+
+        $extension = strtolower((string) pathinfo($assetPath, PATHINFO_EXTENSION));
+
+        return in_array($extension, ['texture', 'tmap'], true);
+    }
+
     private function saveLoadedScene(): void
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
@@ -2015,9 +2052,9 @@ final class Editor implements ObservableInterface
         }
 
         if (is_string($value['environmentTileMapPath'] ?? null)) {
-            $this->loadedScene->environmentTileMapPath = trim($value['environmentTileMapPath']) !== ''
-                ? trim($value['environmentTileMapPath'])
-                : 'Maps/example';
+            $this->loadedScene->environmentTileMapPath = $this->normalizeEnvironmentTileMapPath(
+                $value['environmentTileMapPath']
+            );
         }
 
         $this->loadedScene->rawData['width'] = $this->loadedScene->width;
@@ -2039,6 +2076,21 @@ final class Editor implements ObservableInterface
             'height' => $this->loadedScene->height,
             'environmentTileMapPath' => $this->loadedScene->environmentTileMapPath,
         ];
+    }
+
+    private function normalizeEnvironmentTileMapPath(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return 'Maps/example';
+        }
+
+        $normalizedValue = trim(str_replace('\\', '/', $value));
+
+        if ($normalizedValue === '') {
+            return 'Maps/example';
+        }
+
+        return preg_replace('/\.tmap$/i', '', $normalizedValue) ?? $normalizedValue;
     }
 
     private function syncScenePanels(bool $isDirty): void

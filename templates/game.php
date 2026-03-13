@@ -4,7 +4,6 @@ require __DIR__ . '/vendor/autoload.php';
 
 use Sendama\Engine\Game;
 use Sendama\Engine\Core\Scenes\TitleScene;
-use Sendama\Engine\Core\Scenes\ExampleScene;
 
 function bootstrap(): void
 {
@@ -14,12 +13,9 @@ function bootstrap(): void
   $titleScene = new TitleScene('Title Screen');
   $titleScene->setTitle($gameName);
 
-  $game->addScenes(
-    $titleScene,
-    new ExampleScene('Level 01')
-  );
-
   $game
+    ->addScenes($titleScene)
+    ->loadScenes('Scenes/Level')
     ->loadSettings()
     ->run();
 }
