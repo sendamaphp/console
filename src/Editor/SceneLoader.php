@@ -388,6 +388,64 @@ function extract_component_serializable_data(object $component): array
     return $serializedData;
 }
 
+function extract_component_editor_field_types(object $component): array
+{
+    $fieldTypes = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        $resolvedType = resolve_property_type($property);
+
+        if ($resolvedType !== null) {
+            $fieldTypes[$property->getName()] = $resolvedType;
+        }
+    }
+
+    return $fieldTypes;
+}
+
+function resolve_property_type(ReflectionProperty $property): ?string
+{
+    $type = $property->getType();
+
+    if ($type instanceof ReflectionNamedType) {
+        $resolvedType = $type->getName();
+
+        if ($type->allowsNull() && $resolvedType !== 'null') {
+            return $resolvedType . '|null';
+        }
+
+        return $resolvedType;
+    }
+
+    if ($type instanceof ReflectionUnionType) {
+        $resolvedTypes = [];
+
+        foreach ($type->getTypes() as $namedType) {
+            if ($namedType instanceof ReflectionNamedType) {
+                $resolvedTypes[] = $namedType->getName();
+            }
+        }
+
+        $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+        return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+    }
+
+    return null;
+}
+
 function enrich_component_entry(mixed $component, array $item): mixed
 {
     if (!is_array($component)) {
@@ -398,6 +456,21 @@ function enrich_component_entry(mixed $component, array $item): mixed
     $defaultComponentData = is_string($componentClass) && $componentClass !== ''
         ? serialize_component_data($componentClass, $item)
         : null;
+    $defaultComponentFieldTypes = is_string($componentClass) && $componentClass !== ''
+        && class_exists($componentClass)
+        && class_exists('\Sendama\Engine\Core\Component')
+        && is_a($componentClass, '\Sendama\Engine\Core\Component', true)
+        && !empty($gameObject = build_dummy_game_object($item))
+        ? (function () use ($componentClass, $gameObject): array {
+            try {
+                $componentInstance = new $componentClass($gameObject);
+
+                return extract_component_editor_field_types($componentInstance);
+            } catch (Throwable) {
+                return [];
+            }
+        })()
+        : [];
 
     if (array_key_exists('data', $component)) {
         $existingComponentData = is_array($component['data'])
@@ -410,6 +483,10 @@ function enrich_component_entry(mixed $component, array $item): mixed
             $component['data'] = $existingComponentData;
         }
 
+        if ($defaultComponentFieldTypes !== []) {
+            $component['__editorFieldTypes'] = $defaultComponentFieldTypes;
+        }
+
         return $component;
     }
 
@@ -419,6 +496,10 @@ function enrich_component_entry(mixed $component, array $item): mixed
 
     if (is_array($defaultComponentData)) {
         $component['data'] = $defaultComponentData;
+    }
+
+    if ($defaultComponentFieldTypes !== []) {
+        $component['__editorFieldTypes'] = $defaultComponentFieldTypes;
     }
 
     return $component;

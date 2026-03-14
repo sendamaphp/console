@@ -63,6 +63,11 @@ These shortcuts work regardless of the currently focused panel unless a modal is
 - in `Assets`, it opens the create-asset workflow
 - in `Inspector`, it opens the add-component menu when a hierarchy object is loaded
 
+`Shift+E` is also panel-local:
+
+- in `Hierarchy`, it exports the selected object as a prefab into `Assets/Prefabs`, expands that folder, selects the new prefab, and opens it in the `Inspector`
+- in `Main > Scene`, it enters Pan Mode
+
 ## Panel List Modal
 
 Press `Shift+1` to open a modal listing all panels.
@@ -221,6 +226,7 @@ Controls:
 - `Left`: collapse an expanded node, or move to its parent
 - `Enter`: load the selected object into the Inspector
 - `Shift+A`: open the add-object workflow
+- `Shift+E`: create a prefab from the selected object and open it in the Inspector
 - `Delete`: open the delete confirmation dialog
 
 Selected rows are highlighted, and when the hierarchy has focus the selected row blinks.
@@ -228,6 +234,8 @@ Selected rows are highlighted, and when the hierarchy has focus the selected row
 ### Add Object Workflow
 
 Press `Shift+A` to add a new scene object while the editor is in edit mode.
+
+Press `Shift+E` on a selected hierarchy object to export that object to a `.prefab.php` file under `Assets/Prefabs`. The editor expands the `Prefabs` folder in `Assets`, selects the new prefab, and moves focus to the `Inspector`.
 
 Flow:
 
@@ -410,6 +418,18 @@ Controls:
 - `Enter`: commit the value
 - `Escape`: cancel the edit
 
+##### Prefab Reference
+
+For exposed component fields typed as `GameObject`, `Enter` opens a prefab picker instead of entering text edit.
+
+Controls:
+
+- `Up` / `Down`: choose a prefab
+- `Enter`: assign the selected prefab
+- `Escape`: cancel
+
+The stored value is the prefab asset path, for example `Prefabs/enemy.prefab.php`. When the scene metadata is loaded again, the Inspector resolves that path back to the referenced prefab.
+
 ### Current Hierarchy Inspection Layout
 
 For hierarchy objects, the Inspector currently renders:
@@ -424,6 +444,12 @@ For hierarchy objects, the Inspector currently renders:
 3. Script/component sections from the scene metadata
 
 Component headers are visually marked as collapsible sections.
+
+Exposed `GameObject` component fields are treated as prefab references:
+
+- pressing `Enter` on the field opens the prefab picker
+- choosing a prefab stores its relative prefab path in component `data`
+- the control displays the referenced prefab name when that metadata is loaded again
 
 ### Add Component Workflow
 
@@ -532,6 +558,7 @@ Current behavior:
 - when the console has focus and the editor is not in play mode, it supports scrolling
 - if no refresh interval is configured, the editor uses a default of `5` seconds
 - each tab can be filtered by log level with a modal picker
+- the `Debug` tab defaults to the `DEBUG` filter on startup
 
 Filter options:
 
@@ -554,6 +581,19 @@ Clear behavior:
 - after rotation, the active log file is cleared
 - on cancel, nothing changes and the Console panel returns to its normal state
 
+## Notifications
+
+Current behavior:
+
+- the editor now has a top-right snackbar for transient system notifications
+- it slides in from the right, stays visible for the configured duration, then slides back out to the right
+- status colors currently map as follows:
+  - `success`: green
+  - `error`: red
+  - `info`: blue
+  - `warn`: yellow
+- scene save success and failure currently use the snackbar
+
 The scroll stops:
 
 - at the beginning of the file
@@ -573,6 +613,9 @@ Configuration:
   "editor": {
     "console": {
       "refreshInterval": 5
+    },
+    "notifications": {
+      "duration": 4
     }
   }
 }

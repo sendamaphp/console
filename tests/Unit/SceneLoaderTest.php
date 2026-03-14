@@ -629,8 +629,118 @@ PHP
                 'maxBullets' => 10,
                 'bulletTexture' => null,
             ],
+            '__editorFieldTypes' => [
+                'fireRate' => 'float',
+                'maxBullets' => 'int',
+                'bulletTexture' => 'Sendama\\Engine\\Core\\Texture|null',
+            ],
         ],
     ]);
+});
+
+test('scene loader annotates GameObject component fields for prefab assignment', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-prefab-field-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class Component
+    {
+        public function __construct(private ?GameObject $gameObject = null)
+        {
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private ?Vector2 $position = null,
+            private ?Vector2 $rotation = null,
+            private ?Vector2 $scale = null,
+            private mixed $sprite = null,
+        ) {
+        }
+    }
+}
+
+namespace Sendama\Game\Scripts {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+
+    class Gun extends Component
+    {
+        public ?GameObject $bulletPrefab = null;
+        public int $maxBullets = 10;
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/Assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+use Sendama\Game\Scripts\Gun;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'components' => [
+                [
+                    'class' => Gun::class,
+                    'data' => [
+                        'bulletPrefab' => 'Prefabs/enemy.prefab.php',
+                    ],
+                ],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+    $component = $scene?->hierarchy[0]['components'][0] ?? null;
+
+    expect($component)->toBeArray()
+        ->and($component['data']['bulletPrefab'] ?? null)->toBe('Prefabs/enemy.prefab.php')
+        ->and($component['__editorFieldTypes']['bulletPrefab'] ?? null)->toBe('Sendama\\Engine\\Core\\GameObject|null');
 });
 
 test('scene loader falls back to the first available scene when none is configured', function () {

@@ -8,6 +8,7 @@ use Sendama\Console\Util\Path;
 class EditorSettings
 {
     public const float DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS = 5.0;
+    public const float DEFAULT_NOTIFICATION_DURATION_SECONDS = 4.0;
 
     protected(set) int $width {
         get {
@@ -27,6 +28,7 @@ class EditorSettings
     public function __construct(
         public readonly EditorSceneSettings $scenes,
         public readonly float $consoleRefreshIntervalSeconds = self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS,
+        public readonly float $notificationDurationSeconds = self::DEFAULT_NOTIFICATION_DURATION_SECONDS,
     )
     {
         $terminalSize = get_max_terminal_size();
@@ -71,28 +73,33 @@ class EditorSettings
         $editorData = is_array($data['editor'] ?? null) ? $data['editor'] : $data;
         $scenesData = $editorData['scenes'] ?? $data['scenes'] ?? [];
         $consoleData = is_array($editorData['console'] ?? null) ? $editorData['console'] : [];
+        $notificationData = is_array($editorData['notifications'] ?? null) ? $editorData['notifications'] : [];
         $refreshInterval = $consoleData['refreshInterval']
             ?? $editorData['consoleRefreshInterval']
             ?? self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+        $notificationDuration = $notificationData['duration']
+            ?? $editorData['notificationDuration']
+            ?? self::DEFAULT_NOTIFICATION_DURATION_SECONDS;
 
         return new self(
             scenes: EditorSceneSettings::fromArray(is_array($scenesData) ? $scenesData : []),
-            consoleRefreshIntervalSeconds: self::normalizeRefreshInterval($refreshInterval),
+            consoleRefreshIntervalSeconds: self::normalizePositiveFloat($refreshInterval, self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS),
+            notificationDurationSeconds: self::normalizePositiveFloat($notificationDuration, self::DEFAULT_NOTIFICATION_DURATION_SECONDS),
         );
     }
 
-    private static function normalizeRefreshInterval(mixed $refreshInterval): float
+    private static function normalizePositiveFloat(mixed $value, float $fallback): float
     {
-        if (!is_numeric($refreshInterval)) {
-            return self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+        if (!is_numeric($value)) {
+            return $fallback;
         }
 
-        $normalizedRefreshInterval = (float) $refreshInterval;
+        $normalizedValue = (float) $value;
 
-        if ($normalizedRefreshInterval <= 0) {
-            return self::DEFAULT_CONSOLE_REFRESH_INTERVAL_SECONDS;
+        if ($normalizedValue <= 0) {
+            return $fallback;
         }
 
-        return $normalizedRefreshInterval;
+        return $normalizedValue;
     }
 }

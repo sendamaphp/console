@@ -46,6 +46,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
     protected ?array $pendingInspectionItem = null;
     protected ?array $pendingCreationItem = null;
     protected ?array $pendingDeletionItem = null;
+    protected ?array $pendingPrefabCreationItem = null;
     protected OptionListModal $addObjectModal;
     protected OptionListModal $addUiElementModal;
     protected OptionListModal $deleteConfirmModal;
@@ -267,9 +268,38 @@ class HierarchyPanel extends Widget implements ObservableInterface
         return $pendingDeletionItem;
     }
 
+    public function consumePrefabCreationRequest(): ?array
+    {
+        $pendingPrefabCreationItem = $this->pendingPrefabCreationItem;
+        $this->pendingPrefabCreationItem = null;
+
+        return $pendingPrefabCreationItem;
+    }
+
     public function beginAddWorkflow(): void
     {
         $this->showAddObjectModal();
+    }
+
+    public function beginPrefabCreationWorkflow(): void
+    {
+        $selectedNode = $this->getSelectedVisibleNode();
+
+        if (($selectedNode['kind'] ?? null) !== 'object') {
+            return;
+        }
+
+        $selectedItem = $selectedNode['item'] ?? null;
+
+        if (!is_array($selectedItem)) {
+            return;
+        }
+
+        $this->pendingPrefabCreationItem = [
+            'path' => $selectedNode['path'] ?? null,
+            'name' => $selectedItem['name'] ?? 'Prefab',
+            'value' => $selectedItem,
+        ];
     }
 
     public function hasActiveModal(): bool
@@ -360,6 +390,11 @@ class HierarchyPanel extends Widget implements ObservableInterface
 
         if (Input::getCurrentInput() === 'A') {
             $this->showAddObjectModal();
+            return;
+        }
+
+        if (Input::getCurrentInput() === 'E') {
+            $this->beginPrefabCreationWorkflow();
             return;
         }
 

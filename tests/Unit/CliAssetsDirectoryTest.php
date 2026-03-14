@@ -99,6 +99,7 @@ test('new game project configuration includes editor defaults for the Level scen
     expect($configuration['editor']['scenes']['active'])->toBe(0);
     expect($configuration['editor']['scenes']['loaded'])->toBe(['Scenes/Level.scene.php']);
     expect($configuration['editor']['console']['refreshInterval'])->toBe(5);
+    expect($configuration['editor']['notifications']['duration'])->toBe(4);
 });
 
 test('new game creates an Assets directory', function () {
@@ -116,6 +117,15 @@ test('new game creates an Assets directory', function () {
 
     expect($assetsDirectory)->toBe($workspace . '/Assets');
     expect(is_dir($workspace . '/Assets'))->toBeTrue();
+});
+
+test('asset root resolution prefers populated legacy assets over empty canonical Assets', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-root-resolution-' . uniqid();
+    mkdir($workspace . '/Assets/Prefabs', 0777, true);
+    mkdir($workspace . '/assets/Prefabs', 0777, true);
+    file_put_contents($workspace . '/assets/Prefabs/enemy.prefab.php', "<?php return ['name' => 'Enemy'];");
+
+    expect(Path::resolveAssetsDirectory($workspace))->toBe($workspace . '/assets');
 });
 
 test('new game creates configuration json content for new projects', function () {

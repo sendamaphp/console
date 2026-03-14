@@ -158,6 +158,7 @@ final class ProjectNormalizer
         string $mainFile = 'main.php',
         array $loadedScenes = [],
         float $consoleRefreshInterval = 5.0,
+        float $notificationDuration = 4.0,
     ): string {
         return json_encode([
             'name' => $projectName,
@@ -171,6 +172,9 @@ final class ProjectNormalizer
                 ],
                 'console' => [
                     'refreshInterval' => $consoleRefreshInterval,
+                ],
+                'notifications' => [
+                    'duration' => $notificationDuration,
                 ],
             ],
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;

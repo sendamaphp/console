@@ -33,6 +33,7 @@ use Sendama\Console\Editor\Widgets\InspectorPanel;
 use Sendama\Console\Editor\Widgets\MainPanel;
 use Sendama\Console\Editor\Widgets\OptionListModal;
 use Sendama\Console\Editor\Widgets\PanelListModal;
+use Sendama\Console\Editor\Widgets\Snackbar;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
@@ -147,6 +148,7 @@ final class Editor implements ObservableInterface
     protected PrefabWriter $prefabWriter;
     protected ?ProjectNormalizer $projectNormalizer = null;
     protected array $projectDiscrepancies = [];
+    protected Snackbar $snackbar;
 
     /**
      * @param string $name
@@ -379,6 +381,8 @@ final class Editor implements ObservableInterface
             $this->refreshTerminalSize();
         }
 
+        $this->snackbar->update();
+
         if ($this->projectNormalizationModal?->isVisible()) {
             $this->handleProjectNormalizationModalInput();
             $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
@@ -403,6 +407,7 @@ final class Editor implements ObservableInterface
         $this->synchronizeAssetCreations();
         $this->synchronizeHierarchyDeletions();
         $this->synchronizeHierarchyAdditions();
+        $this->synchronizeHierarchyPrefabCreations();
         $this->synchronizeMainPanelSceneChanges();
         $this->synchronizeMainPanelAssetChanges();
         $this->synchronizeInspectorSceneChanges();
@@ -416,16 +421,26 @@ final class Editor implements ObservableInterface
     private function render(): void
     {
         $this->frameCount++;
+        $hasActiveSnackbar = $this->snackbar->hasActiveNotice();
+        $snackbarIsDirty = $this->snackbar->isDirty();
+        $shouldRefreshForSnackbar = $snackbarIsDirty;
+
         if ($this->projectNormalizationModal?->isVisible()) {
             $this->didRenderOverlayLastFrame = true;
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->projectNormalizationModal->isDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->projectNormalizationModal->isDirty() || $shouldRefreshForSnackbar) {
                 $this->projectNormalizationModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->projectNormalizationModal->markClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -436,13 +451,19 @@ final class Editor implements ObservableInterface
         if ($this->panelListModal->isVisible()) {
             $this->didRenderOverlayLastFrame = true;
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->panelListModal->isDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->panelListModal->isDirty() || $shouldRefreshForSnackbar) {
                 $this->panelListModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->panelListModal->markClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -458,13 +479,19 @@ final class Editor implements ObservableInterface
                 $this->shouldRefreshBackgroundUnderModal = true;
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty() || $shouldRefreshForSnackbar) {
                 $this->focusedPanel->renderActiveModal();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->focusedPanel->markModalClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -479,6 +506,14 @@ final class Editor implements ObservableInterface
 
         $this->shouldRefreshBackgroundUnderModal = false;
         $this->renderEditorFrame();
+
+        if ($hasActiveSnackbar) {
+            $this->snackbar->render();
+        }
+
+        if ($snackbarIsDirty || $hasActiveSnackbar) {
+            $this->snackbar->markClean();
+        }
 
         $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
     }
@@ -688,6 +723,7 @@ final class Editor implements ObservableInterface
             workingDirectory: $this->workingDirectory,
         );
         $this->inspectorPanel->setSceneHierarchy($this->loadedScene?->hierarchy ?? []);
+        $this->snackbar = new Snackbar($this->settings->notificationDurationSeconds);
 
         $this->panels->add($this->hierarchyPanel);
         $this->panels->add($this->assetsPanel);
@@ -875,6 +911,7 @@ final class Editor implements ObservableInterface
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->projectNormalizationModal?->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->focusedPanel?->syncModalLayout($this->terminalWidth, $this->terminalHeight);
+        $this->snackbar->syncLayout($this->terminalWidth, $this->terminalHeight);
     }
 
     private function handleProjectNormalizationModalInput(): void
@@ -1203,6 +1240,7 @@ final class Editor implements ObservableInterface
 
         if (!$this->prefabWriter->save($mutation['prefabPath'], $mutation['value'])) {
             $this->consolePanel->append('[ERROR] - Failed to save prefab ' . basename($mutation['prefabPath']) . '.');
+            $this->pushNotification('Failed to save prefab ' . basename($mutation['prefabPath']) . '.', 'error');
             return;
         }
 
@@ -1242,6 +1280,30 @@ final class Editor implements ObservableInterface
         $this->syncScenePanels(true);
         $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
         $this->mainPanel->selectSceneObject($newPath);
+    }
+
+    private function synchronizeHierarchyPrefabCreations(): void
+    {
+        $prefabCreationRequest = $this->hierarchyPanel->consumePrefabCreationRequest();
+
+        if (
+            !is_array($prefabCreationRequest)
+            || !is_array($prefabCreationRequest['value'] ?? null)
+        ) {
+            return;
+        }
+
+        $createdPrefabAsset = $this->createPrefabFromHierarchyObject($prefabCreationRequest['value']);
+
+        if (!is_array($createdPrefabAsset)) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($createdPrefabAsset['path']);
+        $this->assetsPanel->consumeInspectionRequest();
+        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdPrefabAsset, true));
+        $this->setFocusedPanel($this->inspectorPanel);
     }
 
     private function synchronizeHierarchyDeletions(): void
@@ -1538,6 +1600,53 @@ final class Editor implements ObservableInterface
         $this->consolePanel->append('[ERROR] - Failed to create asset after multiple attempts.');
 
         return null;
+    }
+
+    private function createPrefabFromHierarchyObject(array $item): ?array
+    {
+        $assetsDirectory = $this->assetsDirectoryPath;
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            $assetsDirectory = Path::resolveAssetsDirectory($this->workingDirectory);
+        }
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            $this->consolePanel->append('[ERROR] - Failed to resolve the assets directory for prefab export.');
+            $this->pushNotification('Failed to resolve the assets directory for prefab export.', 'error');
+            return null;
+        }
+
+        $prefabsDirectory = Path::join($assetsDirectory, 'Prefabs');
+
+        if (!is_dir($prefabsDirectory) && !@mkdir($prefabsDirectory, 0777, true) && !is_dir($prefabsDirectory)) {
+            $this->consolePanel->append('[ERROR] - Failed to create the Prefabs directory.');
+            $this->pushNotification('Failed to create the Prefabs directory.', 'error');
+            return null;
+        }
+
+        if (!isset($this->prefabWriter)) {
+            $this->prefabWriter = new PrefabWriter();
+        }
+
+        $prefabPath = $this->buildUniquePrefabPath($prefabsDirectory, $item['name'] ?? null);
+
+        if (!$this->prefabWriter->save($prefabPath, $item)) {
+            $this->consolePanel->append('[ERROR] - Failed to create prefab ' . basename($prefabPath) . '.');
+            $this->pushNotification('Failed to create prefab ' . basename($prefabPath) . '.', 'error');
+            return null;
+        }
+
+        $relativePath = $this->buildRelativeAssetPath($prefabPath);
+        $this->consolePanel->append('[INFO] - Created prefab ' . $relativePath . '.');
+        $this->pushNotification('Created prefab ' . basename($prefabPath) . '.', 'success');
+
+        return [
+            'name' => basename($prefabPath),
+            'path' => $prefabPath,
+            'relativePath' => $relativePath,
+            'isDirectory' => false,
+            'children' => [],
+        ];
     }
 
     private function resolveAssetCreationDefinition(string $kind): ?array
@@ -1972,6 +2081,31 @@ final class Editor implements ObservableInterface
         return ltrim(str_replace('\\', '/', (string) $relativePath), '/');
     }
 
+    private function buildUniquePrefabPath(string $prefabsDirectory, mixed $displayName): string
+    {
+        $baseName = is_string($displayName) ? trim($displayName) : '';
+        $baseName = $baseName !== '' ? to_kebab_case($baseName) : 'new-prefab';
+        $baseName = preg_replace('/[^A-Za-z0-9]+/', '-', $baseName) ?? $baseName;
+        $baseName = trim($baseName, '-');
+        $baseName = strtolower($baseName);
+        $baseName = $baseName !== '' ? $baseName : 'new-prefab';
+        $candidatePath = Path::join($prefabsDirectory, $baseName . '.prefab.php');
+
+        if (!file_exists($candidatePath)) {
+            return $candidatePath;
+        }
+
+        for ($index = 2; $index <= 200; $index++) {
+            $candidatePath = Path::join($prefabsDirectory, $baseName . '-' . $index . '.prefab.php');
+
+            if (!file_exists($candidatePath)) {
+                return $candidatePath;
+            }
+        }
+
+        return Path::join($prefabsDirectory, $baseName . '-' . uniqid() . '.prefab.php');
+    }
+
     private function updateSceneAssetReferences(string $oldRelativePath, string $newRelativePath): bool
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
@@ -2170,6 +2304,7 @@ final class Editor implements ObservableInterface
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
             $this->consolePanel->append('[INFO] - No scene loaded to save.');
+            $this->pushNotification('No scene loaded to save.', 'info');
             return;
         }
 
@@ -2203,12 +2338,14 @@ final class Editor implements ObservableInterface
             $this->loadedScene->sourceData = $snapshot;
             $this->syncScenePanels(false);
             $this->consolePanel->append('[INFO] - Saved scene ' . $this->loadedScene->name . '.scene.php');
+            $this->pushNotification('Saved scene ' . $this->loadedScene->name . '.scene.php', 'success');
             return;
         }
 
         $this->loadedScene->isDirty = $sceneWasDirty;
         $this->syncScenePanels($sceneWasDirty);
         $this->consolePanel->append('[ERROR] - Failed to save scene.');
+        $this->pushNotification('Failed to save scene.', 'error');
     }
 
     private function applySceneMutation(array $value): bool
@@ -2315,6 +2452,11 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->setSceneHierarchy($this->loadedScene->hierarchy);
         $this->mainPanel->setSceneDimensions($this->loadedScene->width, $this->loadedScene->height);
         $this->mainPanel->setEnvironmentTileMapPath($this->loadedScene->environmentTileMapPath);
+    }
+
+    private function pushNotification(string $message, string $status = 'info'): void
+    {
+        $this->snackbar->enqueue($message, $status);
     }
 
     private function resolveTargetSceneSourcePath(DTOs\SceneDTO $scene): ?string

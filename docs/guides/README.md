@@ -20,20 +20,21 @@ Read these guides in order if you are learning the editor for the first time:
 - Browse the `Assets` tree.
 - Inspect scene roots, scene objects, and file assets.
 - Add top-level `GameObject`, `Text`, and `Label` entries to the active scene.
+- Export hierarchy objects as reusable prefabs.
 - Select visible objects directly in the Scene tab and move them with the keyboard.
 - Edit scene, transform, renderer, text, and serialized component fields in the Inspector.
-- Add components to hierarchy objects from the Inspector.
-- Create scripts, scenes, textures, tile maps, and events from the Assets panel.
+- Add, remove, and reorder components from the Inspector.
+- Create scripts, scenes, prefabs, textures, tile maps, and events from the Assets panel.
+- Inspect and edit prefab files from the editor.
 - Create, edit, rename, and delete `.texture` and `.tmap` assets.
 - Save the active scene back to its `.scene.php` source file.
-- Watch project logs from inside the editor.
+- Watch, filter, and clear project logs from inside the editor.
 
 ## What Still Happens Outside The Editor
 
 The editor is best used as part of a hybrid workflow. You will still use the CLI or code for some tasks:
 
 - Writing the PHP logic inside generated scripts, events, and engine classes.
-- Removing or reordering components after they have been added.
 - Reparenting hierarchy objects or creating new child objects under an existing object.
 - Running the full game runtime in a dedicated session.
 

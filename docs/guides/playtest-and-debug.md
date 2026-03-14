@@ -69,6 +69,11 @@ Tabs:
 
 On startup, each tab loads the last three lines from its log file if the file exists.
 
+Default filters:
+
+- `Debug` starts on the `DEBUG` filter
+- `Error` starts on `ALL`
+
 ## Console Controls
 
 | Key | Action |
@@ -78,6 +83,8 @@ On startup, each tab loads the last three lines from its log file if the file ex
 | `Up` | Scroll up when not in play state |
 | `Down` | Scroll down when not in play state |
 | `Shift+R` | Refresh the active tab manually when not in play state |
+| `Shift+F` | Open the log-level filter modal for the active tab |
+| `Shift+C` | Rotate and clear the active log file after confirmation |
 
 Tag colors:
 
@@ -85,6 +92,21 @@ Tag colors:
 - `[WARN]`: yellow
 - `[INFO]`: blue
 - `[DEBUG]`: light gray
+
+Filter options:
+
+- `Debug`: `ALL`, `DEBUG`, `INFO`, `WARN`, `ERROR`
+- `Error`: `ALL`, `ERROR`, `CRITICAL`, `FATAL`
+
+## Filtering And Clearing Logs
+
+Use `Shift+F` when the `Console` has focus to filter the active tab without leaving the editor.
+
+Use `Shift+C` when you want a clean log window for the next run:
+
+- confirm the modal to rotate the active file to the next backup, such as `debug.log.1`
+- the active log file is then cleared
+- cancel leaves the log file unchanged
 
 ## Auto Refresh
 
@@ -97,12 +119,25 @@ Example config:
   "editor": {
     "console": {
       "refreshInterval": 5
+    },
+    "notifications": {
+      "duration": 4
     }
   }
 }
 ```
 
 If you do not configure a value, the editor uses `5` seconds.
+
+## Notifications
+
+The editor also shows a top-right snackbar for transient system messages.
+
+Current behavior:
+
+- scene save success and failure use the snackbar
+- the display duration comes from `editor.notifications.duration`
+- if you do not configure it, the editor uses `4` seconds
 
 ## Recommended Debug Loop
 

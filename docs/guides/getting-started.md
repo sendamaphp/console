@@ -66,6 +66,9 @@ Example:
     },
     "console": {
       "refreshInterval": 5
+    },
+    "notifications": {
+      "duration": 4
     }
   }
 }

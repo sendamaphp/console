@@ -15,6 +15,9 @@ test('editor settings read scenes and console refresh interval from the editor s
             'console' => [
                 'refreshInterval' => 2.5,
             ],
+            'notifications' => [
+                'duration' => 6.0,
+            ],
         ],
     ]);
 
@@ -24,6 +27,7 @@ test('editor settings read scenes and console refresh interval from the editor s
         'Scenes/beta.scene.php',
     ]);
     expect($settings->consoleRefreshIntervalSeconds)->toBe(2.5);
+    expect($settings->notificationDurationSeconds)->toBe(6.0);
 });
 
 test('editor settings default the console refresh interval to five seconds', function () {
@@ -37,6 +41,7 @@ test('editor settings default the console refresh interval to five seconds', fun
     ]);
 
     expect($settings->consoleRefreshIntervalSeconds)->toBe(5.0);
+    expect($settings->notificationDurationSeconds)->toBe(4.0);
 });
 
 test('editor settings load editor config from sendama json', function () {
@@ -55,6 +60,9 @@ test('editor settings load editor config from sendama json', function () {
                 'console' => [
                     'refreshInterval' => 3,
                 ],
+                'notifications' => [
+                    'duration' => 4.5,
+                ],
             ],
         ], JSON_PRETTY_PRINT)
     );
@@ -63,6 +71,7 @@ test('editor settings load editor config from sendama json', function () {
 
     expect($settings->scenes->loaded)->toBe(['Scenes/level01.scene.php']);
     expect($settings->consoleRefreshIntervalSeconds)->toBe(3.0);
+    expect($settings->notificationDurationSeconds)->toBe(4.5);
 });
 
 test('editor settings fall back to defaults when sendama json is missing', function () {
@@ -74,6 +83,7 @@ test('editor settings fall back to defaults when sendama json is missing', funct
     expect($settings->scenes->loaded)->toBe([]);
     expect($settings->scenes->active)->toBe(0);
     expect($settings->consoleRefreshIntervalSeconds)->toBe(5.0);
+    expect($settings->notificationDurationSeconds)->toBe(4.0);
 });
 
 test('editor settings fall back to defaults when sendama json is invalid', function () {
@@ -85,4 +95,17 @@ test('editor settings fall back to defaults when sendama json is invalid', funct
 
     expect($settings->scenes->loaded)->toBe([]);
     expect($settings->consoleRefreshIntervalSeconds)->toBe(5.0);
+    expect($settings->notificationDurationSeconds)->toBe(4.0);
+});
+
+test('editor settings fall back to the notification default when notification duration is invalid', function () {
+    $settings = EditorSettings::fromArray([
+        'editor' => [
+            'notifications' => [
+                'duration' => 0,
+            ],
+        ],
+    ]);
+
+    expect($settings->notificationDurationSeconds)->toBe(4.0);
 });

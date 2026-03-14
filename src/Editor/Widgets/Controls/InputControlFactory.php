@@ -15,6 +15,19 @@ class InputControlFactory
         };
     }
 
+    public function createForFieldType(string $label, mixed $value, ?string $fieldType, int $indentLevel = 1): InputControl
+    {
+        if ($this->isVectorFieldType($fieldType)) {
+            return new VectorInputControl(
+                $label,
+                is_array($value) ? $value : ['x' => 0, 'y' => 0],
+                $indentLevel,
+            );
+        }
+
+        return $this->create($label, $value, $indentLevel);
+    }
+
     private function isVector(array $value): bool
     {
         if ($value === []) {
@@ -49,5 +62,19 @@ class InputControlFactory
             $value === null => 'None',
             default => (string) $value,
         };
+    }
+
+    private function isVectorFieldType(?string $fieldType): bool
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return false;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        return in_array('Sendama\\Engine\\Core\\Vector2', $normalizedTypes, true);
     }
 }

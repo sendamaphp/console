@@ -6,6 +6,7 @@ use Atatusoft\Termutil\IO\Enumerations\Color;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use ReflectionClass;
+use Sendama\Console\Editor\PrefabLoader;
 use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -16,6 +17,7 @@ use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
 use Sendama\Console\Editor\Widgets\Controls\NumberInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
+use Sendama\Console\Editor\Widgets\Controls\PrefabReferenceInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\SectionControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
@@ -28,6 +30,7 @@ class InspectorPanel extends Widget
     private const string STATE_CONTROL_EDIT = 'control_edit';
     private const string STATE_PATH_INPUT_ACTION_SELECTION = 'path_input_action_selection';
     private const string STATE_PATH_INPUT_FILE_DIALOG = 'path_input_file_dialog';
+    private const string STATE_PREFAB_REFERENCE_SELECTION = 'prefab_reference_selection';
     private const string SECTION_HEADER_SEQUENCE = "\033[30;47m";
     private const string SECTION_HEADER_SELECTED_SEQUENCE = "\033[30;104m";
     private const string SELECTED_CONTROL_SEQUENCE = "\033[30;46m";
@@ -60,7 +63,9 @@ class InspectorPanel extends Widget
     protected FileDialogModal $fileDialogModal;
     protected OptionListModal $addComponentModal;
     protected OptionListModal $deleteComponentModal;
+    protected OptionListModal $prefabReferenceModal;
     protected ?PathInputControl $activePathInputControl = null;
+    protected ?PrefabReferenceInputControl $activePrefabReferenceControl = null;
     protected array $controlBindings = [];
     protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
@@ -72,6 +77,7 @@ class InspectorPanel extends Widget
     protected ?array $cachedProjectComponentCandidates = null;
     protected bool $isComponentMoveModeActive = false;
     protected ?int $pendingComponentDeletionIndex = null;
+    protected array $prefabReferenceOptions = [];
     protected string $modeHelpLabel = '';
     protected bool $shouldRefreshModalBackground = false;
 
@@ -88,6 +94,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal = new FileDialogModal();
         $this->addComponentModal = new OptionListModal(title: 'Add Component');
         $this->deleteComponentModal = new OptionListModal(title: 'Remove Component');
+        $this->prefabReferenceModal = new OptionListModal(title: 'Choose Prefab');
         $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
             ? $workingDirectory
             : (getcwd() ?: '.');
@@ -118,7 +125,9 @@ class InspectorPanel extends Widget
         $this->fileDialogModal->hide();
         $this->addComponentModal->hide();
         $this->deleteComponentModal->hide();
+        $this->prefabReferenceModal->hide();
         $this->activePathInputControl = null;
+        $this->activePrefabReferenceControl = null;
         $this->controlBindings = [];
         $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
@@ -127,6 +136,7 @@ class InspectorPanel extends Widget
         $this->componentMenuDefinitions = [];
         $this->isComponentMoveModeActive = false;
         $this->pendingComponentDeletionIndex = null;
+        $this->prefabReferenceOptions = [];
 
         if ($target === null) {
             $this->content = [];
@@ -187,7 +197,8 @@ class InspectorPanel extends Widget
         return $this->pathInputActionModal->isVisible()
             || $this->fileDialogModal->isVisible()
             || $this->addComponentModal->isVisible()
-            || $this->deleteComponentModal->isVisible();
+            || $this->deleteComponentModal->isVisible()
+            || $this->prefabReferenceModal->isVisible();
     }
 
     public function isModalDirty(): bool
@@ -195,7 +206,8 @@ class InspectorPanel extends Widget
         return $this->pathInputActionModal->isDirty()
             || $this->fileDialogModal->isDirty()
             || $this->addComponentModal->isDirty()
-            || $this->deleteComponentModal->isDirty();
+            || $this->deleteComponentModal->isDirty()
+            || $this->prefabReferenceModal->isDirty();
     }
 
     public function markModalClean(): void
@@ -204,6 +216,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal->markClean();
         $this->addComponentModal->markClean();
         $this->deleteComponentModal->markClean();
+        $this->prefabReferenceModal->markClean();
     }
 
     public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
@@ -212,6 +225,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal->syncLayout($terminalWidth, $terminalHeight);
         $this->addComponentModal->syncLayout($terminalWidth, $terminalHeight);
         $this->deleteComponentModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->prefabReferenceModal->syncLayout($terminalWidth, $terminalHeight);
     }
 
     public function renderActiveModal(): void
@@ -230,6 +244,10 @@ class InspectorPanel extends Widget
 
         if ($this->deleteComponentModal->isVisible()) {
             $this->deleteComponentModal->render();
+        }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->prefabReferenceModal->render();
         }
     }
 
@@ -383,6 +401,11 @@ class InspectorPanel extends Widget
 
         if ($this->deleteComponentModal->isVisible()) {
             $this->handleDeleteComponentModalInput();
+            return;
+        }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->handlePrefabReferenceModalInput();
             return;
         }
 
@@ -710,6 +733,9 @@ class InspectorPanel extends Widget
             }
 
             $serializedComponentData = is_array($component['data'] ?? null) ? $component['data'] : null;
+            $componentFieldTypes = is_array($component['__editorFieldTypes'] ?? null)
+                ? $component['__editorFieldTypes']
+                : [];
 
             if (is_array($serializedComponentData)) {
                 $this->addControl(
@@ -724,6 +750,8 @@ class InspectorPanel extends Widget
                 $this->addComponentPropertyControls(
                     $serializedComponentData,
                     ['components', $componentIndex, 'data'],
+                    1,
+                    $componentFieldTypes,
                 );
                 continue;
             }
@@ -751,11 +779,18 @@ class InspectorPanel extends Widget
             $this->addComponentPropertyControls(
                 $legacyComponentData,
                 ['components', $componentIndex],
+                1,
+                $componentFieldTypes,
             );
         }
     }
 
-    private function addComponentPropertyControls(array $properties, array $basePath, int $indentLevel = 1): void
+    private function addComponentPropertyControls(
+        array $properties,
+        array $basePath,
+        int $indentLevel = 1,
+        array $fieldTypes = [],
+    ): void
     {
         foreach ($properties as $key => $value) {
             if (!is_string($key)) {
@@ -771,19 +806,62 @@ class InspectorPanel extends Widget
                     $value,
                     [...$basePath, $key],
                     $indentLevel + 1,
+                    is_array($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : [],
                 );
                 continue;
             }
 
             $this->addBoundControl(
-                $this->inputControlFactory->create(
+                $this->buildComponentPropertyControl(
                     $this->humanizeKey($key),
                     $value,
                     $indentLevel,
+                    is_string($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : null,
                 ),
                 [...$basePath, $key],
             );
         }
+    }
+
+    private function buildComponentPropertyControl(
+        string $label,
+        mixed $value,
+        int $indentLevel,
+        ?string $fieldType = null,
+    ): InputControl {
+        if ($this->isPrefabAssignableGameObjectField($fieldType)) {
+            return new PrefabReferenceInputControl(
+                $label,
+                $value,
+                $this->resolvePrefabDisplayLabelsByPath(),
+                $indentLevel,
+            );
+        }
+
+        return $this->inputControlFactory->createForFieldType($label, $value, $fieldType, $indentLevel);
+    }
+
+    private function isPrefabAssignableGameObjectField(?string $fieldType): bool
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return false;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        foreach ($normalizedTypes as $normalizedType) {
+            if (in_array($normalizedType, [
+                'Sendama\\Engine\\Core\\GameObject',
+                'Sendama\\Engine\\Core\\Interfaces\\GameObjectInterface',
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function shouldRenderNestedComponentProperties(mixed $value): bool
@@ -919,6 +997,12 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->help = 'Up/Down choose  Enter assign  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Prefab Picker';
+            return;
+        }
+
         if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
             $this->help = 'Up/Down choose  Enter select  Esc cancel';
             $this->modeHelpLabel = 'Mode: Path Action';
@@ -983,6 +1067,12 @@ class InspectorPanel extends Widget
 
         if ($selectedControl instanceof PathInputControl) {
             $this->help = 'Up/Down select  Enter path options  Tab next';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
+        if ($selectedControl instanceof PrefabReferenceInputControl) {
+            $this->help = 'Up/Down select  Enter choose prefab  Tab next';
             $this->modeHelpLabel = 'Mode: Control Select';
             return;
         }
@@ -1162,6 +1252,11 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($selectedControl instanceof PrefabReferenceInputControl) {
+            $this->showPrefabReferenceModal($selectedControl);
+            return;
+        }
+
         if ($selectedControl instanceof PathInputControl) {
             $this->showPathInputActionModal($selectedControl);
             return;
@@ -1290,6 +1385,7 @@ class InspectorPanel extends Widget
         $this->closePathInputModals();
         $this->closeAddComponentModal();
         $this->closeDeleteComponentModal();
+        $this->closePrefabReferenceModal();
         $selectedControl = $this->getSelectedControl();
 
         if ($selectedControl instanceof CompoundInputControl) {
@@ -1502,6 +1598,93 @@ class InspectorPanel extends Widget
         $this->activePathInputControl = null;
     }
 
+    private function showPrefabReferenceModal(PrefabReferenceInputControl $control): void
+    {
+        $this->activePrefabReferenceControl = $control;
+        $this->prefabReferenceOptions = $this->resolveAvailablePrefabOptions();
+        $options = ['None', ...array_keys($this->prefabReferenceOptions), 'Cancel'];
+        $selectedIndex = 0;
+        $currentValue = $control->getValue();
+
+        if (is_string($currentValue) && $currentValue !== '') {
+            foreach ($this->prefabReferenceOptions as $label => $definition) {
+                if (($definition['path'] ?? null) === $currentValue) {
+                    $optionIndex = array_search($label, $options, true);
+
+                    if (is_int($optionIndex)) {
+                        $selectedIndex = $optionIndex;
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        $this->prefabReferenceModal->show($options, $selectedIndex, 'Choose Prefab');
+        $this->interactionState = self::STATE_PREFAB_REFERENCE_SELECTION;
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
+    private function handlePrefabReferenceModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->prefabReferenceModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->prefabReferenceModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $selection = $this->prefabReferenceModal->getSelectedOption();
+
+        if (!$this->activePrefabReferenceControl instanceof PrefabReferenceInputControl) {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if ($selection === 'Cancel') {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        $nextValue = $selection === 'None'
+            ? null
+            : ($this->prefabReferenceOptions[$selection]['path'] ?? null);
+
+        $this->activePrefabReferenceControl->setValue($nextValue);
+        $this->applyControlValueToInspectionTarget($this->activePrefabReferenceControl);
+        $this->closePrefabReferenceModal();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
+    }
+
+    private function closePrefabReferenceModal(): void
+    {
+        $this->prefabReferenceModal->hide();
+        $this->activePrefabReferenceControl = null;
+        $this->prefabReferenceOptions = [];
+    }
+
     private function requestModalBackgroundRefresh(): void
     {
         $this->shouldRefreshModalBackground = true;
@@ -1617,6 +1800,7 @@ class InspectorPanel extends Widget
             $resolvedDefinitions[$label] = [
                 'class' => $componentClass,
                 'data' => is_array($definition['data'] ?? null) ? $definition['data'] : [],
+                'fieldTypes' => is_array($definition['fieldTypes'] ?? null) ? $definition['fieldTypes'] : [],
             ];
         }
 
@@ -1932,6 +2116,64 @@ function extract_component_serializable_data(object $component): array
     return $serializedData;
 }
 
+function extract_component_field_types(object $component): array
+{
+    $fieldTypes = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        $resolvedType = resolve_property_type($property);
+
+        if ($resolvedType !== null) {
+            $fieldTypes[$property->getName()] = $resolvedType;
+        }
+    }
+
+    return $fieldTypes;
+}
+
+function resolve_property_type(ReflectionProperty $property): ?string
+{
+    $type = $property->getType();
+
+    if ($type instanceof ReflectionNamedType) {
+        $resolvedType = $type->getName();
+
+        if ($type->allowsNull() && $resolvedType !== 'null') {
+            return $resolvedType . '|null';
+        }
+
+        return $resolvedType;
+    }
+
+    if ($type instanceof ReflectionUnionType) {
+        $resolvedTypes = [];
+
+        foreach ($type->getTypes() as $namedType) {
+            if ($namedType instanceof ReflectionNamedType) {
+                $resolvedTypes[] = $namedType->getName();
+            }
+        }
+
+        $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+        return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+    }
+
+    return null;
+}
+
 function serialize_component_data(string $componentClass, array $item): ?array
 {
     if (
@@ -2006,6 +2248,15 @@ foreach ((array) $candidateClasses as $candidateClass) {
         'class' => $candidateClass,
         'label' => short_class_name($candidateClass),
         'data' => serialize_component_data($candidateClass, is_array($item) ? $item : []) ?? [],
+        'fieldTypes' => is_object($gameObject = build_dummy_game_object(is_array($item) ? $item : []))
+            ? (function () use ($candidateClass, $gameObject): array {
+                try {
+                    return extract_component_field_types(new $candidateClass($gameObject));
+                } catch (Throwable) {
+                    return [];
+                }
+            })()
+            : [],
     ];
 }
 
@@ -2091,6 +2342,10 @@ PHP;
 
         if (array_key_exists('data', $componentDefinition) && is_array($componentDefinition['data'])) {
             $componentEntry['data'] = $componentDefinition['data'];
+        }
+
+        if (array_key_exists('fieldTypes', $componentDefinition) && is_array($componentDefinition['fieldTypes'])) {
+            $componentEntry['__editorFieldTypes'] = $componentDefinition['fieldTypes'];
         }
 
         $inspectionValue['components'][] = $componentEntry;
@@ -2523,6 +2778,118 @@ PHP;
         return null;
     }
 
+    private function resolvePrefabDisplayLabelsByPath(): array
+    {
+        $displayLabelsByPath = [];
+
+        foreach ($this->resolveAvailablePrefabOptions() as $prefabOption) {
+            $path = $prefabOption['path'] ?? null;
+            $label = $prefabOption['display'] ?? null;
+
+            if (is_string($path) && $path !== '' && is_string($label) && $label !== '') {
+                $displayLabelsByPath[$path] = $label;
+            }
+        }
+
+        return $displayLabelsByPath;
+    }
+
+    private function resolveAvailablePrefabOptions(): array
+    {
+        $prefabsDirectory = Path::join($this->resolveAssetsWorkingDirectory(), 'Prefabs');
+
+        if (!is_dir($prefabsDirectory)) {
+            return [];
+        }
+
+        $prefabLoader = new PrefabLoader($this->projectDirectory);
+        $prefabOptions = [];
+        $usedLabels = [];
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($prefabsDirectory, RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+
+            $fileName = $file->getFilename();
+
+            if (!is_string($fileName) || !str_ends_with(strtolower($fileName), '.prefab.php')) {
+                continue;
+            }
+
+            $absolutePath = $file->getPathname();
+            $relativePath = $this->buildRelativePrefabPath($absolutePath);
+
+            if ($relativePath === null) {
+                continue;
+            }
+
+            $prefabData = $prefabLoader->load($absolutePath);
+            $displayName = is_array($prefabData) && is_string($prefabData['name'] ?? null) && $prefabData['name'] !== ''
+                ? $prefabData['name']
+                : basename($relativePath);
+            $displayLabel = $this->buildUniquePrefabOptionLabel(
+                $displayName,
+                basename($relativePath),
+                $usedLabels,
+            );
+
+            $prefabOptions[$displayLabel] = [
+                'path' => $relativePath,
+                'display' => $displayLabel,
+                'name' => $displayName,
+            ];
+        }
+
+        ksort($prefabOptions);
+
+        return $prefabOptions;
+    }
+
+    private function buildRelativePrefabPath(string $absolutePath): ?string
+    {
+        $assetsDirectory = $this->resolveAssetsWorkingDirectory();
+        $normalizedAssetsDirectory = rtrim(str_replace('\\', '/', $assetsDirectory), '/');
+        $normalizedAbsolutePath = str_replace('\\', '/', $absolutePath);
+
+        if (!str_starts_with($normalizedAbsolutePath, $normalizedAssetsDirectory . '/')) {
+            return null;
+        }
+
+        return substr($normalizedAbsolutePath, strlen($normalizedAssetsDirectory) + 1) ?: null;
+    }
+
+    private function buildUniquePrefabOptionLabel(string $displayName, string $fileName, array &$usedLabels): string
+    {
+        $label = $displayName;
+
+        if (!isset($usedLabels[$label])) {
+            $usedLabels[$label] = true;
+            return $label;
+        }
+
+        $label = $displayName . ' (' . $fileName . ')';
+
+        if (!isset($usedLabels[$label])) {
+            $usedLabels[$label] = true;
+            return $label;
+        }
+
+        $suffix = 2;
+
+        while (isset($usedLabels[$label . ' #' . $suffix])) {
+            $suffix++;
+        }
+
+        $label .= ' #' . $suffix;
+        $usedLabels[$label] = true;
+
+        return $label;
+    }
+
     private function hasFileExtension(string $path): bool
     {
         return pathinfo($path, PATHINFO_EXTENSION) !== '';
@@ -2729,20 +3096,7 @@ PHP;
 
     private function resolveAssetsWorkingDirectory(): string
     {
-        $workingDirectory = $this->projectDirectory;
-        $assetRoots = [
-            $workingDirectory . '/Assets',
-            $workingDirectory . '/assets',
-            $workingDirectory,
-        ];
-
-        foreach ($assetRoots as $assetRoot) {
-            if (is_dir($assetRoot)) {
-                return $assetRoot;
-            }
-        }
-
-        return $workingDirectory;
+        return Path::resolveAssetsDirectory($this->projectDirectory);
     }
 
 }

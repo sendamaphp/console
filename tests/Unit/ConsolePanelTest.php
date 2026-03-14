@@ -34,10 +34,9 @@ test('console panel loads the last three debug log lines on startup', function (
     );
 
     expect($panel->getActiveTab())->toBe('Debug');
+    expect($panel->getActiveFilter())->toBe('DEBUG');
     expect(array_slice($panel->content, 2))->toBe([
-        '[2026-03-11 10:00:01] [INFO] - Second',
-        '[2026-03-11 10:00:02] [WARN] - Third',
-        '[2026-03-11 10:00:03] [ERROR] - Fourth',
+        '[2026-03-11 10:00:00] [DEBUG] - First',
     ]);
 });
 
@@ -379,8 +378,6 @@ test('console panel opens a filter modal on shift+f and filters debug logs by le
 
     expect($panel->hasActiveModal())->toBeTrue();
 
-    pressConsoleKey("\033[B");
-    $panel->update();
     pressConsoleKey("\033[B");
     $panel->update();
     pressConsoleKey("\n");

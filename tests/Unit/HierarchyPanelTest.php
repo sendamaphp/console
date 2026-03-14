@@ -254,3 +254,40 @@ test('hierarchy panel cancels delete confirmation without queuing a deletion', f
 
     expect($panel->consumeDeletionRequest())->toBeNull();
 });
+
+test('hierarchy panel can queue prefab creation for the selected object', function () {
+    $panel = new HierarchyPanel(
+        width: 40,
+        height: 12,
+        sceneName: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy Ship',
+                'tag' => 'Enemy',
+                'position' => ['x' => 60, 'y' => 12],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'components' => [],
+            ],
+        ],
+    );
+
+    $panel->expandSelection();
+    $panel->beginPrefabCreationWorkflow();
+
+    expect($panel->consumePrefabCreationRequest())->toBe([
+        'path' => 'scene.0',
+        'name' => 'Enemy Ship',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Enemy Ship',
+            'tag' => 'Enemy',
+            'position' => ['x' => 60, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [],
+        ],
+    ]);
+    expect($panel->consumePrefabCreationRequest())->toBeNull();
+});

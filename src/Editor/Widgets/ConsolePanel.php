@@ -40,7 +40,7 @@ class ConsolePanel extends Widget
     protected int $activeTabLength = 0;
     protected Color $activeIndicatorColor = Color::LIGHT_CYAN;
     protected array $activeFiltersByTab = [
-        'Debug' => 'ALL',
+        'Debug' => 'DEBUG',
         'Error' => 'ALL',
     ];
     protected OptionListModal $filterModal;
@@ -104,6 +104,11 @@ class ConsolePanel extends Widget
     public function getActiveTab(): string
     {
         return self::TAB_TITLES[$this->activeTabIndex];
+    }
+
+    public function getActiveFilter(): string
+    {
+        return $this->activeFiltersByTab[$this->getActiveTab()] ?? 'ALL';
     }
 
     public function cycleFocusForward(): bool
@@ -748,14 +753,14 @@ class ConsolePanel extends Widget
 
         return array_values(array_filter(
             $messages,
-            fn(string $message): bool => $this->messageMatchesFilter($message, $activeFilter)
+            fn(string $message): bool => $this->messageMatchesFilter($tabTitle, $message, $activeFilter)
         ));
     }
 
-    private function messageMatchesFilter(string $message, string $filter): bool
+    private function messageMatchesFilter(string $tabTitle, string $message, string $filter): bool
     {
         if (preg_match('/\[(ERROR|CRITICAL|FATAL|INFO|WARN|WARNING|DEBUG)\]/', $message, $matches) !== 1) {
-            return false;
+            return $tabTitle === 'Debug' && $filter === 'DEBUG';
         }
 
         $level = $matches[1];

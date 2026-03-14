@@ -13,6 +13,7 @@ This page gathers the most useful shortcuts, file locations, persistence rules, 
 | `Shift+1` | Open panel list |
 | `Shift+5` | Toggle play state |
 | `Shift+A` | Panel-local create action in `Hierarchy`, `Assets`, and `Inspector` |
+| `Shift+E` | Panel-local secondary action in `Hierarchy` and `Main > Scene` |
 | `Ctrl+S` | Save the loaded scene |
 | `Ctrl+C` | Close the editor |
 
@@ -25,6 +26,7 @@ This page gathers the most useful shortcuts, file locations, persistence rules, 
 | `Left` | Collapse node or move to parent |
 | `Enter` | Inspect selection |
 | `Shift+A` | Add object |
+| `Shift+E` | Export selected object as prefab |
 | `Delete` | Delete selected object |
 
 Add-object types:
@@ -40,7 +42,7 @@ Add-object types:
 | `Up` / `Down` | Move selection |
 | `Right` | Expand folder or move into children |
 | `Left` | Collapse folder or move to parent |
-| `Enter` | Inspect file or folder, or load a prefab into the object-style Inspector view |
+| `Enter` | Activate the selected asset; textures and tile maps open `Sprite`, prefabs open the object-style Inspector view |
 | `Shift+A` | Create asset from the Assets create menu |
 | `Delete` | Delete selected asset |
 
@@ -52,6 +54,10 @@ Create targets:
 - `Texture`
 - `Tile Map`
 - `Event`
+
+Notes:
+
+- changing the highlighted row still updates the basic file or folder view in `Inspector`
 
 ## Main Panel
 
@@ -117,11 +123,17 @@ Selection state:
 | --- | --- |
 | `Up` / `Down` | Move between controls |
 | `Enter` | Activate control |
-| `Shift+A` | Add a component to the inspected hierarchy object |
+| `Shift+A` | Add a component to the inspected hierarchy object or prefab |
 | `Shift+W` | Toggle component move mode when a component header is focused |
 | `Delete` | Remove the focused component after confirmation |
 | `/` | Collapse or expand section |
 | `Tab` / `Shift+Tab` | Move between focusable controls |
+
+Notes:
+
+- On text and number controls, `Enter` begins editing.
+- On `GameObject` component fields, `Enter` opens the prefab picker and assigns a prefab reference.
+- Activated prefabs expose `File Name` separately from the prefab object's `Name`.
 
 Property-selection state:
 
@@ -157,6 +169,13 @@ Path inputs:
 | `Up` | Scroll up when not in play state |
 | `Down` | Scroll down when not in play state |
 | `Shift+R` | Manual refresh when not in play state |
+| `Shift+F` | Open the active tab's filter modal |
+| `Shift+C` | Rotate and clear the active log after confirmation |
+
+Filter sets:
+
+- `Debug`: `ALL`, `DEBUG`, `INFO`, `WARN`, `ERROR`
+- `Error`: `ALL`, `ERROR`, `CRITICAL`, `FATAL`
 
 ## Common Modal Controls
 
@@ -181,6 +200,8 @@ Tree-style modals also use:
 | object edits | active `.scene.php` file | when you press `Ctrl+S` |
 | scene-view moves | active `.scene.php` file | when you press `Ctrl+S` |
 | hierarchy additions and deletions | active `.scene.php` file | when you press `Ctrl+S` |
+| prefab export from `Hierarchy` | generated `.prefab.php` file under `Assets/Prefabs` | immediately |
+| prefab field and component edits | selected `.prefab.php` file | immediately |
 | scene rename | renamed `.scene.php` file | when you press `Ctrl+S` |
 | asset creation from `Assets` | generated asset file | immediately |
 | texture and tile map drawing | selected asset file | immediately |
@@ -205,6 +226,8 @@ These limits matter when planning your workflow:
 ## Practical Workflow Tips
 
 - Save the scene after any asset rename that affects textures or tile maps already used in the scene.
+- Export a prefab after you finish a reusable object's components, so the saved prefab starts from a complete setup.
 - Treat folder deletion as destructive because it is recursive.
 - Use the Inspector file picker for path fields to avoid typos.
+- Use `Shift+F` in `Console` to narrow noisy logs before you switch tabs or playtest again.
 - Use `sendama play` for full runtime checks and keep the editor open beside it.

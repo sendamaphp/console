@@ -786,6 +786,126 @@ test('inspector panel requests a background refresh when a larger file dialog cl
         ->and($panel->hasActiveModal())->toBeTrue();
 });
 
+test('inspector panel opens a prefab picker for GameObject component fields and saves the selected prefab path', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-prefab-reference-' . uniqid();
+    mkdir($workspace . '/Assets/Prefabs', 0777, true);
+    mkdir($workspace . '/assets/Prefabs', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core {
+    class GameObject
+    {
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Prefabs/enemy.prefab.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+
+return [
+    'type' => GameObject::class,
+    'name' => 'Enemy',
+];
+PHP
+    );
+
+    $panel = new InspectorPanel(width: 48, height: 24, workingDirectory: $workspace);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\Gun',
+                    'data' => [
+                        'bulletPrefab' => null,
+                    ],
+                    '__editorFieldTypes' => [
+                        'bulletPrefab' => 'Sendama\\Engine\\Core\\GameObject|null',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Bullet Prefab');
+
+    expect($panel->content)->toContain('  Bullet Prefab: None');
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+
+    setInspectorInput("\033[B");
+    $panel->update();
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    $mutation = $panel->consumeHierarchyMutation();
+
+    expect($mutation['path'] ?? null)->toBe('scene.0')
+        ->and($mutation['value']['components'][0]['class'] ?? null)->toBe('Sendama\\Game\\Scripts\\Gun')
+        ->and($mutation['value']['components'][0]['data']['bulletPrefab'] ?? null)->toBe('Prefabs/enemy.prefab.php')
+        ->and($mutation['value']['components'][0]['__editorFieldTypes']['bulletPrefab'] ?? null)->toBe('Sendama\\Engine\\Core\\GameObject|null');
+
+    expect(implode("\n", $panel->content))->toContain('Bullet Prefab: Enemy');
+});
+
+test('inspector panel renders typed Vector2 component fields as compound controls', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\Spawner',
+                    'data' => [
+                        'spawnOffset' => null,
+                    ],
+                    '__editorFieldTypes' => [
+                        'spawnOffset' => 'Sendama\\Engine\\Core\\Vector2|null',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    expect($panel->content)->toContain('▼ Spawner')
+        ->toContain('  Spawn Offset:')
+        ->toContain('    X: 0')
+        ->toContain('    Y: 0');
+});
+
 test('inspector panel separates prefab file renames from prefab metadata edits', function () {
     $panel = new InspectorPanel(width: 48, height: 24);
     $panel->inspectTarget([
@@ -852,13 +972,11 @@ test('inspector panel separates prefab file renames from prefab metadata edits',
     $nameControl->setValue('Boss');
     $applyControlValueToInspectionTarget->invoke($panel, $nameControl);
 
-    expect($panel->consumePrefabMutation())->toMatchArray([
-        'path' => 'Prefabs/enemy.prefab.php',
-        'prefabPath' => '/tmp/project/Assets/Prefabs/enemy.prefab.php',
-        'value' => [
-            'name' => 'Boss',
-        ],
-    ]);
+    $prefabMutation = $panel->consumePrefabMutation();
+
+    expect($prefabMutation['path'] ?? null)->toBe('Prefabs/enemy.prefab.php')
+        ->and($prefabMutation['prefabPath'] ?? null)->toBe('/tmp/project/Assets/Prefabs/enemy.prefab.php')
+        ->and($prefabMutation['value']['name'] ?? null)->toBe('Boss');
 });
 
 test('inspector panel emits hierarchy mutations when edits are committed', function () {

@@ -21,9 +21,10 @@ Controls:
 
 What inspection does:
 
+- changing the highlighted row updates the `Inspector`
 - folders open in the `Inspector` as `Folder`
-- files open in the `Inspector` as `File`
-- selecting a `.texture` or `.tmap` also opens `Main -> Sprite` and moves focus there
+- regular files open in the `Inspector` as `File`
+- pressing `Enter` on a selected `.texture` or `.tmap` opens it in `Main -> Sprite` and moves focus there
 - pressing `Enter` on a selected `.prefab.php` opens it in the `Inspector` with the same object-style layout used for hierarchy objects
 
 ## Sprite Tab Overview
@@ -35,9 +36,8 @@ The `Sprite` tab is the editor's character-grid workspace for:
 
 How loading works:
 
-- select a `.texture` or `.tmap` in `Assets`
-- the file opens in `Inspector`
-- the same file loads into `Sprite`
+- highlight a `.texture` or `.tmap` in `Assets` to inspect its file metadata
+- press `Enter` to load that asset into `Sprite`
 - focus shifts to `Main -> Sprite`
 - textures expand to a `16x16` editable grid
 - tile maps expand to the current terminal-size bounds
@@ -83,13 +83,15 @@ Each prefab returns a single PHP array in the same shape used by one scene `hier
 - a UI element such as `Label`
 - a UI element such as `Text`
 
-Current prefab support in the editor is focused on generation and project organization:
+Current prefab support in the editor covers creation, export, inspection, and editing:
 
 - the `Assets` create menu can generate new prefab files
+- `Hierarchy -> Shift+E` can export the selected scene object as a prefab immediately
 - the CLI can generate prefabs directly with `sendama generate:prefab <name>`
 - the generated file is normal scene-style metadata, so it is easy to author by hand too
 - activating a prefab from the `Assets` panel loads its configured object data into the `Inspector`
 - prefab inspection exposes `File Name` separately from the prefab object's `Name`
+- editing prefab fields or components in the `Inspector` writes back to the prefab file immediately
 
 ## Sprite Editing Controls
 

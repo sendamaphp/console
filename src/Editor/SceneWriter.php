@@ -53,7 +53,7 @@ final class SceneWriter
 
         unset($sceneData['isDirty']);
 
-        return $sceneData;
+        return $this->stripEditorOnlyMetadata($sceneData);
     }
 
     private function parseSceneSource(SceneDTO $scene): ?array
@@ -70,6 +70,7 @@ final class SceneWriter
         mixed $originalValue,
         array $sourceNode,
         int $depth = 0,
+        array $path = [],
     ): string {
         if ($currentValue === $originalValue && isset($sourceNode['source'])) {
             return $sourceNode['source'];
@@ -81,7 +82,7 @@ final class SceneWriter
             && ($sourceNode['kind'] ?? null) === 'array'
             && $this->canRenderMergedArray($currentValue, $originalValue, $sourceNode)
         ) {
-            return $this->renderMergedArray($currentValue, $originalValue, $sourceNode, $depth);
+            return $this->renderMergedArray($currentValue, $originalValue, $sourceNode, $depth, $path);
         }
 
         return $this->exportValue($currentValue, $depth);
@@ -109,6 +110,7 @@ final class SceneWriter
         array $originalValue,
         array $sourceNode,
         int $depth,
+        array $path,
     ): string {
         if ($currentValue === []) {
             return '[]';
@@ -139,7 +141,8 @@ final class SceneWriter
                             $currentValue[$index],
                             $originalValue[$originalIndex],
                             $itemNode['node'],
-                            $depth + 1
+                            $depth + 1,
+                            [...$path, (string) $index]
                         )
                         . ',';
 
@@ -177,14 +180,16 @@ final class SceneWriter
                     : null;
 
                 $renderedValue = array_key_exists($resolvedKey, $originalValue)
-                    ? $this->renderMergedValue($value, $originalItemValue, $itemNode['node'], $depth + 1)
+                    ? $this->renderMergedValue($value, $originalItemValue, $itemNode['node'], $depth + 1, [...$path, (string) $resolvedKey])
                     : $this->exportValue($value, $depth + 1);
 
                 $lines[] = $childIndent . $valuePrefix . $renderedValue . ',';
                 continue;
             }
 
+            if ($this->shouldPreserveMissingAssociativeKey($path)) {
                 $lines[] = $childIndent . $valuePrefix . $itemNode['node']['source'] . ',';
+            }
         }
 
         foreach ($currentValue as $key => $value) {
@@ -199,6 +204,14 @@ final class SceneWriter
         }
 
         return "[\n" . implode("\n", $lines) . "\n" . $indent . "]";
+    }
+
+    private function shouldPreserveMissingAssociativeKey(array $path): bool
+    {
+        // Serialized component data is authoritative. If a key disappears there,
+        // it should be removed from the saved metadata instead of being revived
+        // from the original source snapshot.
+        return !in_array('data', $path, true);
     }
 
     private function buildListItemMappings(array $currentValue, array $originalValue): array
@@ -251,6 +264,25 @@ final class SceneWriter
         }
 
         return $mappings;
+    }
+
+    private function stripEditorOnlyMetadata(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        $sanitizedValue = [];
+
+        foreach ($value as $key => $item) {
+            if (is_string($key) && str_starts_with($key, '__editor')) {
+                continue;
+            }
+
+            $sanitizedValue[$key] = $this->stripEditorOnlyMetadata($item);
+        }
+
+        return $sanitizedValue;
     }
 
     private function resolveListItemIdentity(mixed $value): ?string
