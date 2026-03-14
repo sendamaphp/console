@@ -90,6 +90,26 @@ class OptionListModal extends Widget
         return $this->options[$this->selectedIndex] ?? null;
     }
 
+    public function clickOptionAtPoint(int $x, int $y): ?string
+    {
+        if (!$this->isVisible || !$this->containsPoint($x, $y)) {
+            return null;
+        }
+
+        $optionIndex = $this->resolveOptionIndexFromPoint($y);
+
+        if ($optionIndex === null) {
+            return null;
+        }
+
+        $this->selectedIndex = $optionIndex;
+        $this->syncScrollOffset();
+        $this->refreshContent();
+        $this->markDirty();
+
+        return $this->getSelectedOption();
+    }
+
     public function syncLayout(int $terminalWidth, int $terminalHeight): void
     {
         $longestOptionLength = 0;
@@ -206,5 +226,22 @@ class OptionListModal extends Widget
         if ($this->selectedIndex > $visibleEnd) {
             $this->scrollOffset = $this->selectedIndex - $visibleOptionCount + 1;
         }
+    }
+
+    private function resolveOptionIndexFromPoint(int $y): ?int
+    {
+        $lineIndex = $y - $this->getContentAreaTop();
+
+        if ($lineIndex < 0) {
+            return null;
+        }
+
+        $optionIndex = $this->scrollOffset + $lineIndex;
+
+        if (!isset($this->options[$optionIndex])) {
+            return null;
+        }
+
+        return $optionIndex;
     }
 }

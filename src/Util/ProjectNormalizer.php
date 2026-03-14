@@ -42,8 +42,8 @@ final class ProjectNormalizer
             $issues[] = 'Missing sendama.json.';
         }
 
-        if (!is_file(Path::join($this->projectRoot, 'configuration.json'))) {
-            $issues[] = 'Missing configuration.json.';
+        if (!is_file(Path::join($this->projectRoot, 'preferences..json'))) {
+            $issues[] = 'Missing preferences..json.';
         }
 
         if (!is_dir($configDirectory)) {
@@ -121,14 +121,9 @@ final class ProjectNormalizer
         );
 
         $this->ensureFile(
-            Path::join($this->projectRoot, 'configuration.json'),
-            self::buildConfigurationJson(
-                projectName: $projectMetadata['name'],
-                description: $projectMetadata['description'],
-                version: $projectMetadata['version'],
-                mainFile: $projectMetadata['main'],
-            ),
-            'Created configuration.json.',
+            Path::join($this->projectRoot, 'preferences..json'),
+            self::buildPreferencesJson(),
+            'Created preferences..json.',
             $changes,
         );
 
@@ -180,20 +175,8 @@ final class ProjectNormalizer
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
     }
 
-    public static function buildConfigurationJson(
-        string $projectName,
-        string $description = 'A simple ASCII terminal game',
-        string $version = '0.0.1',
-        string $mainFile = 'main.php',
-    ): string {
-        return json_encode([
-            'project' => [
-                'name' => $projectName,
-                'description' => $description,
-                'version' => $version,
-                'main' => $mainFile,
-            ],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+    public static function buildPreferencesJson(): string {
+        return json_encode([], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
     }
 
     public static function buildInputConfiguration(): string
@@ -240,10 +223,10 @@ final class ProjectNormalizer
             }
         }
 
-        $configurationPath = Path::join($this->projectRoot, 'configuration.json');
+        $preferencesPath = Path::join($this->projectRoot, 'preferences.json');
 
-        if (is_file($configurationPath)) {
-            $configurationContents = file_get_contents($configurationPath);
+        if (is_file($preferencesPath)) {
+            $configurationContents = file_get_contents($preferencesPath);
             $configurationData = $configurationContents !== false ? json_decode($configurationContents, true) : null;
             $projectData = is_array($configurationData['project'] ?? null) ? $configurationData['project'] : null;
 

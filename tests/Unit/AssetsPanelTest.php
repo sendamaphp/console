@@ -1,7 +1,22 @@
 <?php
 
+use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
 use Sendama\Console\Editor\Widgets\Widget;
+
+/**
+ * @throws ReflectionException
+ */
+function getAssetsContentAreaPosition(AssetsPanel $panel): array
+{
+    $getContentAreaLeft = new ReflectionMethod($panel, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($panel, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($panel),
+        'y' => $getContentAreaTop->invoke($panel),
+    ];
+}
 
 test('assets panel loads and traverses nested project assets', function () {
     $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
@@ -18,15 +33,15 @@ test('assets panel loads and traverses nested project assets', function () {
         assetsDirectoryPath: $workspace . '/Assets',
     );
 
-    expect($panel->getSelectedAssetEntry()['name'])->toBe('Scripts');
-    expect($panel->content[0])->toBe('► Scripts');
-    expect($panel->content[1])->toBe('► Textures');
-    expect($panel->content[2])->toBe('• readme.txt');
+    expect($panel->getSelectedAssetEntry()['name'])->toBe('Scripts')
+        ->and($panel->content[0])->toBe('► Scripts')
+        ->and($panel->content[1])->toBe('► Textures')
+        ->and($panel->content[2])->toBe('• readme.txt');
 
     $panel->expandSelection();
 
-    expect($panel->content[0])->toBe('▼ Scripts');
-    expect($panel->content[1])->toBe('  ► Player');
+    expect($panel->content[0])->toBe('▼ Scripts')
+        ->and($panel->content[1])->toBe('  ► Player');
 
     $panel->expandSelection();
 
@@ -64,8 +79,8 @@ test('assets panel queues the selected asset for inspection', function () {
             'children' => [],
         ],
         'openInMainPanel' => true,
-    ]);
-    expect($panel->consumeInspectionRequest())->toBeNull();
+    ])
+        ->and($panel->consumeInspectionRequest())->toBeNull();
 });
 
 test('assets panel queues inspection when selection changes', function () {
@@ -126,7 +141,8 @@ test('assets panel reports folders as folder type in inspector payload', functio
     ]);
 });
 
-test('assets panel queues the selected asset for deletion when confirmed', function () {
+
+test('assets panel queues the selected asset for deletion when confirmed', /** @throws Exception */function () {
     $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
     mkdir($workspace . '/Assets', 0777, true);
     file_put_contents($workspace . '/Assets/readme.txt', 'docs');
@@ -138,21 +154,16 @@ test('assets panel queues the selected asset for deletion when confirmed', funct
     );
 
     $showDeleteConfirmModal = new ReflectionMethod(AssetsPanel::class, 'showDeleteConfirmModal');
-    $showDeleteConfirmModal->setAccessible(true);
     $showDeleteConfirmModal->invoke($panel);
 
     $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
-    $handleModalInput->setAccessible(true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $keyPress->setValue("\n");
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, "\n");
 
     $deleteConfirmModal = new ReflectionProperty(AssetsPanel::class, 'deleteConfirmModal');
-    $deleteConfirmModal->setAccessible(true);
     $modal = $deleteConfirmModal->getValue($panel);
     $moveSelection = new ReflectionMethod($modal, 'moveSelection');
     $moveSelection->invoke($modal, -1);
@@ -167,7 +178,7 @@ test('assets panel queues the selected asset for deletion when confirmed', funct
     ]);
 });
 
-test('assets panel cancels delete confirmation without queuing a deletion', function () {
+test('assets panel cancels delete confirmation without queuing a deletion', /** @throws Exception */ function () {
     $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
     mkdir($workspace . '/Assets', 0777, true);
     file_put_contents($workspace . '/Assets/readme.txt', 'docs');
@@ -179,25 +190,21 @@ test('assets panel cancels delete confirmation without queuing a deletion', func
     );
 
     $showDeleteConfirmModal = new ReflectionMethod(AssetsPanel::class, 'showDeleteConfirmModal');
-    $showDeleteConfirmModal->setAccessible(true);
     $showDeleteConfirmModal->invoke($panel);
 
     $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
-    $handleModalInput->setAccessible(true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $keyPress->setValue("\n");
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, "\n");
 
     $handleModalInput->invoke($panel);
 
     expect($panel->consumeDeletionRequest())->toBeNull();
 });
 
-test('assets panel queues the selected asset type for creation when confirmed', function () {
+test('assets panel queues the selected asset type for creation when confirmed', /** @throws Exception */ function () {
     $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
     mkdir($workspace . '/Assets', 0777, true);
 
@@ -211,14 +218,11 @@ test('assets panel queues the selected asset type for creation when confirmed', 
     $panel->beginCreateWorkflow();
 
     $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
-    $handleModalInput->setAccessible(true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $keyPress->setValue("\n");
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, "\n");
 
     $handleModalInput->invoke($panel);
 
@@ -242,21 +246,17 @@ test('assets panel can queue prefab creation requests', function () {
     $panel->beginCreateWorkflow();
 
     $handleModalInput = new ReflectionMethod(AssetsPanel::class, 'handleModalInput');
-    $handleModalInput->setAccessible(true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
 
     $createAssetModal = new ReflectionProperty(AssetsPanel::class, 'createAssetModal');
-    $createAssetModal->setAccessible(true);
     $modal = $createAssetModal->getValue($panel);
     $moveSelection = new ReflectionMethod($modal, 'moveSelection');
     $moveSelection->invoke($modal, 2);
 
-    $previousKeyPress->setValue('');
-    $keyPress->setValue("\n");
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, "\n");
     $handleModalInput->invoke($panel);
 
     expect($panel->consumeCreationRequest())->toBe([
@@ -277,18 +277,70 @@ test('assets panel opens the create modal with shift+a while focused', function 
     );
 
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
     $hasFocus->setValue($panel, true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $keyPress->setValue('A');
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, 'A');
 
     $panel->update();
 
-    expect($panel->hasActiveModal())->toBeTrue();
-    expect($panel->consumeCreationRequest())->toBeNull();
+    expect($panel->hasActiveModal())->toBeTrue()
+        ->and($panel->consumeCreationRequest())->toBeNull();
+});
+
+test('assets panel toggles folder expand and collapse when the icon is clicked', /** @throws Exception */ function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets/Scripts/Player', 0777, true);
+    file_put_contents($workspace . '/Assets/Scripts/Player/controller.php', '<?php');
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $contentArea = getAssetsContentAreaPosition($panel);
+    $panel->handleMouseClick($contentArea['x'], $contentArea['y']);
+
+    expect($panel->content[0])->toBe('▼ Scripts')
+        ->and($panel->content[1])->toBe('  ► Player');
+
+    $panel->handleMouseClick($contentArea['x'], $contentArea['y']);
+
+    expect($panel->content[0])->toBe('► Scripts');
+});
+
+test('assets panel activates the selected row on double click', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+    file_put_contents($workspace . '/Assets/readme.txt', 'docs');
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $contentArea = getAssetsContentAreaPosition($panel);
+    $clickX = $contentArea['x'] + 2;
+    $clickY = $contentArea['y'];
+
+    $panel->handleMouseClick($clickX, $clickY);
+    $panel->handleMouseClick($clickX, $clickY);
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'asset',
+        'name' => 'readme.txt',
+        'type' => 'File',
+        'value' => [
+            'name' => 'readme.txt',
+            'path' => $workspace . '/Assets/readme.txt',
+            'relativePath' => 'readme.txt',
+            'isDirectory' => false,
+            'children' => [],
+        ],
+        'openInMainPanel' => true,
+    ]);
 });

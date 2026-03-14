@@ -1,16 +1,15 @@
 <?php
 
+use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\Widget;
 
 function pressConsoleKey(string $keyPress): void
 {
-    $currentKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $currentKeyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $currentKeyPress->setValue($keyPress);
+    $currentKeyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $currentKeyPress->setValue(null, $keyPress);
 }
 
 test('console panel loads the last three debug log lines on startup', function () {
@@ -33,11 +32,11 @@ test('console panel loads the last three debug log lines on startup', function (
         logFilePath: $workspace . '/logs/debug.log',
     );
 
-    expect($panel->getActiveTab())->toBe('Debug');
-    expect($panel->getActiveFilter())->toBe('DEBUG');
-    expect(array_slice($panel->content, 2))->toBe([
-        '[2026-03-11 10:00:00] [DEBUG] - First',
-    ]);
+    expect($panel->getActiveTab())->toBe('Debug')
+        ->and($panel->getActiveFilter())->toBe('DEBUG')
+        ->and(array_slice($panel->content, 2))->toBe([
+            '[2026-03-11 10:00:00] [DEBUG] - First',
+        ]);
 });
 
 test('console panel switches between debug and error tabs', function () {
@@ -68,21 +67,21 @@ test('console panel switches between debug and error tabs', function () {
         errorLogFilePath: $workspace . '/logs/error.log',
     );
 
-    expect($panel->content[0])->toContain('Debug');
-    expect($panel->content[0])->toContain('Error');
-    expect(array_slice($panel->content, 2))->toBe([
-        'debug 1',
-        'debug 2',
-        'debug 3',
-    ]);
+    expect($panel->content[0])->toContain('Debug')
+        ->and($panel->content[0])->toContain('Error')
+        ->and(array_slice($panel->content, 2))->toBe([
+            'debug 1',
+            'debug 2',
+            'debug 3',
+        ]);
 
     $panel->cycleFocusForward();
 
-    expect($panel->getActiveTab())->toBe('Error');
-    expect(array_slice($panel->content, 2))->toBe([
-        'error 1',
-        'error 2',
-    ]);
+    expect($panel->getActiveTab())->toBe('Error')
+        ->and(array_slice($panel->content, 2))->toBe([
+            'error 1',
+            'error 2',
+        ]);
 
     $panel->cycleFocusBackward();
 
@@ -112,11 +111,11 @@ test('console panel ignores missing tab log files', function () {
 
     $panel->cycleFocusForward();
 
-    expect($panel->getActiveTab())->toBe('Error');
-    expect(array_slice($panel->content, 2))->toBe([
-        '[2026-03-11 10:00:01] [ERROR] - First',
-        '[2026-03-11 10:00:02] [ERROR] - Second',
-    ]);
+    expect($panel->getActiveTab())->toBe('Error')
+        ->and(array_slice($panel->content, 2))->toBe([
+            '[2026-03-11 10:00:01] [ERROR] - First',
+            '[2026-03-11 10:00:02] [ERROR] - Second',
+        ]);
 });
 
 test('console panel scrolls upward through older log lines', function () {
@@ -232,26 +231,23 @@ test('console panel refreshes the active tab from disk on shift+r when focused',
         ]) . PHP_EOL
     );
 
-    $hasFocus = new ReflectionProperty(\Sendama\Console\Editor\Widgets\Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
     $hasFocus->setValue($panel, true);
 
-    $keyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'keyPress');
-    $previousKeyPress = new ReflectionProperty(\Sendama\Console\Editor\IO\InputManager::class, 'previousKeyPress');
-    $keyPress->setAccessible(true);
-    $previousKeyPress->setAccessible(true);
-    $previousKeyPress->setValue('');
-    $keyPress->setValue('R');
+    $keyPress = new ReflectionProperty(InputManager::class, 'keyPress');
+    $previousKeyPress = new ReflectionProperty(InputManager::class, 'previousKeyPress');
+    $previousKeyPress->setValue(null, '');
+    $keyPress->setValue(null, 'R');
 
     $panel->update();
 
-    expect($panel->getActiveTab())->toBe('Error');
-    expect(array_slice($panel->content, 2))->toBe([
-        'line 3',
-        'line 4',
-        'line 5',
-        'line 6',
-    ]);
+    expect($panel->getActiveTab())->toBe('Error')
+        ->and(array_slice($panel->content, 2))->toBe([
+            'line 3',
+            'line 4',
+            'line 5',
+            'line 6',
+        ]);
 });
 
 test('console panel does not auto refresh outside play mode', function () {
@@ -288,7 +284,6 @@ test('console panel does not auto refresh outside play mode', function () {
     );
 
     $lastLogRefreshAt = new ReflectionProperty(ConsolePanel::class, 'lastLogRefreshAt');
-    $lastLogRefreshAt->setAccessible(true);
     $lastLogRefreshAt->setValue($panel, microtime(true) - 2);
 
     $panel->update();
@@ -336,7 +331,6 @@ test('console panel automatically refreshes from the active tab log file during 
     );
 
     $lastLogRefreshAt = new ReflectionProperty(ConsolePanel::class, 'lastLogRefreshAt');
-    $lastLogRefreshAt->setAccessible(true);
     $lastLogRefreshAt->setValue($panel, microtime(true) - 2);
 
     $panel->update();
@@ -370,7 +364,6 @@ test('console panel opens a filter modal on shift+f and filters debug logs by le
     );
 
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
     $hasFocus->setValue($panel, true);
 
     pressConsoleKey('F');
@@ -383,10 +376,10 @@ test('console panel opens a filter modal on shift+f and filters debug logs by le
     pressConsoleKey("\n");
     $panel->update();
 
-    expect($panel->hasActiveModal())->toBeFalse();
-    expect(array_slice($panel->content, 2))->toBe([
-        '[2026-03-13 10:00:01] [INFO] - Second',
-    ]);
+    expect($panel->hasActiveModal())->toBeFalse()
+        ->and(array_slice($panel->content, 2))->toBe([
+            '[2026-03-13 10:00:01] [INFO] - Second',
+        ]);
 });
 
 test('console panel filters error logs with error-tab-specific levels', function () {
@@ -409,7 +402,6 @@ test('console panel filters error logs with error-tab-specific levels', function
     );
 
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
     $hasFocus->setValue($panel, true);
 
     $panel->cycleFocusForward();
@@ -425,10 +417,10 @@ test('console panel filters error logs with error-tab-specific levels', function
     pressConsoleKey("\n");
     $panel->update();
 
-    expect($panel->getActiveTab())->toBe('Error');
-    expect(array_slice($panel->content, 2))->toBe([
-        '[2026-03-13 10:00:02] [FATAL] - Third',
-    ]);
+    expect($panel->getActiveTab())->toBe('Error')
+        ->and(array_slice($panel->content, 2))->toBe([
+            '[2026-03-13 10:00:02] [FATAL] - Third',
+        ]);
 });
 
 test('console panel rotates and clears the active log file on confirmed shift+c', function () {
@@ -451,7 +443,6 @@ test('console panel rotates and clears the active log file on confirmed shift+c'
     );
 
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
     $hasFocus->setValue($panel, true);
 
     pressConsoleKey('C');
@@ -464,10 +455,10 @@ test('console panel rotates and clears the active log file on confirmed shift+c'
     pressConsoleKey("\n");
     $panel->update();
 
-    expect($panel->hasActiveModal())->toBeFalse();
-    expect(file_get_contents($logFilePath))->toBe('');
-    expect(file_get_contents($logFilePath . '.1'))->toContain('[2026-03-13 10:00:00] [DEBUG] - First');
-    expect(array_slice($panel->content, 2))->toBe([]);
+    expect($panel->hasActiveModal())->toBeFalse()
+        ->and(file_get_contents($logFilePath))->toBe('')
+        ->and(file_get_contents($logFilePath . '.1'))->toContain('[2026-03-13 10:00:00] [DEBUG] - First')
+        ->and(array_slice($panel->content, 2))->toBe([]);
 });
 
 test('console panel leaves the active log file unchanged when clear is cancelled', function () {
@@ -490,7 +481,6 @@ test('console panel leaves the active log file unchanged when clear is cancelled
     );
 
     $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
-    $hasFocus->setAccessible(true);
     $hasFocus->setValue($panel, true);
     $panel->cycleFocusForward();
 
@@ -502,7 +492,7 @@ test('console panel leaves the active log file unchanged when clear is cancelled
     pressConsoleKey("\n");
     $panel->update();
 
-    expect($panel->hasActiveModal())->toBeFalse();
-    expect(file_get_contents($logFilePath))->toContain('[2026-03-13 10:00:01] [FATAL] - Second');
-    expect(file_exists($logFilePath . '.1'))->toBeFalse();
+    expect($panel->hasActiveModal())->toBeFalse()
+        ->and(file_get_contents($logFilePath))->toContain('[2026-03-13 10:00:01] [FATAL] - Second')
+        ->and(file_exists($logFilePath . '.1'))->toBeFalse();
 });

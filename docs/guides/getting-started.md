@@ -25,7 +25,7 @@ The editor expects a valid Sendama workspace. At minimum, make sure these are in
 If the project is missing common bootstrap files or folders, the editor now detects that on startup and offers to normalize the project for you. Normalization fills in common gaps such as:
 
 - `config/input.php`
-- `configuration.json`
+- `preferences.json`
 - missing `logs` files
 - missing standard asset subdirectories
 
@@ -33,6 +33,7 @@ A typical project layout looks like this:
 
 ```text
 your-game/
+├── preferences.json
 ├── sendama.json
 ├── game.php
 ├── Assets/

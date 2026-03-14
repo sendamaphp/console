@@ -1,5 +1,6 @@
 <?php
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
 use Sendama\Console\Editor\Widgets\Controls\InputControl;
 
@@ -73,6 +74,33 @@ function selectedInspectorControlLabel(InspectorPanel $panel): ?string
     }
 
     return $controls[$selectedIndex]->getLabel();
+}
+
+function getInspectorContentAreaPosition(InspectorPanel $panel): array
+{
+    $getContentAreaLeft = new ReflectionMethod($panel, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($panel, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($panel),
+        'y' => $getContentAreaTop->invoke($panel),
+    ];
+}
+
+function getWidgetContentAreaPosition(object $widget): array
+{
+    $getContentAreaLeft = new ReflectionMethod($widget, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($widget, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($widget),
+        'y' => $getContentAreaTop->invoke($widget),
+    ];
+}
+
+function createMousePressEvent(int $x, int $y, int $buttonIndex = 0): MouseEvent
+{
+    return new MouseEvent(sprintf("\033[<%d;%d;%dM", $buttonIndex, $x, $y));
 }
 
 function createInspectorComponentWorkspace(): string
@@ -187,6 +215,142 @@ PHP
     return $workspace;
 }
 
+function createInspectorStandardComponentWorkspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-standard-components-' . uniqid();
+    mkdir($workspace . '/Assets', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+        public function __construct(public ?string $name = null)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?object $sprite = null,
+        ) {
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core\Behaviours {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+
+    class CharacterMovement extends Component
+    {
+        public int $speed = 1;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+
+    class SimpleQuitListener extends Component
+    {
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+
+    class SimpleBackListener extends Component
+    {
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+}
+
+namespace Sendama\Engine\Physics {
+    use Sendama\Engine\Core\Behaviours\Attributes\SerializeField;
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+
+    class Collider extends Component
+    {
+        #[SerializeField]
+        protected bool $isTrigger = false;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+
+    class CharacterController extends Component
+    {
+        public bool $isTrigger = false;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+
+    class Rigidbody extends Component
+    {
+        public int $mass = 1;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+}
+
+namespace Sendama\Engine\Animation {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+
+    class AnimationController extends Component
+    {
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+}
+PHP
+    );
+
+    return $workspace;
+}
+
 test('inspector panel renders hierarchy object controls and renderer preview', function () {
     $workspace = sys_get_temp_dir() . '/sendama-inspector-panel-' . uniqid();
     mkdir($workspace . '/Assets/Textures', 0777, true);
@@ -259,6 +423,134 @@ test('inspector panel renders hierarchy object controls and renderer preview', f
             chdir($originalWorkingDirectory);
         }
     }
+});
+
+test('inspector panel enters edit mode when a control is double clicked', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+    $interactionState = new ReflectionProperty(InspectorPanel::class, 'interactionState');
+    $interactionState->setAccessible(true);
+
+    focusInspectorPanel($panel);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [],
+        ],
+    ]);
+
+    $contentArea = getInspectorContentAreaPosition($panel);
+    $nameLineIndex = array_search('Name: Player', $panel->content, true);
+
+    expect($nameLineIndex)->toBeInt();
+
+    $panel->handleMouseClick($contentArea['x'] + 1, $contentArea['y'] + $nameLineIndex);
+    $panel->handleMouseClick($contentArea['x'] + 1, $contentArea['y'] + $nameLineIndex);
+
+    expect(selectedInspectorControlLabel($panel))->toBe('Name');
+    expect($interactionState->getValue($panel))->toBe('control_edit');
+});
+
+test('inspector panel path selection modals can be operated with the mouse', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-path-modal-' . uniqid();
+    mkdir($workspace . '/Assets/Maps', 0777, true);
+    file_put_contents($workspace . '/Assets/Maps/level.tmap', "xxxx\n");
+
+    $panel = new InspectorPanel(width: 48, height: 24, workingDirectory: $workspace);
+    $pathInputActionModal = new ReflectionProperty(InspectorPanel::class, 'pathInputActionModal');
+    $fileDialogModal = new ReflectionProperty(InspectorPanel::class, 'fileDialogModal');
+    $pathInputActionModal->setAccessible(true);
+    $fileDialogModal->setAccessible(true);
+
+    focusInspectorPanel($panel);
+    $panel->inspectTarget([
+        'context' => 'scene',
+        'name' => 'Level',
+        'type' => 'Scene',
+        'path' => 'scene',
+        'value' => [
+            'name' => 'Level',
+            'width' => 80,
+            'height' => 25,
+            'environmentTileMapPath' => '',
+            'environmentCollisionMapPath' => '',
+        ],
+    ]);
+
+    selectInspectorControlByLabel($panel, 'Map');
+    setInspectorInput("\n");
+    $panel->update();
+
+    /** @var object $actionModal */
+    $actionModal = $pathInputActionModal->getValue($panel);
+    $actionContentArea = getWidgetContentAreaPosition($actionModal);
+    $panel->handleModalMouseEvent(createMousePressEvent($actionContentArea['x'] + 1, $actionContentArea['y']));
+
+    /** @var object $dialogModal */
+    $dialogModal = $fileDialogModal->getValue($panel);
+    $dialogContentArea = getWidgetContentAreaPosition($dialogModal);
+
+    $panel->handleModalMouseEvent(createMousePressEvent($dialogContentArea['x'], $dialogContentArea['y']));
+    $panel->handleModalMouseEvent(createMousePressEvent($dialogContentArea['x'] + 3, $dialogContentArea['y'] + 1));
+    $panel->handleModalMouseEvent(createMousePressEvent($dialogContentArea['x'] + 3, $dialogContentArea['y'] + 1));
+
+    expect($panel->hasActiveModal())->toBeFalse();
+    expect($panel->consumeHierarchyMutation())->toBe([
+        'path' => 'scene',
+        'value' => [
+            'name' => 'Level',
+            'width' => 80,
+            'height' => 25,
+            'environmentTileMapPath' => 'Maps/level.tmap',
+            'environmentCollisionMapPath' => '',
+        ],
+    ]);
+});
+
+test('inspector panel add component workflow includes standard engine components without project scripts', function () {
+    $workspace = createInspectorStandardComponentWorkspace();
+    $panel = new InspectorPanel(width: 48, height: 24, workingDirectory: $workspace);
+    $showAddComponentModal = new ReflectionMethod(InspectorPanel::class, 'showAddComponentModal');
+    $showAddComponentModal->setAccessible(true);
+    $addComponentModal = new ReflectionProperty(InspectorPanel::class, 'addComponentModal');
+    $addComponentModal->setAccessible(true);
+
+    focusInspectorPanel($panel);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [],
+        ],
+    ]);
+
+    $showAddComponentModal->invoke($panel);
+
+    $modal = $addComponentModal->getValue($panel);
+
+    expect($modal->content)->toContain('> AnimationController')
+        ->toContain('  CharacterController')
+        ->toContain('  CharacterMovement')
+        ->toContain('  Collider')
+        ->toContain('  Rigidbody')
+        ->toContain('  SimpleBackListener')
+        ->toContain('  SimpleQuitListener');
 });
 
 test('inspector panel styles component headers with a white background', function () {

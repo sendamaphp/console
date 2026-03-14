@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Atatusoft\Termutil\UI\Windows\Enumerations\HorizontalAlignment;
 use Atatusoft\Termutil\UI\Windows\Window;
@@ -107,6 +108,31 @@ abstract class Widget extends Window implements FocusableInterface
     {
     }
 
+    public function handleMouseDrag(int $x, int $y): void
+    {
+    }
+
+    public function handleMouseRelease(int $x, int $y): void
+    {
+    }
+
+    public function handleMouseEvent(MouseEvent $mouseEvent): void
+    {
+        if ($mouseEvent->action === 'Pressed') {
+            $this->handleMouseClick($mouseEvent->x, $mouseEvent->y);
+            return;
+        }
+
+        if ($mouseEvent->action === 'Dragged') {
+            $this->handleMouseDrag($mouseEvent->x, $mouseEvent->y);
+            return;
+        }
+
+        if ($mouseEvent->action === 'Released') {
+            $this->handleMouseRelease($mouseEvent->x, $mouseEvent->y);
+        }
+    }
+
     public function cycleFocusForward(): bool
     {
         return false;
@@ -137,6 +163,11 @@ abstract class Widget extends Window implements FocusableInterface
 
     public function renderActiveModal(): void
     {
+    }
+
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        return false;
     }
 
     public function consumeModalBackgroundRefreshRequest(): bool

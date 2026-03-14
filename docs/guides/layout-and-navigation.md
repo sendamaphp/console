@@ -42,7 +42,12 @@ Mouse support is intentionally small and practical:
 
 - click a panel to focus it
 - click a row in `Hierarchy` or `Assets` to select it
+- click an expand icon in `Hierarchy` or `Assets` to toggle it
+- double-click a row in `Hierarchy` or `Assets` to activate it
 - click a tab title in the `Main` panel to switch tabs
+- click a visible object in `Scene` view to select it
+- double-click an Inspector control to activate it
+- in `Sprite`, left-click to paint with the current brush, left-drag to draw, and right-click/right-drag to erase without changing the brush
 
 You should still expect the editor to behave primarily like a keyboard UI.
 

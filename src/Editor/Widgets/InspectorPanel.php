@@ -2,10 +2,14 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use ReflectionClass;
+use ReflectionNamedType;
+use ReflectionProperty;
+use ReflectionUnionType;
 use Sendama\Console\Editor\PrefabLoader;
 use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
@@ -25,6 +29,7 @@ use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
 
 class InspectorPanel extends Widget
 {
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const string STATE_CONTROL_SELECTION = 'control_selection';
     private const string STATE_PROPERTY_SELECTION = 'property_selection';
     private const string STATE_CONTROL_EDIT = 'control_edit';
@@ -53,6 +58,7 @@ class InspectorPanel extends Widget
     protected ?int $selectedControlIndex = null;
     protected array $lineKinds = [];
     protected array $lineStates = [];
+    protected array $lineControlIndexes = [];
     protected string $interactionState = self::STATE_CONTROL_SELECTION;
     protected InputControlFactory $inputControlFactory;
     protected ?PathInputControl $rendererTextureControl = null;
@@ -80,6 +86,8 @@ class InspectorPanel extends Widget
     protected array $prefabReferenceOptions = [];
     protected string $modeHelpLabel = '';
     protected bool $shouldRefreshModalBackground = false;
+    protected ?int $lastClickedControlIndex = null;
+    protected float $lastClickedControlAt = 0.0;
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -105,6 +113,36 @@ class InspectorPanel extends Widget
         $this->sceneHierarchy = $hierarchy;
     }
 
+    public function handleMouseClick(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y) || $this->hasActiveModal()) {
+            return;
+        }
+
+        $controlIndex = $this->resolveControlIndexFromPoint($x, $y);
+
+        if (!is_int($controlIndex)) {
+            return;
+        }
+
+        if ($this->interactionState !== self::STATE_CONTROL_SELECTION) {
+            $this->resetInteractionState();
+        }
+
+        $this->selectControlByIndex($controlIndex);
+        $selectedControl = $this->getSelectedControl();
+
+        if (!$selectedControl instanceof InputControl) {
+            return;
+        }
+
+        if (!$this->registerControlClickAndCheckDoubleClick($controlIndex)) {
+            return;
+        }
+
+        $this->activateSelectedControl($selectedControl);
+    }
+
     public function inspectTarget(?array $target): void
     {
         $preserveSelectedControl = $this->shouldPreserveSelectedControl($this->inspectionTarget, $target);
@@ -117,6 +155,8 @@ class InspectorPanel extends Widget
         $this->focusableControls = [];
         $this->selectedControlIndex = null;
         $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->lastClickedControlIndex = null;
+        $this->lastClickedControlAt = 0.0;
         $this->rendererTextureControl = null;
         $this->rendererOffsetControl = null;
         $this->rendererSizeControl = null;
@@ -188,6 +228,8 @@ class InspectorPanel extends Widget
     public function blur(FocusTargetContext $context): void
     {
         $this->resetInteractionState();
+        $this->lastClickedControlIndex = null;
+        $this->lastClickedControlAt = 0.0;
         parent::blur($context);
         $this->refreshContent();
     }
@@ -249,6 +291,70 @@ class InspectorPanel extends Widget
         if ($this->prefabReferenceModal->isVisible()) {
             $this->prefabReferenceModal->render();
         }
+    }
+
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        if ($this->addComponentModal->isVisible()) {
+            $isWithinModal = $this->addComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+            $selection = $this->addComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyAddComponentSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->deleteComponentModal->isVisible()) {
+            $isWithinModal = $this->deleteComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+            $selection = $this->deleteComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyDeleteComponentSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            $isWithinModal = $this->prefabReferenceModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+            $selection = $this->prefabReferenceModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyPrefabReferenceSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->pathInputActionModal->isVisible()) {
+            $isWithinModal = $this->pathInputActionModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+            $selection = $this->pathInputActionModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyPathInputActionSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->fileDialogModal->isVisible()) {
+            $isWithinModal = $this->fileDialogModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+            $selectedPath = $this->fileDialogModal->clickEntryAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selectedPath) && $selectedPath !== '') {
+                $this->applyPathInputFileSelection($selectedPath);
+            }
+
+            return $isWithinModal;
+        }
+
+        return false;
     }
 
     public function consumeHierarchyMutation(): ?array
@@ -945,6 +1051,7 @@ class InspectorPanel extends Widget
         $content = [];
         $lineKinds = [];
         $lineStates = [];
+        $lineControlIndexes = [];
         $collapsedSectionIndentLevels = [];
 
         foreach ($this->elements as $element) {
@@ -967,10 +1074,14 @@ class InspectorPanel extends Widget
                 continue;
             }
 
+            $controlIndex = array_search($control, $this->focusableControls, true);
+            $lineControlIndex = is_int($controlIndex) ? $controlIndex : null;
+
             foreach ($control->renderLineDefinitions() as $lineDefinition) {
                 $content[] = $lineDefinition['text'] ?? '';
                 $lineKinds[] = $lineDefinition['kind'] ?? 'control';
                 $lineStates[] = $lineDefinition['state'] ?? 'normal';
+                $lineControlIndexes[] = $lineControlIndex;
             }
 
             if ($control instanceof SectionControl && $control->isCollapsed()) {
@@ -981,6 +1092,7 @@ class InspectorPanel extends Widget
         $this->content = $content;
         $this->lineKinds = $lineKinds;
         $this->lineStates = $lineStates;
+        $this->lineControlIndexes = $lineControlIndexes;
     }
 
     private function updateHelpInfo(): void
@@ -1252,6 +1364,11 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $this->activateSelectedControl($selectedControl);
+    }
+
+    private function activateSelectedControl(InputControl $selectedControl): void
+    {
         if ($selectedControl instanceof PrefabReferenceInputControl) {
             $this->showPrefabReferenceModal($selectedControl);
             return;
@@ -1265,6 +1382,7 @@ class InspectorPanel extends Widget
         if ($selectedControl instanceof CompoundInputControl) {
             if ($selectedControl->beginPropertySelection()) {
                 $this->interactionState = self::STATE_PROPERTY_SELECTION;
+                $this->refreshContent();
             }
 
             return;
@@ -1272,6 +1390,7 @@ class InspectorPanel extends Widget
 
         if ($selectedControl->enterEditMode()) {
             $this->interactionState = self::STATE_CONTROL_EDIT;
+            $this->refreshContent();
         }
     }
 
@@ -1424,22 +1543,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selection = $this->addComponentModal->getSelectedOption();
-
-        if (!is_string($selection) || $selection === '' || $selection === 'Cancel') {
-            $this->closeAddComponentModal();
-            $this->refreshContent();
-            return;
-        }
-
-        $componentDefinition = $this->componentMenuDefinitions[$selection] ?? null;
-
-        if (is_array($componentDefinition)) {
-            $this->appendComponentToInspectionTarget($componentDefinition);
-        }
-
-        $this->closeAddComponentModal();
-        $this->refreshContent();
+        $this->applyAddComponentSelection($this->addComponentModal->getSelectedOption());
     }
 
     private function handleDeleteComponentModalInput(): void
@@ -1464,14 +1568,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selection = $this->deleteComponentModal->getSelectedOption();
-
-        if ($selection === 'Delete' && is_int($this->pendingComponentDeletionIndex)) {
-            $this->removeComponentAtIndex($this->pendingComponentDeletionIndex);
-        }
-
-        $this->closeDeleteComponentModal();
-        $this->refreshContent();
+        $this->applyDeleteComponentSelection($this->deleteComponentModal->getSelectedOption());
     }
 
     private function handlePathInputActionInput(): void
@@ -1497,34 +1594,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selectedOption = $this->pathInputActionModal->getSelectedOption();
-
-        if ($selectedOption === 'Choose file') {
-            $this->pathInputActionModal->hide();
-
-            if ($this->activePathInputControl instanceof PathInputControl) {
-                $this->fileDialogModal->show(
-                    $this->activePathInputControl->getWorkingDirectory(),
-                    (string) $this->activePathInputControl->getValue(),
-                    $this->activePathInputControl->getAllowedExtensions(),
-                );
-                $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
-            }
-
-            return;
-        }
-
-        if ($selectedOption === 'Edit path' && $this->activePathInputControl instanceof PathInputControl) {
-            $this->requestModalBackgroundRefresh();
-            $this->pathInputActionModal->hide();
-
-            if ($this->activePathInputControl->enterEditMode()) {
-                $this->interactionState = self::STATE_CONTROL_EDIT;
-            } else {
-                $this->closePathInputModals();
-                $this->interactionState = self::STATE_CONTROL_SELECTION;
-            }
-        }
+        $this->applyPathInputActionSelection($this->pathInputActionModal->getSelectedOption());
     }
 
     private function handlePathInputFileDialogInput(): void
@@ -1567,17 +1637,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selectedPath = $this->fileDialogModal->submitSelection();
-
-        if ($selectedPath === null || !$this->activePathInputControl instanceof PathInputControl) {
-            return;
-        }
-
-        $this->activePathInputControl->setValueFromRelativePath($selectedPath);
-        $this->applyControlValueToInspectionTarget($this->activePathInputControl);
-        $this->closePathInputModals();
-        $this->interactionState = self::STATE_CONTROL_SELECTION;
-        $this->refreshContent();
+        $this->applyPathInputFileSelection($this->fileDialogModal->submitSelection());
     }
 
     private function showPathInputActionModal(PathInputControl $control): void
@@ -1651,8 +1711,93 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selection = $this->prefabReferenceModal->getSelectedOption();
+        $this->applyPrefabReferenceSelection($this->prefabReferenceModal->getSelectedOption());
+    }
 
+    private function closePrefabReferenceModal(): void
+    {
+        $this->prefabReferenceModal->hide();
+        $this->activePrefabReferenceControl = null;
+        $this->prefabReferenceOptions = [];
+    }
+
+    private function applyAddComponentSelection(?string $selection): void
+    {
+        if (!is_string($selection) || $selection === '' || $selection === 'Cancel') {
+            $this->closeAddComponentModal();
+            $this->refreshContent();
+            return;
+        }
+
+        $componentDefinition = $this->componentMenuDefinitions[$selection] ?? null;
+
+        if (is_array($componentDefinition)) {
+            $this->appendComponentToInspectionTarget($componentDefinition);
+        }
+
+        $this->closeAddComponentModal();
+        $this->refreshContent();
+    }
+
+    private function applyDeleteComponentSelection(?string $selection): void
+    {
+        if ($selection === 'Delete' && is_int($this->pendingComponentDeletionIndex)) {
+            $this->removeComponentAtIndex($this->pendingComponentDeletionIndex);
+        }
+
+        $this->closeDeleteComponentModal();
+        $this->refreshContent();
+    }
+
+    private function applyPathInputActionSelection(?string $selection): void
+    {
+        if ($selection === 'Choose file') {
+            $this->pathInputActionModal->hide();
+
+            if ($this->activePathInputControl instanceof PathInputControl) {
+                $this->fileDialogModal->show(
+                    $this->activePathInputControl->getWorkingDirectory(),
+                    (string) $this->activePathInputControl->getValue(),
+                    $this->activePathInputControl->getAllowedExtensions(),
+                );
+                $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
+            }
+
+            return;
+        }
+
+        if ($selection !== 'Edit path' || !$this->activePathInputControl instanceof PathInputControl) {
+            return;
+        }
+
+        $this->requestModalBackgroundRefresh();
+        $this->pathInputActionModal->hide();
+
+        if ($this->activePathInputControl->enterEditMode()) {
+            $this->interactionState = self::STATE_CONTROL_EDIT;
+        } else {
+            $this->closePathInputModals();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+        }
+
+        $this->refreshContent();
+    }
+
+    private function applyPathInputFileSelection(?string $selectedPath): void
+    {
+        if ($selectedPath === null || !$this->activePathInputControl instanceof PathInputControl) {
+            return;
+        }
+
+        $this->activePathInputControl->setValueFromRelativePath($selectedPath);
+        $this->applyControlValueToInspectionTarget($this->activePathInputControl);
+        $this->closePathInputModals();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
+    }
+
+    private function applyPrefabReferenceSelection(?string $selection): void
+    {
         if (!$this->activePrefabReferenceControl instanceof PrefabReferenceInputControl) {
             $this->closePrefabReferenceModal();
             $this->interactionState = self::STATE_CONTROL_SELECTION;
@@ -1676,13 +1821,6 @@ class InspectorPanel extends Widget
         $this->closePrefabReferenceModal();
         $this->interactionState = self::STATE_CONTROL_SELECTION;
         $this->refreshContent();
-    }
-
-    private function closePrefabReferenceModal(): void
-    {
-        $this->prefabReferenceModal->hide();
-        $this->activePrefabReferenceControl = null;
-        $this->prefabReferenceOptions = [];
     }
 
     private function requestModalBackgroundRefresh(): void
@@ -1767,6 +1905,28 @@ class InspectorPanel extends Widget
         $candidateClasses = $this->resolveComponentCandidateClasses($currentItem);
         $definitions = $this->loadComponentDefinitionsInIsolatedProcess($candidateClasses, $currentItem);
 
+        $resolvedDefinitionClasses = array_values(array_unique(array_filter(
+            array_map(
+                static fn(array $definition): ?string => is_string($definition['class'] ?? null)
+                    ? $definition['class']
+                    : null,
+                $definitions,
+            ),
+            static fn(?string $class): bool => is_string($class) && $class !== '',
+        )));
+
+        $missingCandidateClasses = array_values(array_filter(
+            $candidateClasses,
+            static fn(string $candidateClass): bool => !in_array($candidateClass, $resolvedDefinitionClasses, true),
+        ));
+
+        if ($missingCandidateClasses !== []) {
+            $definitions = [
+                ...$definitions,
+                ...$this->buildFallbackComponentDefinitions($missingCandidateClasses),
+            ];
+        }
+
         if ($definitions === []) {
             return [];
         }
@@ -1824,6 +1984,56 @@ class InspectorPanel extends Widget
         )));
 
         return $candidates;
+    }
+
+    private function buildFallbackComponentDefinitions(array $candidateClasses): array
+    {
+        $autoloadPath = Path::join($this->projectDirectory, 'vendor', 'autoload.php');
+
+        if (is_file($autoloadPath)) {
+            require_once $autoloadPath;
+        }
+
+        $componentBaseClass = 'Sendama\\Engine\\Core\\Component';
+
+        if (!class_exists($componentBaseClass)) {
+            return [];
+        }
+
+        $definitions = [];
+
+        foreach ($candidateClasses as $candidateClass) {
+            if (!is_string($candidateClass) || $candidateClass === '') {
+                continue;
+            }
+
+            if (in_array($candidateClass, ['Sendama\\Engine\\Core\\Transform', 'Sendama\\Engine\\Core\\Rendering\\Renderer'], true)) {
+                continue;
+            }
+
+            if (!class_exists($candidateClass) || !is_a($candidateClass, $componentBaseClass, true)) {
+                continue;
+            }
+
+            try {
+                $reflection = new ReflectionClass($candidateClass);
+
+                if ($reflection->isAbstract()) {
+                    continue;
+                }
+
+                $definitions[] = [
+                    'class' => $candidateClass,
+                    'label' => $this->resolveClassName($candidateClass, $candidateClass),
+                    'data' => $this->extractFallbackSerializableComponentData($reflection),
+                    'fieldTypes' => $this->extractFallbackComponentFieldTypes($reflection),
+                ];
+            } catch (Throwable) {
+                continue;
+            }
+        }
+
+        return $definitions;
     }
 
     private function discoverProjectComponentCandidates(): array
@@ -2301,6 +2511,136 @@ PHP;
         return is_array($definitions) ? $definitions : [];
     }
 
+    private function extractFallbackSerializableComponentData(ReflectionClass $reflection): array
+    {
+        $data = [];
+        $defaults = $reflection->getDefaultProperties();
+
+        foreach ($reflection->getProperties() as $property) {
+            if (!$this->isSerializableComponentProperty($property) || $property->isStatic()) {
+                continue;
+            }
+
+            $propertyName = $property->getName();
+
+            if (!array_key_exists($propertyName, $defaults)) {
+                continue;
+            }
+
+            $data[$propertyName] = $this->normalizeEditorValue($defaults[$propertyName]);
+        }
+
+        return $data;
+    }
+
+    private function extractFallbackComponentFieldTypes(ReflectionClass $reflection): array
+    {
+        $fieldTypes = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            if (!$this->isSerializableComponentProperty($property) || $property->isStatic()) {
+                continue;
+            }
+
+            $resolvedType = $this->resolveReflectionPropertyType($property);
+
+            if ($resolvedType !== null) {
+                $fieldTypes[$property->getName()] = $resolvedType;
+            }
+        }
+
+        return $fieldTypes;
+    }
+
+    private function isSerializableComponentProperty(ReflectionProperty $property): bool
+    {
+        return $property->isPublic()
+            || $property->getAttributes('Sendama\\Engine\\Core\\Behaviours\\Attributes\\SerializeField') !== [];
+    }
+
+    private function resolveReflectionPropertyType(ReflectionProperty $property): ?string
+    {
+        $type = $property->getType();
+
+        if ($type instanceof ReflectionNamedType) {
+            $resolvedType = $type->getName();
+
+            if ($type->allowsNull() && $resolvedType !== 'null') {
+                return $resolvedType . '|null';
+            }
+
+            return $resolvedType;
+        }
+
+        if ($type instanceof ReflectionUnionType) {
+            $resolvedTypes = [];
+
+            foreach ($type->getTypes() as $namedType) {
+                if ($namedType instanceof ReflectionNamedType) {
+                    $resolvedTypes[] = $namedType->getName();
+                }
+            }
+
+            $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+            return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+        }
+
+        return null;
+    }
+
+    private function normalizeEditorValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            $normalized = [];
+
+            foreach ($value as $key => $item) {
+                $normalized[$key] = $this->normalizeEditorValue($item);
+            }
+
+            return $normalized;
+        }
+
+        if ($value instanceof \UnitEnum) {
+            return $value instanceof \BackedEnum ? $value->value : $value->name;
+        }
+
+        if (!is_object($value)) {
+            return $value;
+        }
+
+        if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
+            return [
+                'x' => $this->normalizeEditorValue($value->getX()),
+                'y' => $this->normalizeEditorValue($value->getY()),
+            ];
+        }
+
+        if (method_exists($value, 'getName')) {
+            try {
+                return $value->getName();
+            } catch (Throwable) {
+            }
+        }
+
+        if (method_exists($value, '__serialize')) {
+            try {
+                $serialized = $value->__serialize();
+
+                return is_array($serialized)
+                    ? $this->normalizeEditorValue($serialized)
+                    : $this->normalizeEditorValue((array) $serialized);
+            } catch (Throwable) {
+            }
+        }
+
+        if ($value instanceof \Stringable) {
+            return (string) $value;
+        }
+
+        return get_class($value);
+    }
+
     private function buildUniqueComponentMenuLabel(string $baseLabel, string $componentClass, array &$usedLabels): string
     {
         if (!isset($usedLabels[$baseLabel])) {
@@ -2662,7 +3002,37 @@ PHP;
 
         $this->selectedControlIndex = $index;
         $this->applyControlSelection();
+
+        if (!$this->isSelectedComponentHeader($this->getSelectedControl())) {
+            $this->isComponentMoveModeActive = false;
+        }
+
         $this->refreshContent();
+    }
+
+    private function resolveControlIndexFromPoint(int $x, int $y): ?int
+    {
+        $lineIndex = $y - $this->getContentAreaTop();
+
+        if ($lineIndex < 0) {
+            return null;
+        }
+
+        $controlIndex = $this->lineControlIndexes[$lineIndex] ?? null;
+
+        return is_int($controlIndex) ? $controlIndex : null;
+    }
+
+    private function registerControlClickAndCheckDoubleClick(int $controlIndex): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedControlIndex === $controlIndex
+            && ($now - $this->lastClickedControlAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedControlIndex = $controlIndex;
+        $this->lastClickedControlAt = $now;
+
+        return $isDoubleClick;
     }
 
     private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array

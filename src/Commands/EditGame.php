@@ -5,6 +5,7 @@ namespace Sendama\Console\Commands;
 use Sendama\Console\Editor\Editor;
 use Sendama\Console\Editor\GameSettings;
 use Sendama\Console\Exceptions\IOException;
+use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -34,7 +35,19 @@ class EditGame extends Command
     {
         $output->writeln("Opening game configuration for editing...", OutputInterface::VERBOSITY_VERBOSE);
 
-        $directory = $input->getOption('directory') ?? '.';
+        $directory = Path::normalize((string) ($input->getOption('directory') ?? '.'));
+
+        if ($directory === '' || $directory === '.') {
+            $directory = getcwd() ?: '.';
+        } elseif (!str_starts_with($directory, '/')) {
+            $directory = Path::join(getcwd() ?: '.', $directory);
+        }
+
+        $resolvedDirectory = realpath($directory);
+        $directory = is_string($resolvedDirectory) && $resolvedDirectory !== ''
+            ? Path::normalize($resolvedDirectory)
+            : Path::normalize($directory);
+
         $gameSettings = GameSettings::loadFromDirectory($directory);
         $editor = new Editor(name: $gameSettings->name, workingDirectory: $directory);
         $editor->run();

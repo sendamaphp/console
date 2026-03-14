@@ -89,13 +89,12 @@ test('widget clips long content lines to the available window width', function (
     };
 
     $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
-    $buildRenderedContentLines->setAccessible(true);
     $lines = $buildRenderedContentLines->invoke($widget);
 
-    expect($lines)->toHaveCount(4);
-    expect($lines[0])->toBe('│ Texture: Texture │');
-    expect(mb_strlen($lines[0]))->toBe(20);
-    expect(mb_substr($lines[0], -1))->toBe('│');
+    expect($lines)->toHaveCount(4)
+        ->and($lines[0])->toBe('│ Texture: Texture │')
+        ->and(mb_strlen($lines[0]))->toBe(20)
+        ->and(mb_substr($lines[0], -1))->toBe('│');
 });
 
 test('widget keeps borders intact when content contains wide multibyte glyphs', function () {
@@ -112,10 +111,9 @@ test('widget keeps borders intact when content contains wide multibyte glyphs', 
     };
 
     $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
-    $buildRenderedContentLines->setAccessible(true);
     $lines = $buildRenderedContentLines->invoke($widget);
 
-    expect($lines)->toHaveCount(4);
-    expect(mb_strwidth($lines[0], 'UTF-8'))->toBe(12);
-    expect(mb_substr($lines[0], -1))->toBe('│');
+    expect($lines)->toHaveCount(4)
+        ->and(mb_strwidth($lines[0], 'UTF-8'))->toBe(12)
+        ->and(mb_substr($lines[0], -1))->toBe('│');
 });

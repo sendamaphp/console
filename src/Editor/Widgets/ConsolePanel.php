@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
@@ -99,6 +100,37 @@ class ConsolePanel extends Widget
         if ($this->clearConfirmModal->isVisible()) {
             $this->clearConfirmModal->render();
         }
+    }
+
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        if ($this->filterModal->isVisible()) {
+            $selection = $this->filterModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (!is_string($selection) || $selection === '') {
+                return false;
+            }
+
+            $this->applyFilterSelection($selection);
+            return true;
+        }
+
+        if ($this->clearConfirmModal->isVisible()) {
+            $selection = $this->clearConfirmModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (!is_string($selection) || $selection === '') {
+                return false;
+            }
+
+            $this->applyClearConfirmSelection($selection);
+            return true;
+        }
+
+        return false;
     }
 
     public function getActiveTab(): string
@@ -642,6 +674,11 @@ class ConsolePanel extends Widget
         }
 
         $selection = $this->filterModal->getSelectedOption();
+        $this->applyFilterSelection($selection);
+    }
+
+    private function applyFilterSelection(?string $selection): void
+    {
         $this->filterModal->hide();
 
         if (!is_string($selection) || $selection === '') {
@@ -691,6 +728,11 @@ class ConsolePanel extends Widget
         }
 
         $selection = $this->clearConfirmModal->getSelectedOption();
+        $this->applyClearConfirmSelection($selection);
+    }
+
+    private function applyClearConfirmSelection(?string $selection): void
+    {
         $this->clearConfirmModal->hide();
 
         if ($selection !== 'Clear') {

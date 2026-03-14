@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor;
 
 use Assegai\Collections\ItemList;
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\Events\Interfaces\ObservableInterface;
 use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Console\Console;
@@ -44,6 +45,8 @@ use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Output\ConsoleOutput;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Throwable;
 
 /**
@@ -160,6 +163,8 @@ final class Editor implements ObservableInterface
     )
     {
         try {
+            $this->workingDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+
             register_shutdown_function(function () {
                 $this->finish();
             });
@@ -210,13 +215,65 @@ final class Editor implements ObservableInterface
             $this->stop();
         }
 
-        $this->workingDirectory = $directory;
+        $this->workingDirectory = $this->resolveAbsoluteDirectory($directory);
 
         if ($restartAfterSettingWorkingDirectory) {
             $this->start();
         }
 
         return $this;
+    }
+
+    private function resolveAbsoluteDirectory(string $directory): string
+    {
+        $normalizedDirectory = Path::normalize(trim($directory));
+
+        if ($normalizedDirectory === '' || $normalizedDirectory === '.') {
+            $normalizedDirectory = getcwd() ?: '.';
+        }
+
+        if (!str_starts_with($normalizedDirectory, '/')) {
+            $normalizedDirectory = Path::join(getcwd() ?: '.', $normalizedDirectory);
+        }
+
+        $resolvedDirectory = realpath($normalizedDirectory);
+
+        if (is_string($resolvedDirectory) && $resolvedDirectory !== '') {
+            return Path::normalize($resolvedDirectory);
+        }
+
+        return Path::normalize($normalizedDirectory);
+    }
+
+    private function resolveAbsolutePath(string $path, ?string $baseDirectory = null): string
+    {
+        $normalizedPath = Path::normalize(trim($path));
+
+        if ($normalizedPath === '') {
+            $resolvedBaseDirectory = is_string($baseDirectory) && $baseDirectory !== ''
+                ? $this->resolveAbsoluteDirectory($baseDirectory)
+                : $this->resolveAbsoluteDirectory('.');
+
+            return $resolvedBaseDirectory;
+        }
+
+        if (str_starts_with($normalizedPath, '/')) {
+            $resolvedPath = realpath($normalizedPath);
+
+            return is_string($resolvedPath) && $resolvedPath !== ''
+                ? Path::normalize($resolvedPath)
+                : $normalizedPath;
+        }
+
+        $resolvedBaseDirectory = is_string($baseDirectory) && $baseDirectory !== ''
+            ? $this->resolveAbsoluteDirectory($baseDirectory)
+            : $this->resolveAbsoluteDirectory('.');
+        $candidatePath = Path::join($resolvedBaseDirectory, $normalizedPath);
+        $resolvedPath = realpath($candidatePath);
+
+        return is_string($resolvedPath) && $resolvedPath !== ''
+            ? Path::normalize($resolvedPath)
+            : Path::normalize($candidatePath);
     }
 
     /**
@@ -738,31 +795,113 @@ final class Editor implements ObservableInterface
 
     private function handlePanelFocus(): void
     {
-        if (
-            $this->projectNormalizationModal?->isVisible()
-            || $this->panelListModal->isVisible()
-            || $this->focusedPanel?->hasActiveModal()
-        ) {
-            return;
-        }
-
-        if (!Input::isLeftMouseButtonDown()) {
-            return;
-        }
-
         $mouseEvent = Input::getMouseEvent();
 
         if (!$mouseEvent) {
             return;
         }
 
+        if ($this->projectNormalizationModal?->isVisible()) {
+            $this->handleProjectNormalizationModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($this->panelListModal->isVisible()) {
+            $this->handlePanelListModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($this->focusedPanel?->hasActiveModal()) {
+            $this->focusedPanel->handleModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if (!in_array($mouseEvent->buttonIndex, [0, 2], true)) {
+            return;
+        }
+
+        if ($mouseEvent->action === 'Dragged') {
+            if ($this->focusedPanel?->containsPoint($mouseEvent->x, $mouseEvent->y)) {
+                $this->focusedPanel->handleMouseEvent($mouseEvent);
+            }
+
+            return;
+        }
+
+        if ($mouseEvent->action === 'Released') {
+            $this->focusedPanel?->handleMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($mouseEvent->buttonIndex === 2) {
+            if ($this->focusedPanel?->containsPoint($mouseEvent->x, $mouseEvent->y)) {
+                $this->focusedPanel->handleMouseEvent($mouseEvent);
+            }
+
+            return;
+        }
+
+        if (!Input::isLeftMouseButtonPressed()) {
+            return;
+        }
+
         foreach ($this->panels as $panel) {
             if ($panel->containsPoint($mouseEvent->x, $mouseEvent->y)) {
                 $this->setFocusedPanel($panel);
-                $panel->handleMouseClick($mouseEvent->x, $mouseEvent->y);
+                $panel->handleMouseEvent($mouseEvent);
                 return;
             }
         }
+    }
+
+    private function handleProjectNormalizationModalMouseEvent(MouseEvent $mouseEvent): void
+    {
+        if (
+            !$this->projectNormalizationModal instanceof OptionListModal
+            || $mouseEvent->buttonIndex !== 0
+            || $mouseEvent->action !== 'Pressed'
+        ) {
+            return;
+        }
+
+        $selectedOption = $this->projectNormalizationModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selectedOption) || $selectedOption === '') {
+            return;
+        }
+
+        $this->projectNormalizationModal->hide();
+
+        if ($selectedOption === 'Normalize') {
+            $this->normalizeLoadedProject();
+        }
+
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function handlePanelListModalMouseEvent(MouseEvent $mouseEvent): void
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return;
+        }
+
+        $selectedIndex = $this->panelListModal->clickPanelAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_int($selectedIndex)) {
+            return;
+        }
+
+        $this->panelListModal->hide();
+        $panels = $this->panels->toArray();
+
+        if (!isset($panels[$selectedIndex])) {
+            return;
+        }
+
+        /** @var Widget $panel */
+        $panel = $panels[$selectedIndex];
+        $this->setFocusedPanel($panel);
+        $this->shouldRefreshBackgroundUnderModal = true;
     }
 
     private function setFocusedPanel(Widget $panel): void
@@ -1371,8 +1510,17 @@ final class Editor implements ObservableInterface
 
         $this->assetsPanel->reloadAssets();
         $this->assetsPanel->selectAssetByAbsolutePath($createdAsset['path']);
-        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdAsset));
+        $inspectionTarget = $this->buildAssetInspectionTarget($createdAsset);
+        $this->inspectorPanel->inspectTarget($inspectionTarget);
         $this->mainPanel->loadSpriteAsset($createdAsset);
+
+        if ($this->isEditableSpriteAsset($createdAsset)) {
+            $this->mainPanel->selectTab('Sprite');
+            $this->setFocusedPanel($this->mainPanel);
+            return;
+        }
+
+        $this->setFocusedPanel($this->inspectorPanel);
     }
 
     private function synchronizeMainPanelSceneChanges(): void
@@ -1575,8 +1723,10 @@ final class Editor implements ObservableInterface
             return null;
         }
 
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+
         try {
-            if (!@chdir($this->workingDirectory)) {
+            if (!@chdir($projectDirectory)) {
                 $this->consolePanel->append('[ERROR] - Failed to switch to the project directory.');
                 return null;
             }
@@ -1707,6 +1857,7 @@ final class Editor implements ObservableInterface
                 ? preg_replace('/\s+/', ' ', strip_tags($commandOutput))
                 : 'Asset generation failed.';
             $this->consolePanel->append('[ERROR] - ' . $message);
+            $this->pushNotification($message, 'error');
 
             return ['status' => 'fatal'];
         }
@@ -1715,6 +1866,7 @@ final class Editor implements ObservableInterface
 
         if (!is_string($relativeFilename) || $relativeFilename === '') {
             $this->consolePanel->append('[ERROR] - Asset generation succeeded but the created file could not be resolved.');
+            $this->pushNotification('Created asset could not be resolved.', 'error');
             return ['status' => 'fatal'];
         }
 
@@ -1722,6 +1874,7 @@ final class Editor implements ObservableInterface
 
         if (!is_string($absolutePath) || !is_file($absolutePath)) {
             $this->consolePanel->append('[ERROR] - Generated asset file could not be found.');
+            $this->pushNotification('Generated asset file could not be found.', 'error');
             return ['status' => 'fatal'];
         }
 
@@ -1729,10 +1882,12 @@ final class Editor implements ObservableInterface
 
         if (!is_string($finalPath) || !is_file($finalPath)) {
             $this->consolePanel->append('[ERROR] - Generated asset file could not be activated in the current assets directory.');
+            $this->pushNotification('Generated asset file could not be activated.', 'error');
             return ['status' => 'fatal'];
         }
 
         $this->consolePanel->append('[INFO] - Created asset ' . $this->buildRelativeAssetPath($finalPath) . '.');
+        $this->pushNotification('Created asset ' . basename($finalPath) . '.', 'success');
 
         return [
             'status' => 'success',
@@ -1762,22 +1917,65 @@ final class Editor implements ObservableInterface
     private function resolveGeneratedAssetAbsolutePath(string $relativeFilename): ?string
     {
         $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
         $candidatePaths = [
-            Path::join($this->workingDirectory, $normalizedRelativeFilename),
+            $this->resolveAbsolutePath($normalizedRelativeFilename, $projectDirectory),
         ];
 
         if (is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== '') {
+            $assetsDirectory = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
             $segments = explode('/', $normalizedRelativeFilename);
 
             if (count($segments) > 1 && strcasecmp($segments[0], 'assets') === 0) {
                 array_shift($segments);
-                $candidatePaths[] = Path::join($this->assetsDirectoryPath, ...$segments);
+                $candidatePaths[] = Path::join($assetsDirectory, ...$segments);
             }
         }
 
         foreach ($candidatePaths as $candidatePath) {
             if (is_file($candidatePath)) {
                 return $candidatePath;
+            }
+        }
+
+        $relativeTail = ltrim(preg_replace('/^assets\//i', '', $normalizedRelativeFilename) ?? $normalizedRelativeFilename, '/');
+        $relativeTailSegments = $relativeTail !== '' ? explode('/', $relativeTail) : [];
+        $relativeTailBasename = $relativeTailSegments !== [] ? end($relativeTailSegments) : null;
+
+        $searchRoots = [];
+
+        if (is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== '') {
+            $searchRoots[] = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
+        }
+
+        $searchRoots[] = Path::resolveAssetsDirectory($projectDirectory);
+        $searchRoots = array_values(array_unique(array_filter($searchRoots, static fn (mixed $root): bool => is_string($root) && $root !== '' && is_dir($root))));
+
+        foreach ($searchRoots as $searchRoot) {
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($searchRoot, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            foreach ($iterator as $entry) {
+                if (!$entry->isFile()) {
+                    continue;
+                }
+
+                $entryPath = Path::normalize($entry->getPathname());
+
+                if ($relativeTailBasename !== null && basename($entryPath) !== $relativeTailBasename) {
+                    continue;
+                }
+
+                $relativeToSearchRoot = ltrim(substr($entryPath, strlen($searchRoot)), '/');
+
+                if (
+                    $relativeTail !== ''
+                    && str_ends_with(str_replace('\\', '/', $relativeToSearchRoot), $relativeTail)
+                ) {
+                    return $entryPath;
+                }
             }
         }
 
@@ -1790,6 +1988,8 @@ final class Editor implements ObservableInterface
             return $absolutePath;
         }
 
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+        $activeAssetsDirectory = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
         $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
         $segments = explode('/', $normalizedRelativeFilename);
         $generatedRootSegment = $segments[0] ?? 'Assets';
@@ -1799,7 +1999,7 @@ final class Editor implements ObservableInterface
         }
 
         array_shift($segments);
-        $targetPath = Path::join($this->assetsDirectoryPath, ...$segments);
+        $targetPath = Path::join($activeAssetsDirectory, ...$segments);
 
         if ($targetPath === $absolutePath) {
             return $absolutePath;
@@ -1817,7 +2017,7 @@ final class Editor implements ObservableInterface
             return $absolutePath;
         }
 
-        $generatedAssetsRoot = Path::join($this->workingDirectory, $generatedRootSegment);
+        $generatedAssetsRoot = Path::join($projectDirectory, $generatedRootSegment);
 
         if (str_starts_with($absolutePath, $generatedAssetsRoot)) {
             $this->cleanupEmptyDirectories(dirname($absolutePath), $generatedAssetsRoot);
@@ -2076,6 +2276,7 @@ final class Editor implements ObservableInterface
             return basename($absolutePath);
         }
 
+        $assetsDirectory = $this->resolveAbsolutePath($assetsDirectory, $this->workingDirectory);
         $relativePath = substr($absolutePath, strlen($assetsDirectory));
 
         return ltrim(str_replace('\\', '/', (string) $relativePath), '/');

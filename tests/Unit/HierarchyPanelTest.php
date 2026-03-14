@@ -2,6 +2,17 @@
 
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 
+function getHierarchyContentAreaPosition(HierarchyPanel $panel): array
+{
+    $getContentAreaLeft = new ReflectionMethod($panel, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($panel, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($panel),
+        'y' => $getContentAreaTop->invoke($panel),
+    ];
+}
+
 test('hierarchy panel expands nested objects and traverses visible children', function () {
     $panel = new HierarchyPanel(
         width: 40,
@@ -290,4 +301,57 @@ test('hierarchy panel can queue prefab creation for the selected object', functi
         ],
     ]);
     expect($panel->consumePrefabCreationRequest())->toBeNull();
+});
+
+test('hierarchy panel toggles expand and collapse when the icon is clicked', function () {
+    $panel = new HierarchyPanel(
+        width: 40,
+        height: 12,
+        sceneName: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'children' => [
+                    ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Gun'],
+                ],
+            ],
+        ],
+    );
+
+    $contentArea = getHierarchyContentAreaPosition($panel);
+    $panel->handleMouseClick($contentArea['x'] + 2, $contentArea['y'] + 1);
+
+    expect($panel->content[1])->toBe('  ▼ Player')
+        ->and($panel->content[2])->toBe('    • Gun');
+
+    $panel->handleMouseClick($contentArea['x'] + 2, $contentArea['y'] + 1);
+
+    expect($panel->content[1])->toBe('  ► Player');
+});
+
+test('hierarchy panel activates the selected row on double click', function () {
+    $panel = new HierarchyPanel(
+        width: 40,
+        height: 12,
+        sceneName: 'level01',
+        hierarchy: [
+            ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player'],
+        ],
+    );
+
+    $contentArea = getHierarchyContentAreaPosition($panel);
+    $clickX = $contentArea['x'] + 4;
+    $clickY = $contentArea['y'] + 1;
+
+    $panel->handleMouseClick($clickX, $clickY);
+    $panel->handleMouseClick($clickX, $clickY);
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player'],
+    ]);
 });

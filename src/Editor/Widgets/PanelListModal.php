@@ -52,6 +52,25 @@ class PanelListModal extends Widget
         return $this->selectedIndex;
     }
 
+    public function clickPanelAtPoint(int $x, int $y): ?int
+    {
+        if (!$this->isVisible || !$this->containsPoint($x, $y)) {
+            return null;
+        }
+
+        $lineIndex = $y - $this->getContentAreaTop();
+
+        if ($lineIndex < 0 || !isset($this->panelNames[$lineIndex])) {
+            return null;
+        }
+
+        $this->selectedIndex = $lineIndex;
+        $this->refreshContent();
+        $this->markDirty();
+
+        return $this->selectedIndex;
+    }
+
     public function isDirty(): bool
     {
         return $this->isDirty;

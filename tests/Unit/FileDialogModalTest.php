@@ -2,6 +2,17 @@
 
 use Sendama\Console\Editor\Widgets\FileDialogModal;
 
+function getFileDialogModalContentAreaPosition(FileDialogModal $modal): array
+{
+    $getContentAreaLeft = new ReflectionMethod($modal, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($modal, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($modal),
+        'y' => $getContentAreaTop->invoke($modal),
+    ];
+}
+
 test('file dialog modal returns a relative path for the selected file', function () {
     $workspace = sys_get_temp_dir() . '/sendama-file-dialog-' . uniqid();
     mkdir($workspace . '/Assets/Textures', 0777, true);
@@ -83,4 +94,26 @@ test('file dialog modal filters files and directories by allowed extensions', fu
         '▼ Textures',
         '  • player.texture',
     ]);
+});
+
+test('file dialog modal toggles directories and activates files with mouse clicks', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-file-dialog-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/player.texture', 'texture');
+
+    $modal = new FileDialogModal();
+    $modal->show($workspace . '/Assets');
+    $contentArea = getFileDialogModalContentAreaPosition($modal);
+
+    expect($modal->clickEntryAtPoint($contentArea['x'], $contentArea['y']))->toBeNull();
+    expect($modal->content)->toBe([
+        '▼ Textures',
+        '  • player.texture',
+    ]);
+
+    $fileX = $contentArea['x'] + 3;
+    $fileY = $contentArea['y'] + 1;
+
+    expect($modal->clickEntryAtPoint($fileX, $fileY))->toBeNull();
+    expect($modal->clickEntryAtPoint($fileX, $fileY))->toBe('Textures/player.texture');
 });

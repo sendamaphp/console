@@ -27,7 +27,7 @@ The editor expects a valid Sendama project workspace. In particular:
 - the active scene is loaded from the configured scene metadata
 
 When the editor opens a project, it also runs a startup sanity check.
-If it finds missing structure such as `config/input.php`, `configuration.json`, log files, or required asset directories, it opens a normalize prompt:
+If it finds missing structure such as `config/input.php`, `preferences.json`, log files, or required asset directories, it opens a normalize prompt:
 
 - `Normalize`: create the missing directories and bootstrap files
 - `Cancel` or `Escape`: continue without changing the project
@@ -131,6 +131,8 @@ Controls:
 - `Down` / `Right`: select the next visible scene object
 - changing the selection immediately syncs the Inspector and Hierarchy to the selected object
 - `Enter`: reload the selected object into the Inspector
+- clicking a visible scene object selects it
+- double-clicking a visible scene object activates it like `Enter`
 
 #### Move Mode
 
@@ -195,6 +197,9 @@ Controls:
 - `Ctrl+Y`: redo the last undone grid change
 - `Shift+R`: reset the loaded asset back to the state it had when it was opened
 - `Delete`: open the delete-asset confirmation modal
+- left-clicking a cell paints with the current brush
+- left-click-dragging paints continuously across the grid
+- right-clicking or right-click-dragging erases without changing the current brush
 
 Delete workflow:
 
@@ -204,6 +209,7 @@ Delete workflow:
 Character selector workflow:
 
 - `Shift+2` opens a modal of curated special characters useful for sprites and maps
+- list-based modals and file pickers support mouse selection
 - `Up` / `Down`: move selection
 - `Enter`: insert the selected character at the current cursor position
 - `Escape`: close the modal without inserting anything
@@ -370,6 +376,7 @@ Controls:
 
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
+- double-clicking a control activates it too
 - `Shift+A`: open the add-component menu when a hierarchy object is being inspected
 - `Shift+W`: toggle component move mode when a component header is focused
 - `Delete`: open the remove-component confirmation modal when a component header is focused

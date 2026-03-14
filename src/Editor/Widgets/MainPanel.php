@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -35,6 +36,7 @@ class MainPanel extends Widget
     private const string SPRITE_MODAL_CHARACTER = 'character_picker';
     private const int DEFAULT_TEXTURE_WIDTH = 16;
     private const int DEFAULT_TEXTURE_HEIGHT = 16;
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const array SPECIAL_CHARACTER_OPTIONS = [
         '█ Full Block',
         '▓ Dark Shade',
@@ -120,6 +122,7 @@ class MainPanel extends Widget
     protected ?array $pendingHierarchyMutation = null;
     protected string $sceneInteractionMode = self::SCENE_VIEW_MODE_SELECT;
     protected array $sceneLineHighlights = [];
+    protected array $sceneClickTargets = [];
     protected string $projectDirectory;
     protected int $sceneWidth = DEFAULT_TERMINAL_WIDTH;
     protected int $sceneHeight = DEFAULT_TERMINAL_HEIGHT;
@@ -145,6 +148,11 @@ class MainPanel extends Widget
     protected ?string $spriteModalState = null;
     protected ?array $pendingAssetSyncRequest = null;
     protected ?string $lastPrintedSpriteCharacter = null;
+    protected ?string $lastClickedScenePath = null;
+    protected float $lastClickedSceneAt = 0.0;
+    protected bool $isSpriteMousePainting = false;
+    protected bool $isSpriteMouseErasing = false;
+    protected ?array $lastSpritePaintedCell = null;
 
     public function __construct(
         array $position = ['x' => 37, 'y' => 1],
@@ -188,6 +196,11 @@ class MainPanel extends Widget
 
     public function blur(FocusTargetContext $context): void
     {
+        $this->isSpriteMousePainting = false;
+        $this->isSpriteMouseErasing = false;
+        $this->lastSpritePaintedCell = null;
+        $this->lastClickedScenePath = null;
+        $this->lastClickedSceneAt = 0.0;
         parent::blur($context);
         $this->refreshContent();
     }
@@ -339,6 +352,34 @@ class MainPanel extends Widget
         }
     }
 
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        $activeModal = match ($this->spriteModalState) {
+            self::SPRITE_MODAL_CREATE => $this->createSpriteAssetModal,
+            self::SPRITE_MODAL_DELETE => $this->deleteSpriteAssetModal,
+            self::SPRITE_MODAL_CHARACTER => $this->characterPickerModal,
+            default => null,
+        };
+
+        if (!$activeModal instanceof OptionListModal) {
+            return false;
+        }
+
+        $selection = $activeModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selection) || $selection === '') {
+            return false;
+        }
+
+        $this->handleSpriteModalSelection($selection);
+
+        return true;
+    }
+
     public function loadSpriteAsset(?array $asset): void
     {
         if (!$this->isEditableSpriteAsset($asset)) {
@@ -471,28 +512,59 @@ class MainPanel extends Widget
 
     public function handleMouseClick(int $x, int $y): void
     {
-        if (!$this->containsPoint($x, $y) || $y !== $this->getContentAreaTop()) {
+        if (!$this->containsPoint($x, $y)) {
             return;
         }
 
-        $currentX = $this->getContentAreaLeft();
+        if ($y === $this->getContentAreaTop()) {
+            $currentX = $this->getContentAreaLeft();
 
-        foreach (self::TAB_TITLES as $index => $tabTitle) {
-            if ($index > 0) {
-                $currentX += 2;
+            foreach (self::TAB_TITLES as $index => $tabTitle) {
+                if ($index > 0) {
+                    $currentX += 2;
+                }
+
+                $tabStart = $currentX;
+                $tabEnd = $tabStart + mb_strlen($tabTitle) - 1;
+
+                if ($x >= $tabStart && $x <= $tabEnd) {
+                    $this->activeTabIndex = $index;
+                    $this->refreshContent();
+                    return;
+                }
+
+                $currentX = $tabEnd + 1;
             }
 
-            $tabStart = $currentX;
-            $tabEnd = $tabStart + mb_strlen($tabTitle) - 1;
-
-            if ($x >= $tabStart && $x <= $tabEnd) {
-                $this->activeTabIndex = $index;
-                $this->refreshContent();
-                return;
-            }
-
-            $currentX = $tabEnd + 1;
+            return;
         }
+
+        if ($this->isSceneTabActive() && !$this->isPlayModeActive) {
+            $this->handleSceneCanvasClick($x, $y);
+            return;
+        }
+
+        if ($this->isSpriteTabActive() && !$this->isPlayModeActive) {
+            $this->handleSpriteCanvasPress($x, $y);
+        }
+    }
+
+    public function handleMouseDrag(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y)) {
+            return;
+        }
+
+        if ($this->isSpriteTabActive() && !$this->isPlayModeActive) {
+            $this->handleSpriteCanvasDrag($x, $y);
+        }
+    }
+
+    public function handleMouseRelease(int $x, int $y): void
+    {
+        $this->isSpriteMousePainting = false;
+        $this->isSpriteMouseErasing = false;
+        $this->lastSpritePaintedCell = null;
     }
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
@@ -652,6 +724,7 @@ class MainPanel extends Widget
         $this->gameIdleContentIndexes = [];
         $this->gameIdlePromptContentIndex = null;
         $this->sceneLineHighlights = [];
+        $this->sceneClickTargets = [];
         $this->spriteLineHighlights = [];
         $this->visibleSceneObjects = $this->flattenSceneObjects($this->sceneObjects);
         $this->syncSelectedScenePath();
@@ -986,7 +1059,11 @@ class MainPanel extends Widget
         }
 
         $selection = $activeModal->getSelectedOption();
+        $this->handleSpriteModalSelection($selection);
+    }
 
+    private function handleSpriteModalSelection(?string $selection): void
+    {
         if ($selection === null || $selection === 'Cancel') {
             $this->dismissSpriteModals();
             return;
@@ -1183,6 +1260,7 @@ class MainPanel extends Widget
     {
         $canvasWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
         $canvasHeight = max(0, $this->innerHeight - 2);
+        $this->sceneClickTargets = [];
 
         if ($canvasWidth <= 0 || $canvasHeight <= 0) {
             return [];
@@ -1242,11 +1320,18 @@ class MainPanel extends Widget
                     $canvasWidth,
                 );
 
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
+                if (($placement['length'] ?? 0) <= 0) {
                     continue;
                 }
 
-                if (($placement['length'] ?? 0) <= 0) {
+                $this->sceneClickTargets[$targetRow] ??= [];
+                $this->sceneClickTargets[$targetRow][] = [
+                    'path' => $sceneObject['path'] ?? null,
+                    'start' => $placement['start'] ?? max(0, $column),
+                    'length' => $placement['length'],
+                ];
+
+                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
                     continue;
                 }
 
@@ -1418,10 +1503,19 @@ class MainPanel extends Widget
             return;
         }
 
-        $this->spriteCursorX = max(0, min($this->spriteCursorX + $deltaX, $this->spriteGridWidth - 1));
-        $this->spriteCursorY = max(0, min($this->spriteCursorY + $deltaY, $this->spriteGridHeight - 1));
-        $this->syncSpriteViewport();
+        $this->setSpriteCursorPosition($this->spriteCursorX + $deltaX, $this->spriteCursorY + $deltaY);
         $this->refreshContent();
+    }
+
+    private function setSpriteCursorPosition(int $x, int $y): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteGridWidth <= 0 || $this->spriteGridHeight <= 0) {
+            return;
+        }
+
+        $this->spriteCursorX = max(0, min($x, $this->spriteGridWidth - 1));
+        $this->spriteCursorY = max(0, min($y, $this->spriteGridHeight - 1));
+        $this->syncSpriteViewport();
     }
 
     private function syncSpriteViewport(): void
@@ -1454,6 +1548,15 @@ class MainPanel extends Widget
 
     private function writeSpriteCharacter(string $character): void
     {
+        $this->writeSpriteCharacterAtCursor($character);
+    }
+
+    private function writeSpriteCharacterAtCursor(
+        string $character,
+        bool $advanceCursor = true,
+        bool $rememberCharacter = true,
+    ): void
+    {
         if ($this->activeSpriteAsset === null) {
             return;
         }
@@ -1464,9 +1567,12 @@ class MainPanel extends Widget
             return;
         }
 
-        $this->lastPrintedSpriteCharacter = $nextCharacter;
+        if ($rememberCharacter) {
+            $this->lastPrintedSpriteCharacter = $nextCharacter;
+        }
 
         if (($this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] ?? ' ') === $nextCharacter) {
+            $this->refreshContent();
             return;
         }
 
@@ -1474,7 +1580,7 @@ class MainPanel extends Widget
         $this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] = $nextCharacter;
         $this->persistActiveSpriteAsset();
 
-        if ($this->spriteCursorX < $this->spriteGridWidth - 1) {
+        if ($advanceCursor && $this->spriteCursorX < $this->spriteGridWidth - 1) {
             $this->spriteCursorX++;
         }
 
@@ -1765,6 +1871,148 @@ class MainPanel extends Widget
             if (($sceneObject['path'] ?? null) === $this->selectedScenePath) {
                 return $index;
             }
+        }
+
+        return null;
+    }
+
+    private function handleSceneCanvasClick(int $x, int $y): void
+    {
+        $canvasRow = $y - $this->getContentAreaTop() - 2;
+
+        if ($canvasRow < 0) {
+            return;
+        }
+
+        $canvasColumn = $x - $this->getContentAreaLeft();
+
+        if ($canvasColumn < 0) {
+            return;
+        }
+
+        $clickedPath = $this->resolveSceneClickPath($canvasRow, $canvasColumn);
+
+        if (!is_string($clickedPath) || $clickedPath === '') {
+            return;
+        }
+
+        $isDoubleClick = $this->registerSceneClickAndCheckDoubleClick($clickedPath);
+        $this->selectedScenePath = $clickedPath;
+        $this->queueInspectionForSelectedSceneObject();
+        $this->refreshContent();
+
+        if ($isDoubleClick) {
+            $this->activateSceneSelection();
+        }
+    }
+
+    private function registerSceneClickAndCheckDoubleClick(string $path): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedScenePath === $path
+            && ($now - $this->lastClickedSceneAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedScenePath = $path;
+        $this->lastClickedSceneAt = $now;
+
+        return $isDoubleClick;
+    }
+
+    private function handleSpriteCanvasPress(int $x, int $y): void
+    {
+        $mouseEvent = Input::getMouseEvent();
+        $buttonIndex = $mouseEvent?->buttonIndex;
+        $this->lastSpritePaintedCell = null;
+        $this->isSpriteMouseErasing = $buttonIndex === 2;
+        $this->isSpriteMousePainting = $this->isSpriteMouseErasing || $this->lastPrintedSpriteCharacter !== null;
+        $this->applySpriteMouseInteraction($x, $y, $this->isSpriteMousePainting, $this->isSpriteMouseErasing);
+    }
+
+    private function handleSpriteCanvasDrag(int $x, int $y): void
+    {
+        if (!$this->isSpriteMousePainting && !$this->isSpriteMouseErasing) {
+            return;
+        }
+
+        $this->applySpriteMouseInteraction($x, $y, true, $this->isSpriteMouseErasing);
+    }
+
+    private function applySpriteMouseInteraction(int $x, int $y, bool $shouldPaint, bool $shouldErase = false): void
+    {
+        $gridPosition = $this->resolveSpriteGridPositionFromPoint($x, $y);
+
+        if (!is_array($gridPosition)) {
+            return;
+        }
+
+        if ($shouldPaint && $this->lastSpritePaintedCell === $gridPosition) {
+            return;
+        }
+
+        $this->setSpriteCursorPosition($gridPosition['x'], $gridPosition['y']);
+
+        if (!$shouldPaint) {
+            $this->refreshContent();
+            return;
+        }
+
+        $character = $shouldErase ? ' ' : $this->lastPrintedSpriteCharacter;
+
+        if ($character === null) {
+            $this->refreshContent();
+            return;
+        }
+
+        $this->lastSpritePaintedCell = $gridPosition;
+        $this->writeSpriteCharacterAtCursor($character, false, !$shouldErase);
+    }
+
+    private function resolveSpriteGridPositionFromPoint(int $x, int $y): ?array
+    {
+        if ($this->activeSpriteAsset === null) {
+            return null;
+        }
+
+        $gridRow = $y - $this->getContentAreaTop() - 2;
+        $gridColumn = $x - $this->getContentAreaLeft();
+
+        if ($gridRow < 0 || $gridColumn < 0) {
+            return null;
+        }
+
+        $gridX = $this->spriteViewportOffsetX + $gridColumn;
+        $gridY = $this->spriteViewportOffsetY + $gridRow;
+
+        if ($gridX < 0 || $gridY < 0 || $gridX >= $this->spriteGridWidth || $gridY >= $this->spriteGridHeight) {
+            return null;
+        }
+
+        return ['x' => $gridX, 'y' => $gridY];
+    }
+
+    private function resolveSceneClickPath(int $row, int $column): ?string
+    {
+        $rowTargets = $this->sceneClickTargets[$row] ?? null;
+
+        if (!is_array($rowTargets) || $rowTargets === []) {
+            return null;
+        }
+
+        for ($index = count($rowTargets) - 1; $index >= 0; $index--) {
+            $target = $rowTargets[$index] ?? null;
+
+            if (!is_array($target)) {
+                continue;
+            }
+
+            $start = (int) ($target['start'] ?? -1);
+            $length = (int) ($target['length'] ?? 0);
+
+            if ($length <= 0 || $column < $start || $column >= ($start + $length)) {
+                continue;
+            }
+
+            return is_string($target['path'] ?? null) ? $target['path'] : null;
         }
 
         return null;

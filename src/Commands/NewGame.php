@@ -258,17 +258,12 @@ class NewGame extends Command
 
   private function createConfigurationJsonFile(string $projectName): void
   {
-    $targetConfigurationFilename = Path::join($this->targetDirectory, 'configuration.json');
+    $targetConfigurationFilename = Path::join($this->targetDirectory, 'preferences.json');
     $mainFilename = strtolower(filter_string($projectName)) . '.php';
 
     if (false === file_put_contents(
       $targetConfigurationFilename,
-      ProjectNormalizer::buildConfigurationJson(
-        projectName: $projectName,
-        description: 'A simple ASCII terminal game',
-        version: '0.0.1',
-        mainFile: $mainFilename,
-      )
+      ProjectNormalizer::buildPreferencesJson()
     )) {
       throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigurationFilename));
     }

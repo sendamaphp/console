@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\Events\Interfaces\ObservableInterface;
 use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Enumerations\Color;
@@ -20,6 +21,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
 {
     use ObservableTrait;
 
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const string ROOT_PATH = 'scene';
     private const string ADD_MODAL_OBJECT_KIND = 'object_kind';
     private const string ADD_MODAL_UI_KIND = 'ui_kind';
@@ -51,6 +53,8 @@ class HierarchyPanel extends Widget implements ObservableInterface
     protected OptionListModal $addUiElementModal;
     protected OptionListModal $deleteConfirmModal;
     protected ?string $addModalState = null;
+    protected ?string $lastClickedPath = null;
+    protected float $lastClickedAt = 0.0;
 
     public function __construct(
         array $position = ['x' => 1, 'y' => 1],
@@ -345,6 +349,47 @@ class HierarchyPanel extends Widget implements ObservableInterface
         }
     }
 
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        $activeModal = match ($this->addModalState) {
+            self::ADD_MODAL_OBJECT_KIND => $this->addObjectModal,
+            self::ADD_MODAL_UI_KIND => $this->addUiElementModal,
+            self::DELETE_MODAL_CONFIRM => $this->deleteConfirmModal,
+            default => null,
+        };
+
+        if (!$activeModal instanceof OptionListModal) {
+            return false;
+        }
+
+        $selectedOption = $activeModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selectedOption) || $selectedOption === '') {
+            return false;
+        }
+
+        if ($this->addModalState === self::ADD_MODAL_OBJECT_KIND) {
+            $this->handleAddObjectTypeSelection($selectedOption);
+            return true;
+        }
+
+        if ($this->addModalState === self::ADD_MODAL_UI_KIND) {
+            $this->handleAddUiElementSelection($selectedOption);
+            return true;
+        }
+
+        if ($this->addModalState === self::DELETE_MODAL_CONFIRM) {
+            $this->handleDeleteConfirmationSelection($selectedOption);
+            return true;
+        }
+
+        return false;
+    }
+
     public function focus(FocusTargetContext $context): void
     {
         parent::focus($context);
@@ -370,8 +415,32 @@ class HierarchyPanel extends Widget implements ObservableInterface
             return;
         }
 
-        $this->selectedPath = $this->visibleHierarchy[$index]['path'] ?? $this->selectedPath;
+        $entry = $this->visibleHierarchy[$index] ?? null;
+
+        if (!is_array($entry)) {
+            return;
+        }
+
+        $path = is_string($entry['path'] ?? null) ? $entry['path'] : null;
+
+        if ($path === null) {
+            return;
+        }
+
+        $this->selectedPath = $path;
+
+        if ($this->isExpandToggleClick($entry, $x)) {
+            $this->toggleEntryExpansion($entry);
+            $this->resetClickTracking();
+            return;
+        }
+
+        $isDoubleClick = $this->registerClickAndCheckDoubleClick($path);
         $this->refreshContent();
+
+        if ($isDoubleClick) {
+            $this->activateSelection();
+        }
     }
 
     /**
@@ -626,6 +695,53 @@ class HierarchyPanel extends Widget implements ObservableInterface
         }
 
         return array_values($children);
+    }
+
+    private function isExpandToggleClick(array $entry, int $x): bool
+    {
+        if (!($entry['hasChildren'] ?? false)) {
+            return false;
+        }
+
+        $depth = max(0, (int) ($entry['depth'] ?? 0));
+        $iconColumn = $this->getContentAreaLeft() + ($depth * 2);
+
+        return $x === $iconColumn;
+    }
+
+    private function toggleEntryExpansion(array $entry): void
+    {
+        $path = $entry['path'] ?? null;
+
+        if (!is_string($path) || !($entry['hasChildren'] ?? false)) {
+            return;
+        }
+
+        if ($entry['isExpanded'] ?? false) {
+            unset($this->expandedPaths[$path]);
+        } else {
+            $this->expandedPaths[$path] = true;
+        }
+
+        $this->refreshContent();
+    }
+
+    private function registerClickAndCheckDoubleClick(string $path): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedPath === $path
+            && ($now - $this->lastClickedAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedPath = $path;
+        $this->lastClickedAt = $now;
+
+        return $isDoubleClick;
+    }
+
+    private function resetClickTracking(): void
+    {
+        $this->lastClickedPath = null;
+        $this->lastClickedAt = 0.0;
     }
 
     private function getParentPath(string $path): ?string

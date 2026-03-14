@@ -1,5 +1,6 @@
 <?php
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\MainPanel;
@@ -15,6 +16,17 @@ function pressMainPanelKey(string $keyPress): void
     $currentKeyPress->setValue($keyPress);
 }
 
+function getMainPanelContentAreaPosition(MainPanel $panel): array
+{
+    $getContentAreaLeft = new ReflectionMethod($panel, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($panel, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($panel),
+        'y' => $getContentAreaTop->invoke($panel),
+    ];
+}
+
 function createMainPanelWorkspace(): string
 {
     $workspace = sys_get_temp_dir() . '/sendama-main-panel-' . uniqid();
@@ -25,6 +37,13 @@ function createMainPanelWorkspace(): string
     file_put_contents($workspace . '/Assets/Maps/level.tmap', "xxxxx\nx   x\nxxxxx\n");
 
     return $workspace;
+}
+
+function setMainPanelMouseEvent(?MouseEvent $event): void
+{
+    $mouseEvent = new ReflectionProperty(InputManager::class, 'mouseEvent');
+    $mouseEvent->setAccessible(true);
+    $mouseEvent->setValue($event);
 }
 
 test('main panel cycles forward through tabs', function () {
@@ -247,6 +266,108 @@ test('main panel scene selection highlight stays aligned for wide multibyte glyp
     expect(is_string($highlightSequence))->toBeTrue();
     expect(substr_count($decoratedLine, $highlightSequence))->toBe(1);
     expect(substr_count($decoratedLine, $highlightSequence . ' '))->toBe(0);
+});
+
+test('main panel selects a scene object when it is clicked in scene view', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    $contentArea = getMainPanelContentAreaPosition($panel);
+    $panel->handleMouseClick($contentArea['x'] + 2, $contentArea['y'] + 3);
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'position' => ['x' => 2, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/player',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
+});
+
+test('main panel can select a different scene object when it is clicked in scene view', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 8, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    $contentArea = getMainPanelContentAreaPosition($panel);
+    $panel->handleMouseClick($contentArea['x'] + 8, $contentArea['y'] + 3);
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'hierarchy',
+        'name' => 'Enemy',
+        'type' => 'GameObject',
+        'path' => 'scene.1',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Enemy',
+            'position' => ['x' => 8, 'y' => 1],
+            'sprite' => [
+                'texture' => [
+                    'path' => 'Textures/enemy',
+                    'position' => ['x' => 0, 'y' => 0],
+                    'size' => ['x' => 1, 'y' => 1],
+                ],
+            ],
+        ],
+    ]);
 });
 
 test('main panel resolves scene textures from the configured project directory', function () {
@@ -827,6 +948,63 @@ test('main panel sprite tab edits the selected asset grid and persists it', func
 
     expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toStartWith("Zbcd\n");
     expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Zbcd')))->toBeTrue();
+});
+
+test('main panel sprite tab paints with mouse click and drag', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $lastPrintedSpriteCharacter = new ReflectionProperty(MainPanel::class, 'lastPrintedSpriteCharacter');
+    $hasFocus->setAccessible(true);
+    $lastPrintedSpriteCharacter->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+    $lastPrintedSpriteCharacter->setValue($panel, 'Z');
+
+    $contentArea = getMainPanelContentAreaPosition($panel);
+    $panel->handleMouseClick($contentArea['x'] + 1, $contentArea['y'] + 3);
+    $panel->handleMouseDrag($contentArea['x'] + 2, $contentArea['y'] + 3);
+    $panel->handleMouseRelease($contentArea['x'] + 2, $contentArea['y'] + 3);
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toContain('eZZh');
+});
+
+test('main panel sprite tab erases with right click without changing the active brush', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(width: 30, height: 12, workingDirectory: $workspace);
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $lastPrintedSpriteCharacter = new ReflectionProperty(MainPanel::class, 'lastPrintedSpriteCharacter');
+    $hasFocus->setAccessible(true);
+    $lastPrintedSpriteCharacter->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    $panel->selectTab('Sprite');
+    $panel->loadSpriteAsset([
+        'name' => 'player.texture',
+        'path' => $workspace . '/Assets/Textures/player.texture',
+        'relativePath' => 'Textures/player.texture',
+        'isDirectory' => false,
+    ]);
+    $lastPrintedSpriteCharacter->setValue($panel, 'Z');
+
+    $contentArea = getMainPanelContentAreaPosition($panel);
+    setMainPanelMouseEvent(new MouseEvent("\033[<2;" . ($contentArea['x'] + 1) . ';' . ($contentArea['y'] + 3) . 'M'));
+    $panel->handleMouseClick($contentArea['x'] + 1, $contentArea['y'] + 3);
+    $panel->handleMouseDrag($contentArea['x'] + 2, $contentArea['y'] + 3);
+    $panel->handleMouseRelease($contentArea['x'] + 2, $contentArea['y'] + 3);
+
+    setMainPanelMouseEvent(new MouseEvent("\033[<0;" . ($contentArea['x'] + 3) . ';' . ($contentArea['y'] + 3) . 'M'));
+    $panel->handleMouseClick($contentArea['x'] + 3, $contentArea['y'] + 3);
+    setMainPanelMouseEvent(null);
+
+    expect(file_get_contents($workspace . '/Assets/Textures/player.texture'))->toContain('e  Z');
 });
 
 test('main panel sprite tab expands loaded textures to a 16x16 editing grid', function () {

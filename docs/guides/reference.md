@@ -115,6 +115,12 @@ Pan mode:
 | `Shift+R` | Reset loaded asset |
 | `Delete` | Delete active asset |
 
+Mouse:
+
+- left-click a cell to paint with the current sprite brush
+- left-click and drag to draw across multiple cells
+- right-click and drag to erase without replacing the active brush
+
 ## Inspector Panel
 
 Selection state:
@@ -134,6 +140,7 @@ Notes:
 - On text and number controls, `Enter` begins editing.
 - On `GameObject` component fields, `Enter` opens the prefab picker and assigns a prefab reference.
 - Activated prefabs expose `File Name` separately from the prefab object's `Name`.
+- double-clicking a control activates it, the same as focusing it and pressing `Enter`
 
 Property-selection state:
 
