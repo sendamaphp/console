@@ -118,8 +118,10 @@ class MainPanel extends Widget
     protected array $sceneObjects = [];
     protected array $visibleSceneObjects = [];
     protected ?string $selectedScenePath = null;
+    protected array $selectedScenePaths = [];
     protected ?array $pendingInspectionItem = null;
     protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingDuplicationItems = null;
     protected string $sceneInteractionMode = self::SCENE_VIEW_MODE_SELECT;
     protected array $sceneLineHighlights = [];
     protected array $sceneClickTargets = [];
@@ -239,6 +241,26 @@ class MainPanel extends Widget
     public function selectSceneObject(?string $path): void
     {
         $this->selectedScenePath = $path;
+        $this->selectedScenePaths = is_string($path) && $path !== '' ? [$path] : [];
+        $this->syncSelectedScenePath();
+        $this->refreshContent();
+    }
+
+    public function selectSceneObjects(array $paths, ?string $primaryPath = null): void
+    {
+        $normalizedPaths = array_values(array_unique(array_filter(
+            $paths,
+            static fn (mixed $path): bool => is_string($path) && $path !== ''
+        )));
+
+        if ($normalizedPaths === []) {
+            return;
+        }
+
+        $this->selectedScenePath = is_string($primaryPath) && in_array($primaryPath, $normalizedPaths, true)
+            ? $primaryPath
+            : end($normalizedPaths);
+        $this->selectedScenePaths = $normalizedPaths;
         $this->syncSelectedScenePath();
         $this->refreshContent();
     }
@@ -272,6 +294,14 @@ class MainPanel extends Widget
         $this->pendingHierarchyMutation = null;
 
         return $pendingHierarchyMutation;
+    }
+
+    public function consumeDuplicationRequest(): ?array
+    {
+        $pendingDuplicationItems = $this->pendingDuplicationItems;
+        $this->pendingDuplicationItems = null;
+
+        return $pendingDuplicationItems;
     }
 
     public function consumeAssetSyncRequest(): ?array
@@ -354,10 +384,6 @@ class MainPanel extends Widget
 
     public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
     {
-        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
-            return false;
-        }
-
         $activeModal = match ($this->spriteModalState) {
             self::SPRITE_MODAL_CREATE => $this->createSpriteAssetModal,
             self::SPRITE_MODAL_DELETE => $this->deleteSpriteAssetModal,
@@ -366,6 +392,14 @@ class MainPanel extends Widget
         };
 
         if (!$activeModal instanceof OptionListModal) {
+            return false;
+        }
+
+        if ($activeModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return true;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
             return false;
         }
 
@@ -455,6 +489,11 @@ class MainPanel extends Widget
             if (Input::getCurrentInput() === 'E') {
                 $this->sceneInteractionMode = self::SCENE_VIEW_MODE_PAN;
                 $this->refreshContent();
+                return;
+            }
+
+            if (Input::getCurrentInput() === 'D') {
+                $this->beginSceneDuplicationWorkflow();
                 return;
             }
 
@@ -794,7 +833,7 @@ class MainPanel extends Widget
                     'Mode: Scene Pan',
                 ],
                 default => [
-                    'Arrows cycle  Enter inspect  Shift+W move  Shift+E pan',
+                    'Arrows cycle  Enter inspect  Shift+D duplicate  Shift+W move  Shift+E pan',
                     'Mode: Scene Select',
                 ],
             };
@@ -1123,6 +1162,7 @@ class MainPanel extends Widget
         $selectedIndex = $this->getSelectedSceneObjectIndex() ?? 0;
         $nextIndex = ($selectedIndex + $offset + count($this->visibleSceneObjects)) % count($this->visibleSceneObjects);
         $this->selectedScenePath = $this->visibleSceneObjects[$nextIndex]['path'] ?? $this->selectedScenePath;
+        $this->selectedScenePaths = $this->selectedScenePath !== null ? [$this->selectedScenePath] : [];
         $this->queueInspectionForSelectedSceneObject();
         $this->refreshContent();
     }
@@ -1175,8 +1215,9 @@ class MainPanel extends Widget
     {
         $canvasWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
         $canvasHeight = max(0, $this->innerHeight - 2);
-        $maxOffsetX = max(0, $this->sceneWidth - max(1, $canvasWidth));
-        $maxOffsetY = max(0, $this->sceneHeight - max(1, $canvasHeight));
+        $sceneBounds = $this->resolveSceneViewportBounds();
+        $maxOffsetX = max(0, $sceneBounds['width'] - max(1, $canvasWidth));
+        $maxOffsetY = max(0, $sceneBounds['height'] - max(1, $canvasHeight));
 
         $this->sceneViewportOffsetX = max(0, min($this->sceneViewportOffsetX + $deltaX, $maxOffsetX));
         $this->sceneViewportOffsetY = max(0, min($this->sceneViewportOffsetY + $deltaY, $maxOffsetY));
@@ -1185,13 +1226,24 @@ class MainPanel extends Widget
 
     private function decorateSceneLine(string $line, ?Color $contentColor, int $contentIndex): string
     {
-        $highlight = $this->sceneLineHighlights[$contentIndex] ?? null;
+        $highlights = $this->sceneLineHighlights[$contentIndex] ?? null;
 
-        if (!is_array($highlight)) {
+        if (!is_array($highlights)) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        if (!$this->hasFocus() && ($highlight['kind'] ?? null) !== 'placeholder') {
+        if (isset($highlights['start'])) {
+            $highlights = [$highlights];
+        }
+
+        if (!$this->hasFocus()) {
+            $highlights = array_values(array_filter(
+                $highlights,
+                static fn (mixed $highlight): bool => is_array($highlight) && (($highlight['kind'] ?? null) === 'placeholder')
+            ));
+        }
+
+        if ($highlights === []) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
@@ -1207,38 +1259,72 @@ class MainPanel extends Widget
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
         $middleWidth = $this->getDisplayWidth($middle);
-        $highlightStart = min(
-            max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
-            $middleWidth,
-        );
-        $highlightLength = max(
-            0,
-            min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
-        );
+        $normalizedHighlights = [];
 
-        if ($highlightLength === 0) {
+        foreach ($highlights as $highlight) {
+            if (!is_array($highlight)) {
+                continue;
+            }
+
+            $highlightStart = min(
+                max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
+                $middleWidth,
+            );
+            $highlightLength = max(
+                0,
+                min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
+            );
+
+            if ($highlightLength <= 0) {
+                continue;
+            }
+
+            $normalizedHighlights[] = [
+                'start' => $highlightStart,
+                'length' => $highlightLength,
+                'kind' => $highlight['kind'] ?? 'selection',
+            ];
+        }
+
+        if ($normalizedHighlights === []) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        [
-            'before' => $beforeHighlight,
-            'highlight' => $highlightText,
-            'after' => $afterHighlight,
-        ] = $this->splitContentByDisplayWidth($middle, $highlightStart, $highlightLength);
+        usort($normalizedHighlights, static function (array $left, array $right): int {
+            return ($left['start'] <=> $right['start']) ?: ($left['length'] <=> $right['length']);
+        });
 
-        if (($highlight['kind'] ?? null) === 'placeholder') {
-            return $this->wrapWithColor($leftBorder, $borderColor)
-                . $this->wrapWithColor($beforeHighlight, $contentColor)
-                . $this->wrapWithColor($highlightText, Color::DARK_GRAY)
-                . $this->wrapWithColor($afterHighlight, $contentColor)
-                . $this->wrapWithColor($rightBorder, $borderColor);
+        $output = $this->wrapWithColor($leftBorder, $borderColor);
+        $remainingText = $middle;
+        $currentOffset = 0;
+
+        foreach ($normalizedHighlights as $highlight) {
+            $highlightStart = max($currentOffset, (int) $highlight['start']);
+            $highlightLength = (int) $highlight['length'] - max(0, $currentOffset - (int) $highlight['start']);
+
+            if ($highlightLength <= 0) {
+                continue;
+            }
+
+            $relativeStart = max(0, $highlightStart - $currentOffset);
+            [
+                'before' => $beforeHighlight,
+                'highlight' => $highlightText,
+                'after' => $afterHighlight,
+            ] = $this->splitContentByDisplayWidth($remainingText, $relativeStart, $highlightLength);
+
+            $output .= $this->wrapWithColor($beforeHighlight, $contentColor);
+            $output .= ($highlight['kind'] ?? null) === 'placeholder'
+                ? $this->wrapWithColor($highlightText, Color::DARK_GRAY)
+                : $this->wrapWithSequence($highlightText, $this->resolveSceneHighlightSequence());
+
+            $remainingText = $afterHighlight;
+            $currentOffset = $highlightStart + $highlightLength;
         }
 
-        return $this->wrapWithColor($leftBorder, $borderColor)
-            . $this->wrapWithColor($beforeHighlight, $contentColor)
-            . $this->wrapWithSequence($highlightText, $this->resolveSceneHighlightSequence())
-            . $this->wrapWithColor($afterHighlight, $contentColor)
-            . $this->wrapWithColor($rightBorder, $borderColor);
+        $output .= $this->wrapWithColor($remainingText, $contentColor);
+
+        return $output . $this->wrapWithColor($rightBorder, $borderColor);
     }
 
     private function resolveSceneHighlightSequence(): string
@@ -1282,14 +1368,18 @@ class MainPanel extends Widget
             }
 
             $position = $sceneObject['position'] ?? $this->normalizeVector($item['position'] ?? null);
-            $row = (int) ($position['y'] ?? 0) - $this->sceneViewportOffsetY;
-            $column = (int) ($position['x'] ?? 0) - $this->sceneViewportOffsetX;
+            $projectedPosition = $this->projectScenePositionToCanvas($position);
+            $row = $projectedPosition['y'] - $this->sceneViewportOffsetY;
+            $column = $projectedPosition['x'] - $this->sceneViewportOffsetX;
             $renderLines = is_array($sceneObject['renderLines'] ?? null)
                 ? $sceneObject['renderLines']
                 : [];
 
             if ($renderLines === []) {
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath || !$this->hasFocus()) {
+                if (
+                    !in_array($sceneObject['path'] ?? null, $this->selectedScenePaths, true)
+                    || !$this->hasFocus()
+                ) {
                     continue;
                 }
 
@@ -1298,7 +1388,7 @@ class MainPanel extends Widget
                 }
 
                 $canvas[$row][$column] = self::SCENE_PLACEHOLDER_CHARACTER;
-                $this->sceneLineHighlights[2 + $row] = [
+                $this->sceneLineHighlights[2 + $row][] = [
                     'start' => $column,
                     'length' => 1,
                     'kind' => 'placeholder',
@@ -1331,13 +1421,14 @@ class MainPanel extends Widget
                     'length' => $placement['length'],
                 ];
 
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
+                if (!in_array($sceneObject['path'] ?? null, $this->selectedScenePaths, true)) {
                     continue;
                 }
 
-                $this->sceneLineHighlights[2 + $targetRow] = [
+                $this->sceneLineHighlights[2 + $targetRow][] = [
                     'start' => $placement['start'] ?? max(0, $column),
                     'length' => $placement['length'],
+                    'kind' => 'selection',
                 ];
             }
         }
@@ -1814,16 +1905,26 @@ class MainPanel extends Widget
     {
         if ($this->visibleSceneObjects === []) {
             $this->selectedScenePath = null;
+            $this->selectedScenePaths = [];
             return;
         }
 
+        $this->selectedScenePaths = array_values(array_filter(
+            $this->selectedScenePaths,
+            fn (mixed $path): bool => is_string($path) && $this->findVisibleSceneObjectIndexByPath($path) !== null
+        ));
+
         foreach ($this->visibleSceneObjects as $sceneObject) {
             if (($sceneObject['path'] ?? null) === $this->selectedScenePath) {
+                if ($this->selectedScenePaths === []) {
+                    $this->selectedScenePaths = [$this->selectedScenePath];
+                }
                 return;
             }
         }
 
         $this->selectedScenePath = $this->visibleSceneObjects[0]['path'] ?? null;
+        $this->selectedScenePaths = $this->selectedScenePath !== null ? [$this->selectedScenePath] : [];
     }
 
     private function queueInspectionForSelectedSceneObject(): void
@@ -1863,17 +1964,7 @@ class MainPanel extends Widget
 
     private function getSelectedSceneObjectIndex(): ?int
     {
-        if ($this->selectedScenePath === null) {
-            return null;
-        }
-
-        foreach ($this->visibleSceneObjects as $index => $sceneObject) {
-            if (($sceneObject['path'] ?? null) === $this->selectedScenePath) {
-                return $index;
-            }
-        }
-
-        return null;
+        return $this->findVisibleSceneObjectIndexByPath($this->selectedScenePath);
     }
 
     private function handleSceneCanvasClick(int $x, int $y): void
@@ -1897,7 +1988,18 @@ class MainPanel extends Widget
         }
 
         $isDoubleClick = $this->registerSceneClickAndCheckDoubleClick($clickedPath);
+        $isAdditiveSelection = Input::getMouseEvent()?->isCtrlPressed === true;
+
         $this->selectedScenePath = $clickedPath;
+
+        if ($isAdditiveSelection) {
+            if (!in_array($clickedPath, $this->selectedScenePaths, true)) {
+                $this->selectedScenePaths[] = $clickedPath;
+            }
+        } else {
+            $this->selectedScenePaths = [$clickedPath];
+        }
+
         $this->queueInspectionForSelectedSceneObject();
         $this->refreshContent();
 
@@ -1916,6 +2018,52 @@ class MainPanel extends Widget
         $this->lastClickedSceneAt = $now;
 
         return $isDoubleClick;
+    }
+
+    private function beginSceneDuplicationWorkflow(): void
+    {
+        $selectedItems = [];
+
+        foreach ($this->visibleSceneObjects as $sceneObject) {
+            $path = $sceneObject['path'] ?? null;
+
+            if (
+                !is_string($path)
+                || !in_array($path, $this->selectedScenePaths, true)
+                || !is_array($sceneObject['item'] ?? null)
+            ) {
+                continue;
+            }
+
+            $selectedItems[] = [
+                'path' => $path,
+                'value' => $sceneObject['item'],
+            ];
+        }
+
+        if ($selectedItems === []) {
+            return;
+        }
+
+        $this->pendingDuplicationItems = [
+            'items' => $selectedItems,
+            'primaryPath' => $this->selectedScenePath,
+        ];
+    }
+
+    private function findVisibleSceneObjectIndexByPath(?string $path): ?int
+    {
+        if (!is_string($path) || $path === '') {
+            return null;
+        }
+
+        foreach ($this->visibleSceneObjects as $index => $sceneObject) {
+            if (($sceneObject['path'] ?? null) === $path) {
+                return $index;
+            }
+        }
+
+        return null;
     }
 
     private function handleSpriteCanvasPress(int $x, int $y): void
@@ -2123,6 +2271,19 @@ class MainPanel extends Widget
         }
 
         return 0;
+    }
+
+    private function projectScenePositionToCanvas(array $position): array
+    {
+        return [
+            'x' => $this->projectSceneCoordinateToCanvas((int) ($position['x'] ?? 0)),
+            'y' => $this->projectSceneCoordinateToCanvas((int) ($position['y'] ?? 0)),
+        ];
+    }
+
+    private function projectSceneCoordinateToCanvas(int $coordinate): int
+    {
+        return max(1, $coordinate) - 1;
     }
 
     private function buildSpriteRenderLines(array $item): array
@@ -2342,6 +2503,63 @@ class MainPanel extends Widget
         $tileMapLines = preg_split('/\R/u', rtrim($tileMapContents, "\r\n"));
 
         return is_array($tileMapLines) ? $tileMapLines : [];
+    }
+
+    private function resolveSceneViewportBounds(): array
+    {
+        $bounds = [
+            'width' => max(1, $this->sceneWidth),
+            'height' => max(1, $this->sceneHeight),
+        ];
+
+        $tileMapBounds = $this->resolveEnvironmentTileMapBounds();
+        $bounds['width'] = max($bounds['width'], $tileMapBounds['width']);
+        $bounds['height'] = max($bounds['height'], $tileMapBounds['height']);
+
+        foreach ($this->visibleSceneObjects as $sceneObject) {
+            $item = is_array($sceneObject['item'] ?? null) ? $sceneObject['item'] : null;
+            $position = is_array($sceneObject['position'] ?? null)
+                ? $sceneObject['position']
+                : $this->normalizeVector($item['position'] ?? null);
+            $renderLines = is_array($sceneObject['renderLines'] ?? null)
+                ? $sceneObject['renderLines']
+                : [];
+
+            $projectedPosition = $this->projectScenePositionToCanvas($position);
+            $objectWidth = $this->resolveRenderLinesWidth($renderLines);
+            $objectHeight = max(1, count($renderLines));
+
+            $bounds['width'] = max($bounds['width'], $projectedPosition['x'] + max(1, $objectWidth));
+            $bounds['height'] = max($bounds['height'], $projectedPosition['y'] + $objectHeight);
+        }
+
+        return $bounds;
+    }
+
+    private function resolveEnvironmentTileMapBounds(): array
+    {
+        $tileMapLines = $this->buildEnvironmentTileMapLines();
+        $maxWidth = 0;
+
+        foreach ($tileMapLines as $tileMapLine) {
+            $maxWidth = max($maxWidth, $this->getDisplayWidth((string) $tileMapLine));
+        }
+
+        return [
+            'width' => max(1, $maxWidth),
+            'height' => max(1, count($tileMapLines)),
+        ];
+    }
+
+    private function resolveRenderLinesWidth(array $renderLines): int
+    {
+        $maxWidth = 0;
+
+        foreach ($renderLines as $renderLine) {
+            $maxWidth = max($maxWidth, $this->getDisplayWidth((string) $renderLine));
+        }
+
+        return $maxWidth;
     }
 
     private function buildSplitHelpBorder(string $leftLabel, string $rightLabel): string

@@ -295,12 +295,17 @@ class InspectorPanel extends Widget
 
     public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
     {
-        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
-            return false;
-        }
-
         if ($this->addComponentModal->isVisible()) {
+            if ($this->addComponentModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
             $isWithinModal = $this->addComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
             $selection = $this->addComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
 
             if (is_string($selection) && $selection !== '') {
@@ -311,7 +316,16 @@ class InspectorPanel extends Widget
         }
 
         if ($this->deleteComponentModal->isVisible()) {
+            if ($this->deleteComponentModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
             $isWithinModal = $this->deleteComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
             $selection = $this->deleteComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
 
             if (is_string($selection) && $selection !== '') {
@@ -322,7 +336,16 @@ class InspectorPanel extends Widget
         }
 
         if ($this->prefabReferenceModal->isVisible()) {
+            if ($this->prefabReferenceModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
             $isWithinModal = $this->prefabReferenceModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
             $selection = $this->prefabReferenceModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
 
             if (is_string($selection) && $selection !== '') {
@@ -333,7 +356,16 @@ class InspectorPanel extends Widget
         }
 
         if ($this->pathInputActionModal->isVisible()) {
+            if ($this->pathInputActionModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
             $isWithinModal = $this->pathInputActionModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
             $selection = $this->pathInputActionModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
 
             if (is_string($selection) && $selection !== '') {
@@ -344,7 +376,16 @@ class InspectorPanel extends Widget
         }
 
         if ($this->fileDialogModal->isVisible()) {
+            if ($this->fileDialogModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
             $isWithinModal = $this->fileDialogModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
             $selectedPath = $this->fileDialogModal->clickEntryAtPoint($mouseEvent->x, $mouseEvent->y);
 
             if (is_string($selectedPath) && $selectedPath !== '') {
@@ -553,7 +594,12 @@ class InspectorPanel extends Widget
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
-        $contentIndex = $lineIndex - $this->padding->topPadding;
+        $contentIndex = $this->getContentIndexForLineIndex($lineIndex);
+
+        if (!is_int($contentIndex)) {
+            return parent::decorateContentLine($line, $contentColor, $lineIndex);
+        }
+
         $lineKind = $this->lineKinds[$contentIndex] ?? null;
 
         if ($lineKind === 'section_header') {
@@ -580,7 +626,12 @@ class InspectorPanel extends Widget
 
     private function decorateSectionHeaderLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
-        $contentIndex = $lineIndex - $this->padding->topPadding;
+        $contentIndex = $this->getContentIndexForLineIndex($lineIndex);
+
+        if (!is_int($contentIndex)) {
+            return parent::decorateContentLine($line, $contentColor, $lineIndex);
+        }
+
         $lineState = $this->lineStates[$contentIndex] ?? 'normal';
         $visibleLine = mb_substr($line, 0, $this->width);
         $visibleLength = mb_strlen($visibleLine);
@@ -1093,6 +1144,7 @@ class InspectorPanel extends Widget
         $this->lineKinds = $lineKinds;
         $this->lineStates = $lineStates;
         $this->lineControlIndexes = $lineControlIndexes;
+        $this->ensureContentLineVisible($this->resolveSelectedContentIndex());
     }
 
     private function updateHelpInfo(): void
@@ -3012,15 +3064,30 @@ PHP;
 
     private function resolveControlIndexFromPoint(int $x, int $y): ?int
     {
-        $lineIndex = $y - $this->getContentAreaTop();
+        $contentIndex = $this->resolveContentIndexFromPointY($y);
 
-        if ($lineIndex < 0) {
+        if (!is_int($contentIndex)) {
             return null;
         }
 
-        $controlIndex = $this->lineControlIndexes[$lineIndex] ?? null;
+        $controlIndex = $this->lineControlIndexes[$contentIndex] ?? null;
 
         return is_int($controlIndex) ? $controlIndex : null;
+    }
+
+    private function resolveSelectedContentIndex(): ?int
+    {
+        if ($this->selectedControlIndex === null) {
+            return null;
+        }
+
+        foreach ($this->lineControlIndexes as $contentIndex => $controlIndex) {
+            if ($controlIndex === $this->selectedControlIndex) {
+                return $contentIndex;
+            }
+        }
+
+        return null;
     }
 
     private function registerControlClickAndCheckDoubleClick(int $controlIndex): bool

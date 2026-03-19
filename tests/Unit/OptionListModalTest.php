@@ -1,5 +1,6 @@
 <?php
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Sendama\Console\Editor\Widgets\OptionListModal;
 
 function getOptionListModalContentAreaPosition(OptionListModal $modal): array
@@ -41,4 +42,43 @@ test('option list modal selects an option when it is clicked', function () {
 
     expect($selection)->toBe('Beta');
     expect($modal->getSelectedOption())->toBe('Beta');
+});
+
+test('option list modal renders a scrollbar when the list overflows', function () {
+    $modal = new OptionListModal();
+    $modal->show(array_map(
+        static fn (int $index): string => 'Option ' . $index,
+        range(1, 12),
+    ));
+    $modal->syncLayout(28, 8);
+
+    $buildRenderedContentLines = new ReflectionMethod($modal, 'buildRenderedContentLines');
+    $buildRenderedContentLines->setAccessible(true);
+    $lines = $buildRenderedContentLines->invoke($modal);
+
+    expect(array_any($lines, static fn (string $line): bool => str_contains($line, '█') || str_contains($line, '░')))->toBeTrue();
+});
+
+test('option list modal scrollbars are draggable without changing the selected option', function () {
+    $modal = new OptionListModal();
+    $modal->show(array_map(
+        static fn (int $index): string => 'Option ' . $index,
+        range(1, 20),
+    ));
+    $modal->syncLayout(28, 8);
+
+    $contentArea = getOptionListModalContentAreaPosition($modal);
+    $scrollbarX = $modal->x + $modal->innerWidth;
+    $dragStartY = $contentArea['y'];
+    $dragEndY = $contentArea['y'] + 4;
+
+    $modal->handleScrollbarMouseEvent(new MouseEvent("\033[<0;{$scrollbarX};{$dragStartY}M"));
+    $modal->handleScrollbarMouseEvent(new MouseEvent("\033[<32;{$scrollbarX};{$dragEndY}M"));
+    $modal->handleScrollbarMouseEvent(new MouseEvent("\033[<0;{$scrollbarX};{$dragEndY}m"));
+
+    $scrollOffset = new ReflectionProperty(OptionListModal::class, 'scrollOffset');
+    $scrollOffset->setAccessible(true);
+
+    expect($modal->getSelectedOption())->toBe('Option 1')
+        ->and($scrollOffset->getValue($modal))->toBeGreaterThan(0);
 });

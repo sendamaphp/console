@@ -13,6 +13,7 @@ This page gathers the most useful shortcuts, file locations, persistence rules, 
 | `Shift+1` | Open panel list |
 | `Shift+5` | Toggle play state |
 | `Shift+A` | Panel-local create action in `Hierarchy`, `Assets`, and `Inspector` |
+| `Shift+D` | Panel-local duplicate action in `Hierarchy` |
 | `Shift+E` | Panel-local secondary action in `Hierarchy` and `Main > Scene` |
 | `Ctrl+S` | Save the loaded scene |
 | `Ctrl+C` | Close the editor |
@@ -26,7 +27,10 @@ This page gathers the most useful shortcuts, file locations, persistence rules, 
 | `Left` | Collapse node or move to parent |
 | `Enter` | Inspect selection |
 | `Shift+A` | Add object |
+| `Shift+D` | Duplicate selected object set |
 | `Shift+E` | Export selected object as prefab |
+| `Shift+W` | Enter hierarchy move mode |
+| `Shift+Q` | Return to hierarchy select mode |
 | `Delete` | Delete selected object |
 
 Add-object types:
@@ -34,6 +38,8 @@ Add-object types:
 - `GameObject`
 - `UIElement -> Text`
 - `UIElement -> Label`
+
+When `GameObject` is chosen and a `GameObject` is currently selected, the editor lets you choose whether the new object is created at the root or as a child of that selected object.
 
 ## Assets Panel
 
@@ -85,6 +91,12 @@ Select mode:
 | `Up` / `Left` | Previous visible object |
 | `Down` / `Right` | Next visible object |
 | `Enter` | Inspect selected object |
+| `Shift+D` | Duplicate selected object set |
+
+Mouse:
+
+- click a visible object to select it
+- `Ctrl+Click` adds the clicked object to the current Scene selection set
 
 Move mode:
 

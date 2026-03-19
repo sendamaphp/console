@@ -464,6 +464,8 @@ final class Editor implements ObservableInterface
         $this->synchronizeAssetCreations();
         $this->synchronizeHierarchyDeletions();
         $this->synchronizeHierarchyAdditions();
+        $this->synchronizeHierarchyMoves();
+        $this->synchronizeHierarchyDuplications();
         $this->synchronizeHierarchyPrefabCreations();
         $this->synchronizeMainPanelSceneChanges();
         $this->synchronizeMainPanelAssetChanges();
@@ -856,11 +858,15 @@ final class Editor implements ObservableInterface
 
     private function handleProjectNormalizationModalMouseEvent(MouseEvent $mouseEvent): void
     {
-        if (
-            !$this->projectNormalizationModal instanceof OptionListModal
-            || $mouseEvent->buttonIndex !== 0
-            || $mouseEvent->action !== 'Pressed'
-        ) {
+        if (!$this->projectNormalizationModal instanceof OptionListModal) {
+            return;
+        }
+
+        if ($this->projectNormalizationModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
             return;
         }
 
@@ -1406,19 +1412,91 @@ final class Editor implements ObservableInterface
     {
         $newItem = $this->hierarchyPanel->consumeCreationRequest();
 
-        if (!$this->loadedScene instanceof DTOs\SceneDTO || !is_array($newItem) || $newItem === []) {
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($newItem)
+            || !is_array($newItem['value'] ?? null)
+        ) {
             return;
         }
 
-        $this->loadedScene->hierarchy[] = $newItem;
+        $parentPath = is_string($newItem['parentPath'] ?? null) ? $newItem['parentPath'] : null;
+        $newPath = $parentPath !== null
+            ? $this->appendHierarchyChild($parentPath, $newItem['value'])
+            : $this->appendHierarchyRoot($newItem['value']);
+
+        if (!is_string($newPath) || $newPath === '') {
+            return;
+        }
+
         $this->loadedScene->isDirty = true;
         $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
         $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
-        $newPath = 'scene.' . (count($this->loadedScene->hierarchy) - 1);
+
+        if ($parentPath !== null) {
+            $this->hierarchyPanel->expandPath($parentPath);
+        }
+
         $this->hierarchyPanel->selectPath($newPath);
         $this->syncScenePanels(true);
         $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
         $this->mainPanel->selectSceneObject($newPath);
+    }
+
+    private function synchronizeHierarchyMoves(): void
+    {
+        $moveRequest = $this->hierarchyPanel->consumeMoveRequest();
+
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($moveRequest)
+            || !is_string($moveRequest['path'] ?? null)
+            || ($moveRequest['path'] ?? '') === ''
+            || !is_string($moveRequest['targetPath'] ?? null)
+            || ($moveRequest['targetPath'] ?? '') === ''
+            || !in_array($moveRequest['position'] ?? null, ['before', 'after', 'append_child'], true)
+        ) {
+            return;
+        }
+
+        $targetPathForExpansion = $moveRequest['position'] === 'append_child'
+            ? $this->adjustHierarchyPathAfterRemoval($moveRequest['path'], $moveRequest['targetPath'])
+            : null;
+
+        $newPath = $this->moveHierarchyNodeRelative(
+            $moveRequest['path'],
+            $moveRequest['targetPath'],
+            $moveRequest['position'],
+        );
+
+        if (!is_string($newPath) || $newPath === '') {
+            return;
+        }
+
+        $movedValue = $this->findHierarchyNodeByPath($newPath);
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+
+        if (is_string($targetPathForExpansion) && $targetPathForExpansion !== '') {
+            $this->hierarchyPanel->expandPath($targetPathForExpansion);
+        }
+
+        $this->hierarchyPanel->selectPath($newPath);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObject($newPath);
+
+        if (is_array($movedValue)) {
+            $this->inspectorPanel->inspectTarget([
+                'context' => 'hierarchy',
+                'name' => $movedValue['name'] ?? 'Unnamed Object',
+                'type' => $this->resolveHierarchyInspectionType($movedValue),
+                'path' => $newPath,
+                'value' => $movedValue,
+            ]);
+        }
     }
 
     private function synchronizeHierarchyPrefabCreations(): void
@@ -1443,6 +1521,61 @@ final class Editor implements ObservableInterface
         $this->assetsPanel->consumeInspectionRequest();
         $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdPrefabAsset, true));
         $this->setFocusedPanel($this->inspectorPanel);
+    }
+
+    private function synchronizeHierarchyDuplications(): void
+    {
+        $duplicationRequest = $this->hierarchyPanel->consumeDuplicationRequest()
+            ?? $this->mainPanel->consumeDuplicationRequest();
+
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($duplicationRequest)
+            || !is_array($duplicationRequest['items'] ?? null)
+        ) {
+            return;
+        }
+
+        $duplicationItems = $this->filterRedundantDuplicationItems($duplicationRequest['items']);
+
+        if ($duplicationItems === []) {
+            return;
+        }
+
+        usort($duplicationItems, [$this, 'compareHierarchyPathsDescending']);
+        $newPaths = [];
+
+        foreach ($duplicationItems as $duplicationItem) {
+            $path = $duplicationItem['path'] ?? null;
+            $value = $duplicationItem['value'] ?? null;
+
+            if (!is_string($path) || $path === '' || !is_array($value)) {
+                continue;
+            }
+
+            $duplicatedValue = $value;
+            $duplicatedValue['name'] = $this->buildUniqueDuplicateHierarchyName($path, $value['name'] ?? 'Object');
+            $newPath = $this->insertHierarchyNodeAfter($path, $duplicatedValue);
+
+            if (is_string($newPath) && $newPath !== '') {
+                $newPaths[] = $newPath;
+            }
+        }
+
+        if ($newPaths === []) {
+            return;
+        }
+
+        usort($newPaths, [$this, 'compareHierarchyPathsAscending']);
+        $primaryPath = end($newPaths);
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->hierarchyPanel->selectPaths($newPaths, is_string($primaryPath) ? $primaryPath : null);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObjects($newPaths, is_string($primaryPath) ? $primaryPath : null);
     }
 
     private function synchronizeHierarchyDeletions(): void
@@ -1674,6 +1807,494 @@ final class Editor implements ObservableInterface
         }
 
         return false;
+    }
+
+    private function insertHierarchyNodeAfter(string $path, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                array_splice($nodeArray, $numericSegment + 1, 0, [$value]);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                $parentSegments = $segments;
+                array_pop($parentSegments);
+                $newPathSegments = ['scene', ...$parentSegments, (string) ($numericSegment + 1)];
+
+                return implode('.', $newPathSegments);
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function insertHierarchyNodeBefore(string $path, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                array_splice($nodeArray, $numericSegment, 0, [$value]);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                $parentSegments = $segments;
+                array_pop($parentSegments);
+                $newPathSegments = ['scene', ...$parentSegments, (string) $numericSegment];
+
+                return implode('.', $newPathSegments);
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function appendHierarchyRoot(array $value): string
+    {
+        $this->loadedScene->hierarchy[] = $value;
+
+        return 'scene.' . (count($this->loadedScene->hierarchy) - 1);
+    }
+
+    private function appendHierarchyChild(string $parentPath, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $parentPath);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return $this->appendHierarchyRoot($value);
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                $nodeArray[$numericSegment]['children'] ??= [];
+
+                if (!is_array($nodeArray[$numericSegment]['children'])) {
+                    return null;
+                }
+
+                $nodeArray[$numericSegment]['children'][] = $value;
+                $newChildIndex = count($nodeArray[$numericSegment]['children']) - 1;
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return $parentPath . '.' . $newChildIndex;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function moveHierarchyNodeRelative(string $path, string $targetPath, string $position): ?string
+    {
+        if ($path === $targetPath || str_starts_with($targetPath, $path . '.')) {
+            return null;
+        }
+
+        $node = $this->extractHierarchyNode($path);
+
+        if (!is_array($node)) {
+            return null;
+        }
+
+        $adjustedTargetPath = $this->adjustHierarchyPathAfterRemoval($path, $targetPath);
+
+        return match ($position) {
+            'before' => $this->insertHierarchyNodeBefore($adjustedTargetPath, $node),
+            'after' => $this->insertHierarchyNodeAfter($adjustedTargetPath, $node),
+            'append_child' => $this->appendHierarchyChild($adjustedTargetPath, $node),
+            default => null,
+        };
+    }
+
+    private function extractHierarchyNode(string $path): ?array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                $node = $nodeArray[$numericSegment];
+                unset($nodeArray[$numericSegment]);
+                $nodeArray = array_values($nodeArray);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return is_array($node) ? $node : null;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function adjustHierarchyPathAfterRemoval(string $removedPath, string $targetPath): string
+    {
+        $removedSegments = array_slice(explode('.', $removedPath), 1);
+        $targetSegments = array_slice(explode('.', $targetPath), 1);
+
+        if ($removedSegments === [] || $targetSegments === []) {
+            return $targetPath;
+        }
+
+        $removedIndex = (int) array_pop($removedSegments);
+        $removedParentSegments = $removedSegments;
+        $removedDepth = count($removedParentSegments);
+
+        if (count($targetSegments) <= $removedDepth) {
+            return $targetPath;
+        }
+
+        if (array_slice($targetSegments, 0, $removedDepth) !== $removedParentSegments) {
+            return $targetPath;
+        }
+
+        $targetIndex = (int) ($targetSegments[$removedDepth] ?? -1);
+
+        if ($targetIndex <= $removedIndex) {
+            return $targetPath;
+        }
+
+        $targetSegments[$removedDepth] = (string) ($targetIndex - 1);
+
+        return 'scene.' . implode('.', $targetSegments);
+    }
+
+    private function findHierarchyNodeByPath(string $path): ?array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $nodeArray = $this->loadedScene->hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                return $nodeArray[$numericSegment];
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = $nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function resolveHierarchyInspectionType(array $value): string
+    {
+        $type = $value['type'] ?? null;
+
+        if (!is_string($type) || $type === '') {
+            return 'Unknown';
+        }
+
+        $normalizedType = ltrim($type, '\\');
+        $normalizedType = preg_replace('/::class$/', '', $normalizedType) ?? $normalizedType;
+        $typeSegments = explode('\\', $normalizedType);
+
+        return end($typeSegments) ?: $normalizedType;
+    }
+
+    private function filterRedundantDuplicationItems(array $items): array
+    {
+        $normalizedItems = [];
+
+        foreach ($items as $item) {
+            $path = $item['path'] ?? null;
+            $value = $item['value'] ?? null;
+
+            if (!is_string($path) || $path === '' || !is_array($value)) {
+                continue;
+            }
+
+            $normalizedItems[$path] = [
+                'path' => $path,
+                'value' => $value,
+            ];
+        }
+
+        $paths = array_keys($normalizedItems);
+        usort($paths, static function (string $left, string $right): int {
+            return substr_count($left, '.') <=> substr_count($right, '.');
+        });
+
+        $filteredItems = [];
+
+        foreach ($paths as $path) {
+            $hasSelectedAncestor = false;
+
+            foreach (array_keys($filteredItems) as $keptPath) {
+                if (str_starts_with($path, $keptPath . '.')) {
+                    $hasSelectedAncestor = true;
+                    break;
+                }
+            }
+
+            if ($hasSelectedAncestor) {
+                continue;
+            }
+
+            $filteredItems[$path] = $normalizedItems[$path];
+        }
+
+        return array_values($filteredItems);
+    }
+
+    private function buildUniqueDuplicateHierarchyName(string $path, string $originalName): string
+    {
+        $siblingNames = $this->collectSiblingHierarchyNames($path);
+        $trimmedName = trim($originalName);
+        $baseName = $trimmedName !== '' ? $trimmedName : 'Object';
+
+        if (preg_match('/^(.*?)(\d+)$/', $baseName, $matches) === 1) {
+            $prefix = $matches[1];
+            $numericSuffix = $matches[2];
+            $nextNumber = ((int) $numericSuffix) + 1;
+            $padding = strlen($numericSuffix);
+
+            do {
+                $candidateName = $prefix . str_pad((string) $nextNumber, $padding, '0', STR_PAD_LEFT);
+                $nextNumber++;
+            } while (in_array($candidateName, $siblingNames, true));
+
+            return $candidateName;
+        }
+
+        $prefix = rtrim($baseName) . ' ';
+        $nextNumber = 1;
+
+        do {
+            $candidateName = $prefix . $nextNumber;
+            $nextNumber++;
+        } while (in_array($candidateName, $siblingNames, true));
+
+        return $candidateName;
+    }
+
+    private function collectSiblingHierarchyNames(string $path): array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return [];
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return [];
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return [];
+        }
+
+        $nodeArray = $this->loadedScene->hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return [];
+            }
+
+            $numericSegment = (int) $segment;
+
+            if ($index === $lastIndex) {
+                return array_values(array_filter(array_map(
+                    static fn (mixed $item): ?string => is_array($item) && is_string($item['name'] ?? null) ? $item['name'] : null,
+                    $nodeArray
+                )));
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return [];
+            }
+
+            $nodeArray = $nodeArray[$numericSegment]['children'];
+        }
+
+        return [];
+    }
+
+    private function compareHierarchyPathsDescending(array $left, array $right): int
+    {
+        return $this->compareHierarchyPaths($right['path'] ?? '', $left['path'] ?? '');
+    }
+
+    private function compareHierarchyPathsAscending(string $left, string $right): int
+    {
+        return $this->compareHierarchyPaths($left, $right);
+    }
+
+    private function compareHierarchyPaths(string $left, string $right): int
+    {
+        $leftSegments = array_map('intval', array_slice(explode('.', $left), 1));
+        $rightSegments = array_map('intval', array_slice(explode('.', $right), 1));
+        $maxLength = max(count($leftSegments), count($rightSegments));
+
+        for ($index = 0; $index < $maxLength; $index++) {
+            $leftSegment = $leftSegments[$index] ?? -1;
+            $rightSegment = $rightSegments[$index] ?? -1;
+
+            if ($leftSegment !== $rightSegment) {
+                return $leftSegment <=> $rightSegment;
+            }
+        }
+
+        return count($leftSegments) <=> count($rightSegments);
     }
 
     private function deleteAssetPath(string $path): bool

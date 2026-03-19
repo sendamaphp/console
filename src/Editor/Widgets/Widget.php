@@ -14,6 +14,9 @@ use Sendama\Console\Editor\Interfaces\FocusableInterface;
  */
 abstract class Widget extends Window implements FocusableInterface
 {
+    private const string SCROLLBAR_TRACK_CHARACTER = '░';
+    private const string SCROLLBAR_THUMB_CHARACTER = '█';
+
     protected ?Widget $topSibling = null;
     protected ?Widget $rightSibling = null;
     protected ?Widget $bottomSibling = null;
@@ -46,6 +49,8 @@ abstract class Widget extends Window implements FocusableInterface
     protected(set) bool $isEnabled = true;
     protected bool $hasFocus = false;
     protected Color $focusBorderColor = Color::LIGHT_CYAN;
+    protected int $verticalScrollOffset = 0;
+    protected bool $isScrollbarDragging = false;
 
     /**
      * Enables the widget.
@@ -118,6 +123,10 @@ abstract class Widget extends Window implements FocusableInterface
 
     public function handleMouseEvent(MouseEvent $mouseEvent): void
     {
+        if ($this->handleScrollbarMouseEvent($mouseEvent)) {
+            return;
+        }
+
         if ($mouseEvent->action === 'Pressed') {
             $this->handleMouseClick($mouseEvent->x, $mouseEvent->y);
             return;
@@ -131,6 +140,69 @@ abstract class Widget extends Window implements FocusableInterface
         if ($mouseEvent->action === 'Released') {
             $this->handleMouseRelease($mouseEvent->x, $mouseEvent->y);
         }
+    }
+
+    public function handleScrollbarMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($this->isScrollbarDragging) {
+            if (in_array($mouseEvent->action, ['Dragged', 'Released'], true)) {
+                $this->applyScrollbarPointerPosition($mouseEvent->y);
+
+                if ($mouseEvent->action === 'Released') {
+                    $this->isScrollbarDragging = false;
+                }
+
+                return true;
+            }
+
+            if ($mouseEvent->action === 'Pressed' && $mouseEvent->buttonIndex !== 0) {
+                $this->isScrollbarDragging = false;
+                return false;
+            }
+        }
+
+        if (
+            $mouseEvent->buttonIndex === 0
+            && $mouseEvent->action === 'Pressed'
+            && $this->containsScrollbarPoint($mouseEvent->x, $mouseEvent->y)
+        ) {
+            $this->isScrollbarDragging = true;
+            $this->applyScrollbarPointerPosition($mouseEvent->y);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    public function containsScrollbarPoint(int $x, int $y): bool
+    {
+        $scrollbarState = $this->resolveVerticalScrollbarState();
+
+        if (
+            $scrollbarState === null
+            || !$this->containsPoint($x, $y)
+            || $x !== $this->getScrollbarColumnX()
+        ) {
+            return false;
+        }
+
+        $visibleLineIndex = $y - $this->getContentAreaTop();
+        $contentAreaRowIndex = $visibleLineIndex - $this->padding->topPadding;
+
+        if (!is_int($contentAreaRowIndex) || $contentAreaRowIndex < 0) {
+            return false;
+        }
+
+        $start = max(0, (int) ($scrollbarState['start'] ?? 0));
+        $visible = max(0, (int) ($scrollbarState['visible'] ?? 0));
+
+        return $contentAreaRowIndex >= $start && $contentAreaRowIndex < ($start + $visible);
+    }
+
+    public function isScrollbarDragging(): bool
+    {
+        return $this->isScrollbarDragging;
     }
 
     public function cycleFocusForward(): bool
@@ -332,32 +404,152 @@ abstract class Widget extends Window implements FocusableInterface
     {
         $innerWidth = max(1, $this->innerWidth);
         $innerHeight = max(1, $this->innerHeight);
-        $blankLine = $this->borderPack->vertical . str_repeat(' ', $innerWidth) . $this->borderPack->vertical;
+        $scrollbarState = $this->resolveVerticalScrollbarState();
+        $textInnerWidth = max(0, $innerWidth - ($scrollbarState !== null ? 1 : 0));
         $lines = [];
+        $contentAreaRowIndex = 0;
 
         for ($row = 0; $row < $this->padding->topPadding && count($lines) < $innerHeight; $row++) {
-            $lines[] = $blankLine;
+            $lines[] = $this->buildViewportLine('', $textInnerWidth, $scrollbarState, null);
         }
 
         $contentLineLimit = max(0, $innerHeight - $this->padding->bottomPadding);
+        $contentLines = $this->resolveRenderableContentLines();
 
-        foreach ($this->content as $lineOfContent) {
+        foreach ($contentLines as $lineOfContent) {
             if (count($lines) >= $contentLineLimit) {
                 break;
             }
 
-            $lines[] = $this->buildContentLine((string) $lineOfContent, $innerWidth);
+            $lines[] = $this->buildViewportLine((string) $lineOfContent, $textInnerWidth, $scrollbarState, $contentAreaRowIndex);
+            $contentAreaRowIndex++;
         }
 
         while (count($lines) < $contentLineLimit) {
-            $lines[] = $blankLine;
+            $lines[] = $this->buildViewportLine('', $textInnerWidth, $scrollbarState, $contentAreaRowIndex);
+            $contentAreaRowIndex++;
         }
 
         while (count($lines) < $innerHeight) {
-            $lines[] = $blankLine;
+            $lines[] = $this->buildViewportLine('', $textInnerWidth, $scrollbarState, null);
         }
 
         return $lines;
+    }
+
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return true;
+    }
+
+    protected function getVerticalScrollViewportLineCount(): int
+    {
+        return max(1, $this->innerHeight - $this->padding->topPadding - $this->padding->bottomPadding);
+    }
+
+    protected function ensureContentLineVisible(?int $contentIndex): void
+    {
+        if (!$this->usesAutomaticVerticalScrolling() || !is_int($contentIndex) || $contentIndex < 0) {
+            return;
+        }
+
+        $visibleLineCount = $this->getVerticalScrollViewportLineCount();
+
+        if ($visibleLineCount <= 0) {
+            $this->verticalScrollOffset = 0;
+            return;
+        }
+
+        $this->clampVerticalScrollOffset();
+
+        if ($contentIndex < $this->verticalScrollOffset) {
+            $this->verticalScrollOffset = $contentIndex;
+        } elseif ($contentIndex >= $this->verticalScrollOffset + $visibleLineCount) {
+            $this->verticalScrollOffset = $contentIndex - $visibleLineCount + 1;
+        }
+
+        $this->clampVerticalScrollOffset();
+    }
+
+    protected function getContentIndexForLineIndex(int $lineIndex): ?int
+    {
+        $contentRowIndex = $lineIndex - $this->padding->topPadding;
+
+        if ($contentRowIndex < 0) {
+            return null;
+        }
+
+        $contentIndex = $this->usesAutomaticVerticalScrolling()
+            ? $this->getClampedVerticalScrollOffset() + $contentRowIndex
+            : $contentRowIndex;
+
+        if (!array_key_exists($contentIndex, $this->content)) {
+            return null;
+        }
+
+        return $contentIndex;
+    }
+
+    protected function getRenderedLineIndexForContentIndex(int $contentIndex): ?int
+    {
+        if ($contentIndex < 0) {
+            return null;
+        }
+
+        if ($this->usesAutomaticVerticalScrolling()) {
+            $scrollOffset = $this->getClampedVerticalScrollOffset();
+            $visibleLineCount = $this->getVerticalScrollViewportLineCount();
+
+            if ($contentIndex < $scrollOffset || $contentIndex >= $scrollOffset + $visibleLineCount) {
+                return null;
+            }
+
+            return $this->padding->topPadding + ($contentIndex - $scrollOffset);
+        }
+
+        return array_key_exists($contentIndex, $this->content)
+            ? $this->padding->topPadding + $contentIndex
+            : null;
+    }
+
+    protected function resolveContentIndexFromPointY(int $y): ?int
+    {
+        return $this->getContentIndexForLineIndex($y - $this->getContentAreaTop());
+    }
+
+    protected function setScrollbarOffset(int $offset): void
+    {
+        $this->verticalScrollOffset = max(0, $offset);
+        $this->clampVerticalScrollOffset();
+        $this->handleScrollbarOffsetChanged();
+    }
+
+    protected function handleScrollbarOffsetChanged(): void
+    {
+    }
+
+    /**
+     * @return array{offset:int, visible:int, total:int, start:int}|null
+     */
+    protected function resolveVerticalScrollbarState(): ?array
+    {
+        if (!$this->usesAutomaticVerticalScrolling()) {
+            return null;
+        }
+
+        $visibleLineCount = $this->getVerticalScrollViewportLineCount();
+        $totalLineCount = count($this->content);
+
+        if ($visibleLineCount <= 0 || $totalLineCount <= $visibleLineCount) {
+            return null;
+        }
+
+        return [
+            'offset' => $this->getClampedVerticalScrollOffset(),
+            'visible' => $visibleLineCount,
+            'total' => $totalLineCount,
+            'start' => 0,
+        ];
     }
 
     protected function buildContentLine(string $content, int $innerWidth): string
@@ -565,6 +757,139 @@ abstract class Widget extends Window implements FocusableInterface
         }
 
         return $sequence . $content . Color::RESET->value;
+    }
+
+    private function resolveRenderableContentLines(): array
+    {
+        if (!$this->usesAutomaticVerticalScrolling()) {
+            return $this->content;
+        }
+
+        $this->clampVerticalScrollOffset();
+
+        return array_slice(
+            $this->content,
+            $this->verticalScrollOffset,
+            $this->getVerticalScrollViewportLineCount(),
+        );
+    }
+
+    private function clampVerticalScrollOffset(): void
+    {
+        $this->verticalScrollOffset = $this->getClampedVerticalScrollOffset();
+    }
+
+    private function getScrollbarColumnX(): int
+    {
+        return ($this->position['x'] ?? 0) + $this->innerWidth;
+    }
+
+    private function applyScrollbarPointerPosition(int $y): void
+    {
+        $scrollbarState = $this->resolveVerticalScrollbarState();
+
+        if ($scrollbarState === null) {
+            $this->isScrollbarDragging = false;
+            return;
+        }
+
+        $visibleLineIndex = $y - $this->getContentAreaTop();
+        $contentAreaRowIndex = $visibleLineIndex - $this->padding->topPadding;
+        $scrollbarStart = max(0, (int) ($scrollbarState['start'] ?? 0));
+        $visibleLineCount = max(0, (int) ($scrollbarState['visible'] ?? 0));
+        $totalLineCount = max(0, (int) ($scrollbarState['total'] ?? 0));
+
+        if ($visibleLineCount <= 0 || $totalLineCount <= 0) {
+            return;
+        }
+
+        $relativeRow = max(0, min($visibleLineCount - 1, $contentAreaRowIndex - $scrollbarStart));
+        $maxScrollOffset = max(0, $totalLineCount - $visibleLineCount);
+
+        if ($maxScrollOffset === 0) {
+            $this->setScrollbarOffset(0);
+            return;
+        }
+
+        $ratio = $visibleLineCount <= 1 ? 0.0 : ($relativeRow / ($visibleLineCount - 1));
+        $this->setScrollbarOffset((int) round($ratio * $maxScrollOffset));
+    }
+
+    private function getClampedVerticalScrollOffset(): int
+    {
+        if (!$this->usesAutomaticVerticalScrolling()) {
+            return 0;
+        }
+
+        $maxScrollOffset = max(0, count($this->content) - $this->getVerticalScrollViewportLineCount());
+
+        return max(0, min($this->verticalScrollOffset, $maxScrollOffset));
+    }
+
+    /**
+     * @param array{offset:int, visible:int, total:int, start:int}|null $scrollbarState
+     */
+    private function buildViewportLine(
+        string $content,
+        int $textInnerWidth,
+        ?array $scrollbarState,
+        ?int $contentAreaRowIndex,
+    ): string
+    {
+        $line = $this->buildContentLine($content, $textInnerWidth);
+
+        if ($scrollbarState === null) {
+            return $line;
+        }
+
+        $visibleLength = mb_strlen($line);
+
+        if ($visibleLength === 0) {
+            return $line;
+        }
+
+        $lineWithoutRightBorder = mb_substr($line, 0, $visibleLength - 1);
+        $rightBorder = mb_substr($line, -1);
+
+        return $lineWithoutRightBorder
+            . $this->resolveScrollbarCharacter($scrollbarState, $contentAreaRowIndex)
+            . $rightBorder;
+    }
+
+    /**
+     * @param array{offset:int, visible:int, total:int, start:int} $scrollbarState
+     */
+    private function resolveScrollbarCharacter(array $scrollbarState, ?int $contentAreaRowIndex): string
+    {
+        if (!is_int($contentAreaRowIndex)) {
+            return ' ';
+        }
+
+        $scrollbarStart = max(0, (int) ($scrollbarState['start'] ?? 0));
+        $visibleLineCount = max(0, (int) ($scrollbarState['visible'] ?? 0));
+        $totalLineCount = max(0, (int) ($scrollbarState['total'] ?? 0));
+
+        if (
+            $visibleLineCount === 0
+            || $totalLineCount === 0
+            || $contentAreaRowIndex < $scrollbarStart
+            || $contentAreaRowIndex >= ($scrollbarStart + $visibleLineCount)
+        ) {
+            return ' ';
+        }
+
+        $relativeRow = $contentAreaRowIndex - $scrollbarStart;
+        $scrollOffset = max(0, (int) ($scrollbarState['offset'] ?? 0));
+        $thumbHeight = max(1, (int) ceil(($visibleLineCount * $visibleLineCount) / max(1, $totalLineCount)));
+        $maxThumbStart = max(0, $visibleLineCount - $thumbHeight);
+        $maxScrollOffset = max(0, $totalLineCount - $visibleLineCount);
+        $thumbStart = $maxScrollOffset === 0
+            ? 0
+            : (int) round(($scrollOffset / $maxScrollOffset) * $maxThumbStart);
+
+        return ($relativeRow >= $thumbStart && $relativeRow < ($thumbStart + $thumbHeight))
+            ? self::SCROLLBAR_THUMB_CHARACTER
+            : self::SCROLLBAR_TRACK_CHARACTER;
     }
 
     /**

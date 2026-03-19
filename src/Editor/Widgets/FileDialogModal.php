@@ -168,7 +168,7 @@ class FileDialogModal extends Widget
             return null;
         }
 
-        $entryIndex = $y - $this->getContentAreaTop();
+        $entryIndex = $this->resolveContentIndexFromPointY($y);
         $entry = $this->visibleEntries[$entryIndex] ?? null;
 
         if (!is_array($entry)) {
@@ -229,12 +229,22 @@ class FileDialogModal extends Widget
     {
     }
 
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return true;
+    }
+
+    protected function handleScrollbarOffsetChanged(): void
+    {
+        $this->markDirty();
+    }
+
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $selectedVisibleIndex = $this->getSelectedVisibleIndex();
-        $selectedLineIndex = $selectedVisibleIndex === null
-            ? null
-            : $this->padding->topPadding + $selectedVisibleIndex;
+        $selectedLineIndex = is_int($selectedVisibleIndex)
+            ? $this->getRenderedLineIndexForContentIndex($selectedVisibleIndex)
+            : null;
 
         if ($lineIndex !== $selectedLineIndex) {
             return parent::decorateContentLine($line, $contentColor, $lineIndex);
@@ -342,6 +352,7 @@ class FileDialogModal extends Widget
         $this->visibleEntries = $this->buildVisibleEntries($this->entryTree);
         $this->syncSelectedPath();
         $this->content = array_map(fn(array $entry) => $this->formatVisibleEntry($entry), $this->visibleEntries);
+        $this->ensureContentLineVisible($this->getSelectedVisibleIndex());
         $this->markDirty();
     }
 

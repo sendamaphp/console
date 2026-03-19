@@ -151,6 +151,37 @@ class OptionListModal extends Widget
     {
     }
 
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return false;
+    }
+
+    protected function setScrollbarOffset(int $offset): void
+    {
+        $visibleOptionCount = $this->getVisibleOptionCount();
+        $maxScrollOffset = max(0, count($this->options) - $visibleOptionCount);
+        $this->scrollOffset = max(0, min($offset, $maxScrollOffset));
+        $this->refreshContent();
+        $this->markDirty();
+    }
+
+    protected function resolveVerticalScrollbarState(): ?array
+    {
+        $visibleOptionCount = $this->getVisibleOptionCount();
+        $optionCount = count($this->options);
+
+        if ($visibleOptionCount <= 0 || $optionCount <= $visibleOptionCount) {
+            return null;
+        }
+
+        return [
+            'offset' => $this->scrollOffset,
+            'visible' => $visibleOptionCount,
+            'total' => $optionCount,
+            'start' => 0,
+        ];
+    }
+
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $selectedVisibleIndex = $this->selectedIndex - $this->scrollOffset;

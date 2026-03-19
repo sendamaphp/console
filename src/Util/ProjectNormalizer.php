@@ -42,8 +42,8 @@ final class ProjectNormalizer
             $issues[] = 'Missing sendama.json.';
         }
 
-        if (!is_file(Path::join($this->projectRoot, 'preferences..json'))) {
-            $issues[] = 'Missing preferences..json.';
+        if (!is_file(Path::join($this->projectRoot, 'preferences.json'))) {
+            $issues[] = 'Missing preferences.json.';
         }
 
         if (!is_dir($configDirectory)) {
@@ -121,9 +121,9 @@ final class ProjectNormalizer
         );
 
         $this->ensureFile(
-            Path::join($this->projectRoot, 'preferences..json'),
+            Path::join($this->projectRoot, 'preferences.json'),
             self::buildPreferencesJson(),
-            'Created preferences..json.',
+            'Created preferences.json.',
             $changes,
         );
 

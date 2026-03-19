@@ -3,6 +3,7 @@
 use Assegai\Collections\ItemList;
 use Atatusoft\Termutil\Events\MouseEvent;
 use Sendama\Console\Editor\Editor;
+use Sendama\Console\Editor\DTOs\SceneDTO;
 use Sendama\Console\Editor\PrefabWriter;
 use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
@@ -113,6 +114,405 @@ test('editor creates a prefab from the selected hierarchy object and focuses the
         ])
         ->and($focusedPanel->getValue($editor))->toBe($inspectorPanel)
         ->and($mainPanel->getActiveTab())->toBe('Scene');
+});
+
+test('editor duplicates the selected hierarchy object beside the original and selects it', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy Ship',
+                'tag' => 'Enemy',
+                'position' => ['x' => 60, 'y' => 12],
+                'rotation' => ['x' => 0, 'y' => 0],
+                'scale' => ['x' => 1, 'y' => 1],
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Enemy Ship',
+                    'tag' => 'Enemy',
+                    'position' => ['x' => 60, 'y' => 12],
+                    'rotation' => ['x' => 0, 'y' => 0],
+                    'scale' => ['x' => 1, 'y' => 1],
+                    'components' => [],
+                ],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+
+    $hierarchyPanel->expandSelection();
+    $hierarchyPanel->beginDuplicationWorkflow();
+
+    $synchronizeHierarchyDuplications = $reflection->getMethod('synchronizeHierarchyDuplications');
+    $synchronizeHierarchyDuplications->setAccessible(true);
+    $synchronizeHierarchyDuplications->invoke($editor);
+
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect($loadedScene->hierarchy)->toHaveCount(2)
+        ->and($loadedScene->hierarchy[0]['name'] ?? null)->toBe('Enemy Ship')
+        ->and($loadedScene->hierarchy[1]['name'] ?? null)->toBe('Enemy Ship 1')
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Enemy Ship 1')
+        ->and($sceneObjects->getValue($mainPanel)[1]['name'] ?? null)->toBe('Enemy Ship 1')
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class)
+        ->and($inspectorPanel)->toBeInstanceOf(InspectorPanel::class);
+});
+
+test('editor duplicates all selected hierarchy objects when hierarchy multiselect is active', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'components' => [],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player', 'components' => []],
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Enemy', 'components' => []],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+    $hierarchyPanel->selectPaths(['scene.0', 'scene.1'], 'scene.1');
+    $hierarchyPanel->beginDuplicationWorkflow();
+
+    $synchronizeHierarchyDuplications = $reflection->getMethod('synchronizeHierarchyDuplications');
+    $synchronizeHierarchyDuplications->setAccessible(true);
+    $synchronizeHierarchyDuplications->invoke($editor);
+
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect(array_column($loadedScene->hierarchy, 'name'))->toBe(['Player', 'Player 1', 'Enemy', 'Enemy 1'])
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Enemy 1')
+        ->and(array_column($sceneObjects->getValue($mainPanel), 'name'))->toBe(['Player', 'Player 1', 'Enemy', 'Enemy 1'])
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class)
+        ->and($inspectorPanel)->toBeInstanceOf(InspectorPanel::class);
+});
+
+test('editor adds a new hierarchy game object as a child of the selected parent', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'children' => [],
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Player',
+                    'children' => [],
+                    'components' => [],
+                ],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+
+    $pendingCreationItem = new ReflectionProperty(HierarchyPanel::class, 'pendingCreationItem');
+    $pendingCreationItem->setAccessible(true);
+    $pendingCreationItem->setValue($hierarchyPanel, [
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'GameObject #2',
+            'tag' => 'None',
+            'position' => ['x' => 0, 'y' => 0],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [],
+        ],
+        'parentPath' => 'scene.0',
+    ]);
+
+    $synchronizeHierarchyAdditions = $reflection->getMethod('synchronizeHierarchyAdditions');
+    $synchronizeHierarchyAdditions->setAccessible(true);
+    $synchronizeHierarchyAdditions->invoke($editor);
+
+    $inspectionTarget = new ReflectionProperty(InspectorPanel::class, 'inspectionTarget');
+    $inspectionTarget->setAccessible(true);
+
+    expect($loadedScene->hierarchy[0]['children'][0]['name'] ?? null)->toBe('GameObject #2')
+        ->and($hierarchyPanel->content)->toContain('  ▼ Player')
+        ->and($hierarchyPanel->content)->toContain('    • GameObject #2')
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('GameObject #2')
+        ->and($mainPanel)->toBeInstanceOf(MainPanel::class)
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class)
+        ->and($inspectorPanel)->toBeInstanceOf(InspectorPanel::class)
+        ->and($inspectionTarget->getValue($inspectorPanel))->not->toBeNull();
+});
+
+test('editor moves a hierarchy object into another tree during hierarchy move mode', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'children' => [
+                    ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Gun', 'components' => []],
+                ],
+                'components' => [],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Player',
+                    'children' => [
+                        ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Gun', 'components' => []],
+                    ],
+                    'components' => [],
+                ],
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Enemy',
+                    'components' => [],
+                ],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+
+    $pendingMoveItem = new ReflectionProperty(HierarchyPanel::class, 'pendingMoveItem');
+    $pendingMoveItem->setAccessible(true);
+    $pendingMoveItem->setValue($hierarchyPanel, [
+        'path' => 'scene.1',
+        'targetPath' => 'scene.0.0',
+        'position' => 'before',
+    ]);
+
+    $synchronizeHierarchyMoves = $reflection->getMethod('synchronizeHierarchyMoves');
+    $synchronizeHierarchyMoves->setAccessible(true);
+    $synchronizeHierarchyMoves->invoke($editor);
+
+    $inspectionTarget = new ReflectionProperty(InspectorPanel::class, 'inspectionTarget');
+    $inspectionTarget->setAccessible(true);
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect($loadedScene->hierarchy[0]['children'][0]['name'] ?? null)->toBe('Enemy')
+        ->and($loadedScene->hierarchy[1] ?? null)->toBeNull()
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Enemy')
+        ->and(($sceneObjects->getValue($mainPanel)[0]['children'][0]['name'] ?? null))->toBe('Enemy')
+        ->and($inspectionTarget->getValue($inspectorPanel))->toMatchArray([
+            'context' => 'hierarchy',
+            'name' => 'Enemy',
+            'path' => 'scene.0.0',
+        ])
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class);
+});
+
+test('editor reparents a hierarchy object as a child when append child move requests are synchronized', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'components' => [],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'children' => [],
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player', 'components' => []],
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Enemy', 'children' => [], 'components' => []],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+
+    $pendingMoveItem = new ReflectionProperty(HierarchyPanel::class, 'pendingMoveItem');
+    $pendingMoveItem->setAccessible(true);
+    $pendingMoveItem->setValue($hierarchyPanel, [
+        'path' => 'scene.0',
+        'targetPath' => 'scene.1',
+        'position' => 'append_child',
+    ]);
+
+    $synchronizeHierarchyMoves = $reflection->getMethod('synchronizeHierarchyMoves');
+    $synchronizeHierarchyMoves->setAccessible(true);
+    $synchronizeHierarchyMoves->invoke($editor);
+
+    $inspectionTarget = new ReflectionProperty(InspectorPanel::class, 'inspectionTarget');
+    $inspectionTarget->setAccessible(true);
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect($loadedScene->hierarchy)->toHaveCount(1)
+        ->and($loadedScene->hierarchy[0]['name'] ?? null)->toBe('Enemy')
+        ->and($loadedScene->hierarchy[0]['children'][0]['name'] ?? null)->toBe('Player')
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Player')
+        ->and(($sceneObjects->getValue($mainPanel)[0]['children'][0]['name'] ?? null))->toBe('Player')
+        ->and($inspectionTarget->getValue($inspectorPanel))->toMatchArray([
+            'context' => 'hierarchy',
+            'name' => 'Player',
+            'path' => 'scene.0.0',
+        ])
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class);
+});
+
+test('editor moves a hierarchy child back to the scene root when a root append move request is synchronized', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'children' => [
+                    ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Gun', 'components' => []],
+                ],
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Player',
+                    'children' => [
+                        ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Gun', 'components' => []],
+                    ],
+                    'components' => [],
+                ],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+
+    $pendingMoveItem = new ReflectionProperty(HierarchyPanel::class, 'pendingMoveItem');
+    $pendingMoveItem->setAccessible(true);
+    $pendingMoveItem->setValue($hierarchyPanel, [
+        'path' => 'scene.0.0',
+        'targetPath' => 'scene',
+        'position' => 'append_child',
+    ]);
+
+    $synchronizeHierarchyMoves = $reflection->getMethod('synchronizeHierarchyMoves');
+    $synchronizeHierarchyMoves->setAccessible(true);
+    $synchronizeHierarchyMoves->invoke($editor);
+
+    $inspectionTarget = new ReflectionProperty(InspectorPanel::class, 'inspectionTarget');
+    $inspectionTarget->setAccessible(true);
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect($loadedScene->hierarchy)->toHaveCount(2)
+        ->and($loadedScene->hierarchy[0]['name'] ?? null)->toBe('Player')
+        ->and($loadedScene->hierarchy[0]['children'] ?? [])->toBe([])
+        ->and($loadedScene->hierarchy[1]['name'] ?? null)->toBe('Gun')
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Gun')
+        ->and(($sceneObjects->getValue($mainPanel)[1]['name'] ?? null))->toBe('Gun')
+        ->and($inspectionTarget->getValue($inspectorPanel))->toMatchArray([
+            'context' => 'hierarchy',
+            'name' => 'Gun',
+            'path' => 'scene.1',
+        ])
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class);
+});
+
+test('editor duplicates all selected scene objects when scene multiselect is active', function () {
+    $workspace = createEditorPrefabExportWorkspace();
+    [$editor, $reflection, $hierarchyPanel, $assetsPanel, $mainPanel, $inspectorPanel] = createEditorForPrefabExport($workspace);
+
+    $loadedScene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'components' => [],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 8, 'y' => 1],
+                'components' => [],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Player', 'position' => ['x' => 2, 'y' => 1], 'components' => []],
+                ['type' => 'Sendama\\Engine\\Core\\GameObject', 'name' => 'Enemy', 'position' => ['x' => 8, 'y' => 1], 'components' => []],
+            ],
+        ],
+    );
+    $reflection->getProperty('loadedScene')->setValue($editor, $loadedScene);
+    $hierarchyPanel->syncHierarchy($loadedScene->hierarchy);
+    $mainPanel->setSceneObjects($loadedScene->hierarchy);
+    $mainPanel->selectSceneObjects(['scene.0', 'scene.1'], 'scene.1');
+
+    $beginSceneDuplicationWorkflow = new ReflectionMethod(MainPanel::class, 'beginSceneDuplicationWorkflow');
+    $beginSceneDuplicationWorkflow->setAccessible(true);
+    $beginSceneDuplicationWorkflow->invoke($mainPanel);
+
+    $synchronizeHierarchyDuplications = $reflection->getMethod('synchronizeHierarchyDuplications');
+    $synchronizeHierarchyDuplications->setAccessible(true);
+    $synchronizeHierarchyDuplications->invoke($editor);
+
+    $sceneObjects = new ReflectionProperty(MainPanel::class, 'sceneObjects');
+    $sceneObjects->setAccessible(true);
+
+    expect(array_column($loadedScene->hierarchy, 'name'))->toBe(['Player', 'Player 1', 'Enemy', 'Enemy 1'])
+        ->and($hierarchyPanel->getSelectedHierarchyObject()['name'] ?? null)->toBe('Enemy 1')
+        ->and(array_column($sceneObjects->getValue($mainPanel), 'name'))->toBe(['Player', 'Player 1', 'Enemy', 'Enemy 1'])
+        ->and($assetsPanel)->toBeInstanceOf(AssetsPanel::class)
+        ->and($inspectorPanel)->toBeInstanceOf(InspectorPanel::class);
 });
 
 test('editor selects panels when they are left-clicked', function () {

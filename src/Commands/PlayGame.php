@@ -3,6 +3,7 @@
 namespace Sendama\Console\Commands;
 
 use Dotenv\Dotenv;
+use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -23,7 +24,7 @@ class PlayGame extends Command
 
   public function execute(InputInterface $input, OutputInterface $output): int
   {
-    $directory = $input->getOption('directory') ?? '.';
+    $directory = $this->resolveAbsoluteDirectory((string) ($input->getOption('directory') ?? '.'));
     $sendamaConfigFilename = 'sendama.json';
     $sendamaDotEnvFilename = '.env';
 
@@ -59,12 +60,22 @@ class PlayGame extends Command
     }
 
     // Start the game using the main file
-    if (false === passthru("php $directory/$config->main" ) ) {
+    $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg((string) $config->main);
+    $descriptors = [
+      0 => ['file', 'php://stdin', 'r'],
+      1 => ['file', 'php://stdout', 'w'],
+      2 => ['file', 'php://stderr', 'w'],
+    ];
+    $process = proc_open($command, $descriptors, $pipes, $directory);
+
+    if (!is_resource($process)) {
       $output->writeln('Failed to start the game.');
       return Command::FAILURE;
     }
 
-    return Command::SUCCESS;
+    $exitCode = proc_close($process);
+
+    return $exitCode === 0 ? Command::SUCCESS : Command::FAILURE;
   }
 
   /**
@@ -76,5 +87,24 @@ class PlayGame extends Command
   private function isValidDirectory(string $directory): bool
   {
     return file_exists($directory . '/sendama.json');
+  }
+
+  private function resolveAbsoluteDirectory(string $directory): string
+  {
+    $normalizedDirectory = Path::normalize(trim($directory));
+
+    if ($normalizedDirectory === '' || $normalizedDirectory === '.') {
+      $normalizedDirectory = getcwd() ?: '.';
+    } elseif (!str_starts_with($normalizedDirectory, '/')) {
+      $normalizedDirectory = Path::join(getcwd() ?: '.', $normalizedDirectory);
+    }
+
+    $resolvedDirectory = realpath($normalizedDirectory);
+
+    if (is_string($resolvedDirectory) && $resolvedDirectory !== '') {
+      return Path::normalize($resolvedDirectory);
+    }
+
+    return Path::normalize($normalizedDirectory);
   }
 }

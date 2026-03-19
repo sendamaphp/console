@@ -11,7 +11,7 @@ function bootstrap(): void
   $game = new Game($gameName);
 
   $titleScene = new TitleScene('Title Screen');
-  $titleScene->setTitle($gameName);
+  $titleScene->setMenuTitle($gameName);
 
   $game
     ->addScenes($titleScene)

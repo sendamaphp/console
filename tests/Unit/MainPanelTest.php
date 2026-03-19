@@ -175,8 +175,8 @@ test('main panel renders the environment tile map behind scene objects', functio
         environmentTileMapPath: 'Maps/level',
     );
 
-    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'xxxxx')))->toBeTrue();
-    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x a x')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'xaxxx')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'x   x')))->toBeTrue();
 });
 
 test('main panel preserves scene row width when a sprite uses a wide multibyte glyph', function () {
@@ -208,9 +208,9 @@ test('main panel preserves scene row width when a sprite uses a wide multibyte g
     $buildSceneCanvasContent->setAccessible(true);
     $sceneRows = $buildSceneCanvasContent->invoke($panel);
 
-    expect($sceneRows[1])->toContain('👾');
-    expect(mb_strwidth($sceneRows[1], 'UTF-8'))->toBe(mb_strlen($sceneRows[1]) + 1);
-    expect(rtrim($sceneRows[1]))->toEndWith('x');
+    expect($sceneRows[0])->toContain('👾');
+    expect(mb_strwidth($sceneRows[0], 'UTF-8'))->toBe(mb_strlen($sceneRows[0]) + 1);
+    expect(rtrim($sceneRows[0]))->toEndWith('x');
 
     $buildRenderedContentLines = new ReflectionMethod($panel, 'buildRenderedContentLines');
     $buildRenderedContentLines->setAccessible(true);
@@ -260,7 +260,7 @@ test('main panel scene selection highlight stays aligned for wide multibyte glyp
     $selectedScenePath->setValue($panel, 'scene.0');
     $panel->selectTab('Scene');
     $renderedLines = $buildRenderedContentLines->invoke($panel);
-    $decoratedLine = $decorateSceneLine->invoke($panel, $renderedLines[3], null, 2);
+    $decoratedLine = $decorateSceneLine->invoke($panel, $renderedLines[2], null, 2);
 
     expect(substr_count($decoratedLine, '👾'))->toBe(1);
     expect(is_string($highlightSequence))->toBeTrue();
@@ -291,7 +291,7 @@ test('main panel selects a scene object when it is clicked in scene view', funct
     );
 
     $contentArea = getMainPanelContentAreaPosition($panel);
-    $panel->handleMouseClick($contentArea['x'] + 2, $contentArea['y'] + 3);
+    $panel->handleMouseClick($contentArea['x'] + 1, $contentArea['y'] + 2);
 
     expect($panel->consumeInspectionRequest())->toBe([
         'context' => 'hierarchy',
@@ -348,7 +348,7 @@ test('main panel can select a different scene object when it is clicked in scene
     );
 
     $contentArea = getMainPanelContentAreaPosition($panel);
-    $panel->handleMouseClick($contentArea['x'] + 8, $contentArea['y'] + 3);
+    $panel->handleMouseClick($contentArea['x'] + 7, $contentArea['y'] + 2);
 
     expect($panel->consumeInspectionRequest())->toBe([
         'context' => 'hierarchy',
@@ -367,6 +367,128 @@ test('main panel can select a different scene object when it is clicked in scene
                 ],
             ],
         ],
+    ]);
+});
+
+test('main panel adds ctrl-clicked scene objects to the selection set', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 8, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    $contentArea = getMainPanelContentAreaPosition($panel);
+    setMainPanelMouseEvent(new MouseEvent("\033[<16;" . ($contentArea['x'] + 7) . ';' . ($contentArea['y'] + 2) . 'M'));
+    $panel->handleMouseClick($contentArea['x'] + 7, $contentArea['y'] + 2);
+    setMainPanelMouseEvent(null);
+
+    $selectedScenePaths = new ReflectionProperty(MainPanel::class, 'selectedScenePaths');
+    $selectedScenePaths->setAccessible(true);
+
+    expect($selectedScenePaths->getValue($panel))->toBe(['scene.0', 'scene.1'])
+        ->and($panel->consumeInspectionRequest()['name'] ?? null)->toBe('Enemy');
+});
+
+test('main panel can queue duplication for multiple selected scene objects', function () {
+    $workspace = createMainPanelWorkspace();
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'position' => ['x' => 2, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/player',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'position' => ['x' => 8, 'y' => 1],
+                'sprite' => [
+                    'texture' => [
+                        'path' => 'Textures/enemy',
+                        'position' => ['x' => 0, 'y' => 0],
+                        'size' => ['x' => 1, 'y' => 1],
+                    ],
+                ],
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    $panel->selectSceneObjects(['scene.0', 'scene.1'], 'scene.1');
+    $beginSceneDuplicationWorkflow = new ReflectionMethod(MainPanel::class, 'beginSceneDuplicationWorkflow');
+    $beginSceneDuplicationWorkflow->setAccessible(true);
+    $beginSceneDuplicationWorkflow->invoke($panel);
+
+    expect($panel->consumeDuplicationRequest())->toBe([
+        'items' => [
+            [
+                'path' => 'scene.0',
+                'value' => [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Player',
+                    'position' => ['x' => 2, 'y' => 1],
+                    'sprite' => [
+                        'texture' => [
+                            'path' => 'Textures/player',
+                            'position' => ['x' => 0, 'y' => 0],
+                            'size' => ['x' => 1, 'y' => 1],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'path' => 'scene.1',
+                'value' => [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Enemy',
+                    'position' => ['x' => 8, 'y' => 1],
+                    'sprite' => [
+                        'texture' => [
+                            'path' => 'Textures/enemy',
+                            'position' => ['x' => 0, 'y' => 0],
+                            'size' => ['x' => 1, 'y' => 1],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        'primaryPath' => 'scene.1',
     ]);
 });
 
@@ -602,19 +724,43 @@ test('main panel restores selected renderable scene objects to their normal visi
     $hasFocus->setValue($panel, true);
     $refreshContent->invoke($panel);
 
-    $focusedLine = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
-    $focusedRenderedLine = $decorateSceneLine->invoke($panel, $focusedLine, null, 3);
+    $focusedLine = '|' . str_pad($panel->content[2], $panelWidth - 2) . '|';
+    $focusedRenderedLine = $decorateSceneLine->invoke($panel, $focusedLine, null, 2);
 
     expect($focusedRenderedLine)->toContain("\033[5;30;46m");
 
     $hasFocus->setValue($panel, false);
     $refreshContent->invoke($panel);
 
-    $blurredLine = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
-    $blurredRenderedLine = $decorateSceneLine->invoke($panel, $blurredLine, null, 3);
+    $blurredLine = '|' . str_pad($panel->content[2], $panelWidth - 2) . '|';
+    $blurredRenderedLine = $decorateSceneLine->invoke($panel, $blurredLine, null, 2);
 
     expect($blurredRenderedLine)->not->toContain("\033[5;30;46m");
     expect($blurredRenderedLine)->not->toContain("\033[30;46m");
+});
+
+test('main panel projects scene labels using the engine display coordinates', function () {
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\UI\\Label\\Label',
+                'name' => 'Score',
+                'position' => ['x' => 3, 'y' => 8],
+                'text' => 'Score: 000',
+            ],
+        ],
+        sceneWidth: 20,
+        sceneHeight: 10,
+    );
+
+    $buildSceneCanvasContent = new ReflectionMethod(MainPanel::class, 'buildSceneCanvasContent');
+    $buildSceneCanvasContent->setAccessible(true);
+    $sceneRows = $buildSceneCanvasContent->invoke($panel);
+
+    expect($sceneRows[7] ?? '')->toContain('Score: 000');
+    expect($sceneRows[8] ?? '')->not->toContain('Score: 000');
 });
 
 test('main panel hides the selected placeholder marker on blur for non-renderable scene objects', function () {
@@ -904,6 +1050,35 @@ test('main panel pan mode scrolls the scene viewport', function () {
     }
 
     expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Q')))->toBeTrue();
+});
+
+test('main panel pans across environment tile maps larger than the scene metadata bounds', function () {
+    $workspace = createMainPanelWorkspace();
+    file_put_contents($workspace . '/Assets/Maps/large.tmap', "ABCDEFGHIJKLMN\n");
+
+    $panel = new MainPanel(
+        width: 12,
+        height: 8,
+        workingDirectory: $workspace,
+        sceneWidth: 6,
+        sceneHeight: 3,
+        environmentTileMapPath: 'Maps/large',
+    );
+    $hasFocus = new ReflectionProperty(Widget::class, 'hasFocus');
+    $hasFocus->setAccessible(true);
+    $hasFocus->setValue($panel, true);
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'N')))->toBeFalse();
+
+    pressMainPanelKey('E');
+    $panel->update();
+
+    for ($index = 0; $index < 8; $index++) {
+        pressMainPanelKey("\033[C");
+        $panel->update();
+    }
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'N')))->toBeTrue();
 });
 
 test('main panel help line shows controls on the left and the active mode on the right', function () {

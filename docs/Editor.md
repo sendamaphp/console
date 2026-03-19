@@ -68,6 +68,8 @@ These shortcuts work regardless of the currently focused panel unless a modal is
 - in `Hierarchy`, it exports the selected object as a prefab into `Assets/Prefabs`, expands that folder, selects the new prefab, and opens it in the `Inspector`
 - in `Main > Scene`, it enters Pan Mode
 
+`Shift+D` is panel-local in `Hierarchy` and duplicates the selected object beside the original.
+
 ## Panel List Modal
 
 Press `Shift+1` to open a modal listing all panels.
@@ -108,6 +110,7 @@ Current scene rendering behavior:
 - scene coordinates are rendered into a scrollable viewport
 - UI text objects render their `text`
 - selected objects without a visible representation render as a muted `x`
+- `Ctrl+Click` adds another visible object to the current Scene selection set
 - the main panel help line shows the current scene controls on the left and the active mode on the right
 
 When the main panel has focus and the `Scene` tab is active, it uses scene-view modes.
@@ -131,7 +134,9 @@ Controls:
 - `Down` / `Right`: select the next visible scene object
 - changing the selection immediately syncs the Inspector and Hierarchy to the selected object
 - `Enter`: reload the selected object into the Inspector
+- `Shift+D`: duplicate the selected Scene object set
 - clicking a visible scene object selects it
+- `Ctrl+Click` adds the clicked object to the current Scene selection set
 - double-clicking a visible scene object activates it like `Enter`
 
 #### Move Mode
@@ -232,7 +237,10 @@ Controls:
 - `Left`: collapse an expanded node, or move to its parent
 - `Enter`: load the selected object into the Inspector
 - `Shift+A`: open the add-object workflow
+- `Shift+D`: duplicate the selected object set
 - `Shift+E`: create a prefab from the selected object and open it in the Inspector
+- `Shift+W`: enter hierarchy move mode for the selected object
+- `Shift+Q`: return to hierarchy select mode
 - `Delete`: open the delete confirmation dialog
 
 Selected rows are highlighted, and when the hierarchy has focus the selected row blinks.
@@ -243,10 +251,15 @@ Press `Shift+A` to add a new scene object while the editor is in edit mode.
 
 Press `Shift+E` on a selected hierarchy object to export that object to a `.prefab.php` file under `Assets/Prefabs`. The editor expands the `Prefabs` folder in `Assets`, selects the new prefab, and moves focus to the `Inspector`.
 
+Press `Shift+D` on a selected hierarchy object to duplicate it in place. The duplicate is inserted immediately after the original, its name is adjusted to avoid a clash, and it becomes the newly selected object. Trailing numbers are incremented, so `Enemy 01` becomes `Enemy 02`; names without trailing numbers become `Enemy 1`.
+
+`Ctrl+Click` in `Hierarchy` adds the clicked node to the current selection set. When multiple hierarchy objects are selected, `Shift+D` duplicates the full selected set.
+
 Flow:
 
 1. Choose `GameObject` or `UIElement`
-2. If `UIElement` is selected, choose a concrete type
+2. If `GameObject` is selected while a `GameObject` row is selected, choose whether to add it at the scene root or as a child of that selected object
+3. If `UIElement` is selected, choose a concrete type
 
 Currently supported UI element types:
 
@@ -261,6 +274,17 @@ Examples:
 
 - `GameObject #1`
 - `Label #2`
+
+### Hierarchy Children And Move Mode
+
+When a hierarchy object has children, the row shows an expand/collapse icon and can be opened into a descendant tree. Each expanded object tracks its own expand state, so nested branches stay open until you collapse them.
+
+Press `Shift+W` on a selected hierarchy object to enter hierarchy move mode. In move mode:
+
+- `Up` / `Down` reinsert the selected object before or after other visible hierarchy objects
+- objects can move between branches, so a root object can be moved into another object's child list
+- `Delete` still opens the normal delete confirmation flow
+- `Shift+Q` returns the hierarchy to normal select mode
 
 ### Delete Workflow
 

@@ -217,10 +217,6 @@ class AssetsPanel extends Widget
 
     public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
     {
-        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
-            return false;
-        }
-
         if (
             $this->modalState !== self::DELETE_MODAL_CONFIRM
             && $this->modalState !== self::CREATE_MODAL_ASSET_KIND
@@ -231,6 +227,15 @@ class AssetsPanel extends Widget
         $activeModal = $this->modalState === self::CREATE_MODAL_ASSET_KIND
             ? $this->createAssetModal
             : $this->deleteConfirmModal;
+
+        if ($activeModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return true;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
         $selection = $activeModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
 
         if (!is_string($selection) || $selection === '') {
@@ -271,9 +276,9 @@ class AssetsPanel extends Widget
             return;
         }
 
-        $index = $y - $this->getContentAreaTop();
+        $index = $this->resolveContentIndexFromPointY($y);
 
-        if (!isset($this->visibleAssets[$index])) {
+        if (!is_int($index) || !isset($this->visibleAssets[$index])) {
             return;
         }
 
@@ -355,9 +360,9 @@ class AssetsPanel extends Widget
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $selectedVisibleIndex = $this->getSelectedVisibleIndex();
-        $selectedLineIndex = $selectedVisibleIndex === null
-            ? null
-            : $this->padding->topPadding + $selectedVisibleIndex;
+        $selectedLineIndex = is_int($selectedVisibleIndex)
+            ? $this->getRenderedLineIndexForContentIndex($selectedVisibleIndex)
+            : null;
 
         if ($lineIndex !== $selectedLineIndex) {
             return parent::decorateContentLine($line, $contentColor, $lineIndex);
@@ -456,6 +461,7 @@ class AssetsPanel extends Widget
             fn(array $entry) => $this->formatVisibleAssetEntry($entry),
             $this->visibleAssets
         );
+        $this->ensureContentLineVisible($this->getSelectedVisibleIndex());
     }
 
     private function buildVisibleAssets(array $items, int $depth = 0, string $parentPath = ''): array

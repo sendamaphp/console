@@ -12,6 +12,17 @@ function pressConsoleKey(string $keyPress): void
     $currentKeyPress->setValue(null, $keyPress);
 }
 
+function getConsoleContentAreaPosition(ConsolePanel $panel): array
+{
+    $getContentAreaLeft = new ReflectionMethod($panel, 'getContentAreaLeft');
+    $getContentAreaTop = new ReflectionMethod($panel, 'getContentAreaTop');
+
+    return [
+        'x' => $getContentAreaLeft->invoke($panel),
+        'y' => $getContentAreaTop->invoke($panel),
+    ];
+}
+
 test('console panel loads the last three debug log lines on startup', function () {
     $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
     mkdir($workspace . '/logs', 0777, true);
@@ -86,6 +97,31 @@ test('console panel switches between debug and error tabs', function () {
     $panel->cycleFocusBackward();
 
     expect($panel->getActiveTab())->toBe('Debug');
+});
+
+test('console panel switches tabs when the tab label is clicked', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents($workspace . '/logs/debug.log', "debug 1\n");
+    file_put_contents($workspace . '/logs/error.log', "error 1\n");
+
+    $panel = new ConsolePanel(
+        width: 60,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+        errorLogFilePath: $workspace . '/logs/error.log',
+    );
+
+    $contentArea = getConsoleContentAreaPosition($panel);
+    $errorTabOffset = mb_strpos($panel->content[0], 'Error');
+
+    expect($errorTabOffset)->not->toBeFalse();
+
+    $panel->handleMouseClick($contentArea['x'] + $errorTabOffset, $contentArea['y']);
+
+    expect($panel->getActiveTab())->toBe('Error')
+        ->and(array_slice($panel->content, 2))->toBe(['error 1']);
 });
 
 test('console panel ignores missing tab log files', function () {
@@ -194,6 +230,58 @@ test('console panel scrolls down until the last log line is at the top', functio
     expect(array_slice($panel->content, 2))->toBe([
         'line 5',
     ]);
+});
+
+test('console panel wraps long log lines across visible rows', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    $message = '[2026-03-15 10:00:00] [DEBUG] - This is a very long log line that should wrap cleanly.';
+
+    file_put_contents(
+        $workspace . '/logs/debug.log',
+        $message . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 36,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+    );
+
+    $visibleMessages = array_slice($panel->content, 2);
+
+    expect(count($visibleMessages))->toBeGreaterThan(1)
+        ->and(implode('', $visibleMessages))->toBe($message)
+        ->and(array_all(
+            $visibleMessages,
+            static fn(string $line): bool => mb_strwidth($line, 'UTF-8') <= 32,
+        ))->toBeTrue();
+});
+
+test('console panel renders a scrollbar when there are more wrapped lines than the viewport can show', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-console-panel-' . uniqid();
+    mkdir($workspace . '/logs', 0777, true);
+
+    file_put_contents(
+        $workspace . '/logs/debug.log',
+        implode(PHP_EOL, array_map(
+            static fn (int $index): string => '[2026-03-15 10:00:0' . $index . '] [DEBUG] - line ' . $index,
+            range(1, 8),
+        )) . PHP_EOL
+    );
+
+    $panel = new ConsolePanel(
+        width: 36,
+        height: 8,
+        logFilePath: $workspace . '/logs/debug.log',
+    );
+
+    $buildRenderedContentLines = new ReflectionMethod(Widget::class, 'buildRenderedContentLines');
+    $buildRenderedContentLines->setAccessible(true);
+    $lines = $buildRenderedContentLines->invoke($panel);
+
+    expect(array_any($lines, static fn (string $line): bool => str_contains($line, '█') || str_contains($line, '░')))->toBeTrue();
 });
 
 test('console panel refreshes the active tab from disk on shift+r when focused', function () {
