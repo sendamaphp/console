@@ -23,7 +23,18 @@ final class SceneLoader
             return null;
         }
 
-        $sceneDataBundle = $this->loadSceneDataBundle($scenePath);
+        return $this->loadFromPath($scenePath);
+    }
+
+    public function loadFromPath(string $scenePath): ?SceneDTO
+    {
+        $normalizedScenePath = Path::normalize(trim($scenePath));
+
+        if ($normalizedScenePath === '' || !is_file($normalizedScenePath)) {
+            return null;
+        }
+
+        $sceneDataBundle = $this->loadSceneDataBundle($normalizedScenePath);
         $sceneData = $sceneDataBundle['editor'] ?? [];
         $sourceSceneData = $sceneDataBundle['source'] ?? $sceneData;
         $normalizedEnvironmentTileMapPath = $this->normalizeEnvironmentTileMapPath(
@@ -38,14 +49,14 @@ final class SceneLoader
         $sourceSceneData['environmentCollisionMapPath'] = $normalizedEnvironmentCollisionMapPath;
 
         return new SceneDTO(
-            name: basename($scenePath, '.scene.php'),
+            name: basename($normalizedScenePath, '.scene.php'),
             width: $sceneData['width'] ?? DEFAULT_TERMINAL_WIDTH,
             height: $sceneData['height'] ?? DEFAULT_TERMINAL_HEIGHT,
             environmentTileMapPath: $normalizedEnvironmentTileMapPath,
             environmentCollisionMapPath: $normalizedEnvironmentCollisionMapPath,
             isDirty: $sceneData['isDirty'] ?? false,
             hierarchy: $sceneData['hierarchy'] ?? [],
-            sourcePath: $scenePath,
+            sourcePath: $normalizedScenePath,
             rawData: $sceneData,
             sourceData: $sourceSceneData,
         );
@@ -285,12 +296,106 @@ function build_vector(mixed $value, array $default = ['x' => 0, 'y' => 0]): ?obj
         return null;
     }
 
-    $vectorValue = is_array($value) ? $value : $default;
+    $vectorValue = parse_vector_value($value) ?? $default;
 
     return new \Sendama\Engine\Core\Vector2(
         (int) ($vectorValue['x'] ?? $default['x']),
         (int) ($vectorValue['y'] ?? $default['y']),
     );
+}
+
+function parse_vector_value(mixed $value): ?array
+{
+    if (is_array($value)) {
+        if (array_is_list($value)) {
+            return [
+                'x' => (int) ($value[0] ?? 0),
+                'y' => (int) ($value[1] ?? 0),
+            ];
+        }
+
+        if (array_key_exists('x', $value) || array_key_exists('y', $value)) {
+            return [
+                'x' => (int) ($value['x'] ?? 0),
+                'y' => (int) ($value['y'] ?? 0),
+            ];
+        }
+
+        return null;
+    }
+
+    if (is_object($value)) {
+        if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
+            return [
+                'x' => (int) $value->getX(),
+                'y' => (int) $value->getY(),
+            ];
+        }
+
+        return parse_vector_value((array) $value);
+    }
+
+    if (!is_string($value)) {
+        return null;
+    }
+
+    $normalizedValue = trim($value);
+
+    if ($normalizedValue === '') {
+        return null;
+    }
+
+    $decodedValue = json_decode($normalizedValue, true);
+
+    if (is_array($decodedValue)) {
+        return parse_vector_value($decodedValue);
+    }
+
+    if (
+        preg_match('/^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$/', $normalizedValue, $matches) === 1
+        || preg_match('/^\s*(-?\d+)\s*,\s*(-?\d+)\s*$/', $normalizedValue, $matches) === 1
+    ) {
+        return [
+            'x' => (int) $matches[1],
+            'y' => (int) $matches[2],
+        ];
+    }
+
+    return null;
+}
+
+function is_vector_field_type(?string $fieldType): bool
+{
+    if (!is_string($fieldType) || trim($fieldType) === '') {
+        return false;
+    }
+
+    $normalizedTypes = array_map(
+        static fn (string $type): string => ltrim(trim($type), '\\'),
+        explode('|', $fieldType),
+    );
+
+    return in_array('Sendama\Engine\Core\Vector2', $normalizedTypes, true);
+}
+
+function normalize_component_data_by_field_types(array $componentData, array $fieldTypes): array
+{
+    $normalizedData = $componentData;
+
+    foreach ($normalizedData as $key => $value) {
+        $fieldType = $fieldTypes[$key] ?? null;
+
+        if (is_string($fieldType) && is_vector_field_type($fieldType)) {
+            $normalizedData[$key] = parse_vector_value($value) ?? $value;
+            continue;
+        }
+
+        if (is_array($fieldType) && is_array($value) && !array_is_list($value)) {
+            $normalizedData[$key] = normalize_component_data_by_field_types($value, $fieldType);
+        }
+    }
+
+    return $normalizedData;
 }
 
 function build_sprite(array $item): ?object
@@ -388,6 +493,64 @@ function extract_component_serializable_data(object $component): array
     return $serializedData;
 }
 
+function extract_component_editor_field_types(object $component): array
+{
+    $fieldTypes = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        $resolvedType = resolve_property_type($property);
+
+        if ($resolvedType !== null) {
+            $fieldTypes[$property->getName()] = $resolvedType;
+        }
+    }
+
+    return $fieldTypes;
+}
+
+function resolve_property_type(ReflectionProperty $property): ?string
+{
+    $type = $property->getType();
+
+    if ($type instanceof ReflectionNamedType) {
+        $resolvedType = $type->getName();
+
+        if ($type->allowsNull() && $resolvedType !== 'null') {
+            return $resolvedType . '|null';
+        }
+
+        return $resolvedType;
+    }
+
+    if ($type instanceof ReflectionUnionType) {
+        $resolvedTypes = [];
+
+        foreach ($type->getTypes() as $namedType) {
+            if ($namedType instanceof ReflectionNamedType) {
+                $resolvedTypes[] = $namedType->getName();
+            }
+        }
+
+        $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+        return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+    }
+
+    return null;
+}
+
 function enrich_component_entry(mixed $component, array $item): mixed
 {
     if (!is_array($component)) {
@@ -398,16 +561,39 @@ function enrich_component_entry(mixed $component, array $item): mixed
     $defaultComponentData = is_string($componentClass) && $componentClass !== ''
         ? serialize_component_data($componentClass, $item)
         : null;
+    $defaultComponentFieldTypes = is_string($componentClass) && $componentClass !== ''
+        && class_exists($componentClass)
+        && class_exists('\Sendama\Engine\Core\Component')
+        && is_a($componentClass, '\Sendama\Engine\Core\Component', true)
+        && !empty($gameObject = build_dummy_game_object($item))
+        ? (function () use ($componentClass, $gameObject): array {
+            try {
+                $componentInstance = new $componentClass($gameObject);
+
+                return extract_component_editor_field_types($componentInstance);
+            } catch (Throwable) {
+                return [];
+            }
+        })()
+        : [];
 
     if (array_key_exists('data', $component)) {
         $existingComponentData = is_array($component['data'])
             ? normalize_editor_value($component['data'])
             : normalize_editor_value((array) $component['data']);
+        $existingComponentData = normalize_component_data_by_field_types(
+            is_array($existingComponentData) ? $existingComponentData : [],
+            $defaultComponentFieldTypes,
+        );
 
         if (is_array($defaultComponentData)) {
             $component['data'] = merge_component_data($defaultComponentData, $existingComponentData);
         } else {
             $component['data'] = $existingComponentData;
+        }
+
+        if ($defaultComponentFieldTypes !== []) {
+            $component['__editorFieldTypes'] = $defaultComponentFieldTypes;
         }
 
         return $component;
@@ -419,6 +605,10 @@ function enrich_component_entry(mixed $component, array $item): mixed
 
     if (is_array($defaultComponentData)) {
         $component['data'] = $defaultComponentData;
+    }
+
+    if ($defaultComponentFieldTypes !== []) {
+        $component['__editorFieldTypes'] = $defaultComponentFieldTypes;
     }
 
     return $component;

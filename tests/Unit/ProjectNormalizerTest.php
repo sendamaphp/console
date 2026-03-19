@@ -9,7 +9,7 @@ test('project normalizer reports missing project structure discrepancies', funct
     $issues = (new ProjectNormalizer($workspace))->inspect();
 
     expect($issues)->toContain('Missing sendama.json.');
-    expect($issues)->toContain('Missing configuration.json.');
+    expect($issues)->toContain('Missing preferences.json.');
     expect($issues)->toContain('Missing config/input.php.');
     expect($issues)->toContain('Missing logs/debug.log.');
     expect($issues)->toContain('Missing logs/error.log.');
@@ -31,12 +31,12 @@ test('project normalizer creates missing structure while respecting legacy lower
 
     $changes = (new ProjectNormalizer($workspace))->normalize();
 
-    expect($changes)->toContain('Created configuration.json.');
+    expect($changes)->toContain('Created preferences.json.');
     expect($changes)->toContain('Created config/input.php.');
     expect($changes)->toContain('Created logs/debug.log.');
     expect($changes)->toContain('Created logs/error.log.');
     expect($changes)->toContain('Created assets/Scenes directory.');
-    expect(is_file($workspace . '/configuration.json'))->toBeTrue();
+    expect(is_file($workspace . '/preferences.json'))->toBeTrue();
     expect(is_file($workspace . '/config/input.php'))->toBeTrue();
     expect(is_file($workspace . '/logs/debug.log'))->toBeTrue();
     expect(is_file($workspace . '/logs/error.log'))->toBeTrue();
@@ -44,7 +44,6 @@ test('project normalizer creates missing structure while respecting legacy lower
     expect(is_dir($workspace . '/assets/Scripts'))->toBeTrue();
     expect(is_dir($workspace . '/Assets'))->toBeFalse();
 
-    $configuration = json_decode(file_get_contents($workspace . '/configuration.json'), true, flags: JSON_THROW_ON_ERROR);
-    expect($configuration['project']['name'])->toBe('Legacy Test Game');
-    expect($configuration['project']['main'])->toBe('legacy.php');
+    $preferences = json_decode(file_get_contents($workspace . '/preferences.json'), true, flags: JSON_THROW_ON_ERROR);
+    expect($preferences)->toBeEmpty();
 });

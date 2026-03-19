@@ -105,6 +105,11 @@ final class Input
         return InputManager::isLeftMouseButtonDown();
     }
 
+    public static function isLeftMouseButtonPressed(): bool
+    {
+        return InputManager::isLeftMouseButtonPressed();
+    }
+
     /**
      * Checks if the given button is pressed.
      *

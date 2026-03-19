@@ -28,7 +28,7 @@ Controls:
 
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
-- `Shift+A`: open the add-component menu when a hierarchy object is being inspected
+- `Shift+A`: open the add-component menu when a hierarchy object or prefab is being inspected
 - `Shift+W`: enter or leave component move mode when a component header is selected
 - `/`: collapse or expand the selected section header
 - `Tab` / `Shift+Tab`: move forward or backward through focusable controls
@@ -110,9 +110,18 @@ Each serialized component becomes its own collapsible section. The section title
 
 If the component exposes serialized data, the Inspector renders typed controls for it.
 
+If a serialized component field is typed as `GameObject`, the Inspector treats it as a prefab reference instead of plain text.
+
+- focus the field
+- press `Enter` to open the prefab picker
+- choose a prefab from `Assets/Prefabs`
+- the saved value becomes that prefab's relative path, for example `Prefabs/enemy.prefab.php`
+
+When the scene is loaded again, the Inspector resolves that saved path back to the referenced prefab so the field stays readable and editable.
+
 ### Add Component Menu
 
-When the Inspector is showing a hierarchy object other than the scene root, press `Shift+A` to open `Add Component`.
+When the Inspector is showing a hierarchy object or prefab other than the scene root, press `Shift+A` to open `Add Component`.
 
 The menu can pull candidates from:
 
@@ -145,13 +154,23 @@ To reorder components:
 
 ## Asset Controls
 
-When a file asset is inspected, the Inspector renders:
+When a regular file asset is inspected, the Inspector renders:
 
 - `Type`
 - editable `Name`
 - read-only `Path`
 
 If the file is a PHP class-backed asset under `Assets/Scripts` or `Assets/Events`, renaming it in the Inspector also updates the class declaration inside the source file to match the new filename.
+
+When a prefab asset is activated from `Assets`, the Inspector switches to object-style editing instead of the plain file view.
+
+Prefab inspection keeps these concerns separate:
+
+- `File Name` renames the prefab file on disk
+- `Name` changes the object name stored inside the prefab metadata
+- other fields and components edit the prefab's serialized object data
+
+Prefab field edits and component changes are written back to the `.prefab.php` file immediately.
 
 When a folder is inspected, the Inspector renders:
 

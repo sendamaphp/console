@@ -89,13 +89,12 @@ test('widget clips long content lines to the available window width', function (
     };
 
     $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
-    $buildRenderedContentLines->setAccessible(true);
     $lines = $buildRenderedContentLines->invoke($widget);
 
-    expect($lines)->toHaveCount(4);
-    expect($lines[0])->toBe('│ Texture: Texture │');
-    expect(mb_strlen($lines[0]))->toBe(20);
-    expect(mb_substr($lines[0], -1))->toBe('│');
+    expect($lines)->toHaveCount(4)
+        ->and($lines[0])->toBe('│ Texture: Texture │')
+        ->and(mb_strlen($lines[0]))->toBe(20)
+        ->and(mb_substr($lines[0], -1))->toBe('│');
 });
 
 test('widget keeps borders intact when content contains wide multibyte glyphs', function () {
@@ -112,10 +111,36 @@ test('widget keeps borders intact when content contains wide multibyte glyphs', 
     };
 
     $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
-    $buildRenderedContentLines->setAccessible(true);
     $lines = $buildRenderedContentLines->invoke($widget);
 
-    expect($lines)->toHaveCount(4);
-    expect(mb_strwidth($lines[0], 'UTF-8'))->toBe(12);
-    expect(mb_substr($lines[0], -1))->toBe('│');
+    expect($lines)->toHaveCount(4)
+        ->and(mb_strwidth($lines[0], 'UTF-8'))->toBe(12)
+        ->and(mb_substr($lines[0], -1))->toBe('│');
+});
+
+test('widget scrolls overflowing content and renders a scrollbar thumb', function () {
+    $widget = new class extends Widget {
+        public function __construct()
+        {
+            parent::__construct('Inspector', '', ['x' => 1, 'y' => 1], 20, 6);
+            $this->content = ['Line 1', 'Line 2', 'Line 3', 'Line 4', 'Line 5', 'Line 6'];
+        }
+
+        public function revealContentLine(int $contentIndex): void
+        {
+            $this->ensureContentLineVisible($contentIndex);
+        }
+
+        public function update(): void
+        {
+        }
+    };
+
+    $buildRenderedContentLines = new ReflectionMethod($widget, 'buildRenderedContentLines');
+    $widget->revealContentLine(5);
+    $lines = $buildRenderedContentLines->invoke($widget);
+
+    expect($lines)->toHaveCount(4)
+        ->and(array_any($lines, static fn (string $line): bool => str_contains($line, 'Line 6')))->toBeTrue()
+        ->and(array_any($lines, static fn (string $line): bool => str_contains($line, '█') || str_contains($line, '░')))->toBeTrue();
 });

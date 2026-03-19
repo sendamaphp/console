@@ -162,6 +162,12 @@ class InputManager implements StaticObservableInterface
         return self::$mouseEvent?->buttonIndex === 0;
     }
 
+    public static function isLeftMouseButtonPressed(): bool
+    {
+        return self::$mouseEvent?->buttonIndex === 0
+            && self::$mouseEvent?->action === 'Pressed';
+    }
+
     /**
      * Takes the raw string value of a key press and returns it as a simplified string.
      *

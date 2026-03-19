@@ -13,7 +13,7 @@ final class PrefabWriter
 
     public function serialize(array $prefabData): string
     {
-        return "<?php\n\nreturn " . $this->exportValue($prefabData) . ";\n";
+        return "<?php\n\nreturn " . $this->exportValue($this->stripEditorOnlyMetadata($prefabData)) . ";\n";
     }
 
     private function exportValue(mixed $value, int $depth = 0, ?string $contextKey = null): string
@@ -70,5 +70,24 @@ final class PrefabWriter
         }
 
         return var_export($value, true);
+    }
+
+    private function stripEditorOnlyMetadata(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        $sanitizedValue = [];
+
+        foreach ($value as $key => $item) {
+            if (is_string($key) && str_starts_with($key, '__editor')) {
+                continue;
+            }
+
+            $sanitizedValue[$key] = $this->stripEditorOnlyMetadata($item);
+        }
+
+        return $sanitizedValue;
     }
 }

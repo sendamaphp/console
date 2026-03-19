@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Debug\Debug;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -15,6 +16,7 @@ use Sendama\Console\Util\Path;
  */
 class AssetsPanel extends Widget
 {
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const string CREATE_MODAL_ASSET_KIND = 'create_asset_kind';
     private const string DELETE_MODAL_CONFIRM = 'delete_confirm';
     private const string COLLAPSED_ICON = '►';
@@ -33,6 +35,8 @@ class AssetsPanel extends Widget
     protected OptionListModal $createAssetModal;
     protected OptionListModal $deleteConfirmModal;
     protected ?string $modalState = null;
+    protected ?string $lastClickedPath = null;
+    protected float $lastClickedAt = 0.0;
 
     public function __construct(
         array $position = ['x' => 1, 'y' => 15],
@@ -141,6 +145,7 @@ class AssetsPanel extends Widget
             'type' => ($selectedAsset['isDirectory'] ?? false) ? 'Folder' : 'File',
             'value' => $selectedAsset,
             'openInMainPanel' => $openInMainPanel,
+            'openInTerminalEditor' => $openInMainPanel && $this->isScriptAsset($selectedAsset),
         ];
     }
 
@@ -211,6 +216,38 @@ class AssetsPanel extends Widget
         }
     }
 
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if (
+            $this->modalState !== self::DELETE_MODAL_CONFIRM
+            && $this->modalState !== self::CREATE_MODAL_ASSET_KIND
+        ) {
+            return false;
+        }
+
+        $activeModal = $this->modalState === self::CREATE_MODAL_ASSET_KIND
+            ? $this->createAssetModal
+            : $this->deleteConfirmModal;
+
+        if ($activeModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return true;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        $selection = $activeModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selection) || $selection === '') {
+            return false;
+        }
+
+        $this->handleModalSelection($selection);
+
+        return true;
+    }
+
     public function reloadAssets(): void
     {
         $this->loadAssetEntries();
@@ -240,15 +277,39 @@ class AssetsPanel extends Widget
             return;
         }
 
-        $index = $y - $this->getContentAreaTop();
+        $index = $this->resolveContentIndexFromPointY($y);
 
-        if (!isset($this->visibleAssets[$index])) {
+        if (!is_int($index) || !isset($this->visibleAssets[$index])) {
             return;
         }
 
-        $this->selectedPath = $this->visibleAssets[$index]['path'] ?? $this->selectedPath;
+        $entry = $this->visibleAssets[$index] ?? null;
+
+        if (!is_array($entry)) {
+            return;
+        }
+
+        $path = is_string($entry['path'] ?? null) ? $entry['path'] : null;
+
+        if ($path === null) {
+            return;
+        }
+
+        $this->selectedPath = $path;
+
+        if ($this->isExpandToggleClick($entry, $x)) {
+            $this->toggleEntryExpansion($entry);
+            $this->resetClickTracking();
+            return;
+        }
+
+        $isDoubleClick = $this->registerClickAndCheckDoubleClick($path);
         $this->refreshContent();
         $this->queueInspectionTarget();
+
+        if ($isDoubleClick) {
+            $this->activateSelection();
+        }
     }
 
     public function update(): void
@@ -300,9 +361,9 @@ class AssetsPanel extends Widget
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $selectedVisibleIndex = $this->getSelectedVisibleIndex();
-        $selectedLineIndex = $selectedVisibleIndex === null
-            ? null
-            : $this->padding->topPadding + $selectedVisibleIndex;
+        $selectedLineIndex = is_int($selectedVisibleIndex)
+            ? $this->getRenderedLineIndexForContentIndex($selectedVisibleIndex)
+            : null;
 
         if ($lineIndex !== $selectedLineIndex) {
             return parent::decorateContentLine($line, $contentColor, $lineIndex);
@@ -393,6 +454,30 @@ class AssetsPanel extends Widget
         return ltrim($relativePath ?: basename($path), DIRECTORY_SEPARATOR);
     }
 
+    private function isScriptAsset(array $asset): bool
+    {
+        if (($asset['isDirectory'] ?? false) === true) {
+            return false;
+        }
+
+        $assetPath = is_string($asset['path'] ?? null)
+            ? $asset['path']
+            : (is_string($asset['relativePath'] ?? null) ? $asset['relativePath'] : null);
+        $relativePath = is_string($asset['relativePath'] ?? null) ? $asset['relativePath'] : '';
+
+        if (!is_string($assetPath) || $assetPath === '') {
+            return false;
+        }
+
+        if (strtolower((string) pathinfo($assetPath, PATHINFO_EXTENSION)) !== 'php') {
+            return false;
+        }
+
+        $normalizedRelativePath = ltrim(str_replace('\\', '/', strtolower($relativePath)), '/');
+
+        return str_starts_with($normalizedRelativePath, 'scripts/');
+    }
+
     private function refreshContent(): void
     {
         $this->visibleAssets = $this->buildVisibleAssets($this->assetTree);
@@ -401,6 +486,7 @@ class AssetsPanel extends Widget
             fn(array $entry) => $this->formatVisibleAssetEntry($entry),
             $this->visibleAssets
         );
+        $this->ensureContentLineVisible($this->getSelectedVisibleIndex());
     }
 
     private function buildVisibleAssets(array $items, int $depth = 0, string $parentPath = ''): array
@@ -551,6 +637,54 @@ class AssetsPanel extends Widget
         return null;
     }
 
+    private function isExpandToggleClick(array $entry, int $x): bool
+    {
+        if (!($entry['isDirectory'] ?? false)) {
+            return false;
+        }
+
+        $depth = max(0, (int) ($entry['depth'] ?? 0));
+        $iconColumn = $this->getContentAreaLeft() + ($depth * 2);
+
+        return $x === $iconColumn;
+    }
+
+    private function toggleEntryExpansion(array $entry): void
+    {
+        $path = $entry['path'] ?? null;
+
+        if (!is_string($path) || !($entry['isDirectory'] ?? false)) {
+            return;
+        }
+
+        if ($entry['isExpanded'] ?? false) {
+            unset($this->expandedPaths[$path]);
+        } else {
+            $this->expandedPaths[$path] = true;
+        }
+
+        $this->refreshContent();
+        $this->queueInspectionTarget();
+    }
+
+    private function registerClickAndCheckDoubleClick(string $path): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedPath === $path
+            && ($now - $this->lastClickedAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedPath = $path;
+        $this->lastClickedAt = $now;
+
+        return $isDoubleClick;
+    }
+
+    private function resetClickTracking(): void
+    {
+        $this->lastClickedPath = null;
+        $this->lastClickedAt = 0.0;
+    }
+
     private function showDeleteConfirmModal(): void
     {
         $selectedAsset = $this->getSelectedAssetEntry();
@@ -608,6 +742,14 @@ class AssetsPanel extends Widget
         }
 
         $selection = $activeModal->getSelectedOption();
+        $this->handleModalSelection($selection);
+    }
+
+    private function handleModalSelection(?string $selection): void
+    {
+        if (!is_string($selection) || $selection === '') {
+            return;
+        }
 
         if ($this->modalState === self::CREATE_MODAL_ASSET_KIND) {
             $assetKind = match ($selection) {

@@ -55,6 +55,53 @@ test('scene writer saves scenes to the source path', function () {
     expect(file_get_contents($scenePath))->toContain("'name' => 'Player'");
 });
 
+test('scene writer strips editor-only component metadata while preserving prefab references', function () {
+    $scene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Player',
+                'components' => [
+                    [
+                        'class' => 'Sendama\\Game\\Scripts\\Gun',
+                        'data' => [
+                            'bulletPrefab' => 'Prefabs/enemy.prefab.php',
+                        ],
+                        '__editorFieldTypes' => [
+                            'bulletPrefab' => 'Sendama\\Engine\\Core\\GameObject|null',
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Player',
+                    'components' => [
+                        [
+                            'class' => 'Sendama\\Game\\Scripts\\Gun',
+                            'data' => [
+                                'bulletPrefab' => 'Prefabs/enemy.prefab.php',
+                            ],
+                            '__editorFieldTypes' => [
+                                'bulletPrefab' => 'Sendama\\Engine\\Core\\GameObject|null',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    );
+
+    $serializedScene = (new SceneWriter())->serialize($scene);
+
+    expect($serializedScene)->toContain("'bulletPrefab' => 'Prefabs/enemy.prefab.php'")
+        ->and($serializedScene)->not->toContain('__editorFieldTypes');
+});
+
 test('scene writer preserves unchanged source expressions when saving edited scenes', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-writer-preserve-' . uniqid();
     mkdir($workspace . '/Assets/Scenes', 0777, true);
@@ -520,4 +567,94 @@ PHP
     expect($serializedScene)->toContain("'enabledInEditor' => true");
     expect($serializedScene)->toContain("'speed' => 3");
     expect($serializedScene)->toContain("'spawnOffset' => [");
+});
+
+test('scene writer removes orphaned component data keys when serialized properties are renamed', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-writer-component-rename-' . uniqid();
+    mkdir($workspace . '/Assets/Scenes', 0777, true);
+    $scenePath = $workspace . '/Assets/Scenes/level01.scene.php';
+
+    file_put_contents(
+        $scenePath,
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+use Sendama\Game\EnemyController;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Enemy',
+            'components' => [
+                [
+                    'class' => EnemyController::class,
+                    'data' => [
+                        'moveSpeed' => 1,
+                    ],
+                ],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $scene = new SceneDTO(
+        name: 'level01',
+        hierarchy: [
+            [
+                'type' => 'Sendama\\Engine\\Core\\GameObject',
+                'name' => 'Enemy',
+                'components' => [
+                    [
+                        'class' => 'Sendama\\Game\\EnemyController',
+                        'data' => [
+                            'speed' => 1,
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        sourcePath: $scenePath,
+        rawData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Enemy',
+                    'components' => [
+                        [
+                            'class' => 'Sendama\\Game\\EnemyController',
+                            'data' => [
+                                'speed' => 1,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        sourceData: [
+            'hierarchy' => [
+                [
+                    'type' => 'Sendama\\Engine\\Core\\GameObject',
+                    'name' => 'Enemy',
+                    'components' => [
+                        [
+                            'class' => 'Sendama\\Game\\EnemyController',
+                            'data' => [
+                                'moveSpeed' => 1,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    );
+
+    $writer = new SceneWriter();
+    $serializedScene = $writer->serialize($scene);
+
+    expect($serializedScene)->toContain("'speed' => 1");
+    expect($serializedScene)->not->toContain("'moveSpeed' => 1");
 });

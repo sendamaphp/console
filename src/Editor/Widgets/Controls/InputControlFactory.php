@@ -15,6 +15,19 @@ class InputControlFactory
         };
     }
 
+    public function createForFieldType(string $label, mixed $value, ?string $fieldType, int $indentLevel = 1): InputControl
+    {
+        if ($this->isVectorFieldType($fieldType)) {
+            return new VectorInputControl(
+                $label,
+                $this->normalizeVectorFieldValue($value),
+                $indentLevel,
+            );
+        }
+
+        return $this->create($label, $value, $indentLevel);
+    }
+
     private function isVector(array $value): bool
     {
         if ($value === []) {
@@ -49,5 +62,66 @@ class InputControlFactory
             $value === null => 'None',
             default => (string) $value,
         };
+    }
+
+    private function isVectorFieldType(?string $fieldType): bool
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return false;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        return in_array('Sendama\\Engine\\Core\\Vector2', $normalizedTypes, true);
+    }
+
+    private function normalizeVectorFieldValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            if (array_is_list($value)) {
+                return [
+                    'x' => (int)($value[0] ?? 0),
+                    'y' => (int)($value[1] ?? 0),
+                ];
+            }
+
+            if (array_key_exists('x', $value) || array_key_exists('y', $value)) {
+                return [
+                    'x' => (int)($value['x'] ?? 0),
+                    'y' => (int)($value['y'] ?? 0),
+                ];
+            }
+        }
+
+        if (is_object($value) && method_exists($value, 'getX') && method_exists($value, 'getY')) {
+            return [
+                'x' => (int)$value->getX(),
+                'y' => (int)$value->getY(),
+            ];
+        }
+
+        if (is_string($value)) {
+            $normalizedValue = trim($value);
+            $decodedValue = json_decode($normalizedValue, true);
+
+            if (is_array($decodedValue)) {
+                return $this->normalizeVectorFieldValue($decodedValue);
+            }
+
+            if (
+                preg_match('/^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$/', $normalizedValue, $matches) === 1
+                || preg_match('/^\s*(-?\d+)\s*,\s*(-?\d+)\s*$/', $normalizedValue, $matches) === 1
+            ) {
+                return [
+                    'x' => (int)$matches[1],
+                    'y' => (int)$matches[2],
+                ];
+            }
+        }
+
+        return ['x' => 0, 'y' => 0];
     }
 }

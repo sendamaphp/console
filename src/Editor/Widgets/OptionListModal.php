@@ -90,6 +90,26 @@ class OptionListModal extends Widget
         return $this->options[$this->selectedIndex] ?? null;
     }
 
+    public function clickOptionAtPoint(int $x, int $y): ?string
+    {
+        if (!$this->isVisible || !$this->containsPoint($x, $y)) {
+            return null;
+        }
+
+        $optionIndex = $this->resolveOptionIndexFromPoint($y);
+
+        if ($optionIndex === null) {
+            return null;
+        }
+
+        $this->selectedIndex = $optionIndex;
+        $this->syncScrollOffset();
+        $this->refreshContent();
+        $this->markDirty();
+
+        return $this->getSelectedOption();
+    }
+
     public function syncLayout(int $terminalWidth, int $terminalHeight): void
     {
         $longestOptionLength = 0;
@@ -129,6 +149,37 @@ class OptionListModal extends Widget
 
     public function update(): void
     {
+    }
+
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return false;
+    }
+
+    protected function setScrollbarOffset(int $offset): void
+    {
+        $visibleOptionCount = $this->getVisibleOptionCount();
+        $maxScrollOffset = max(0, count($this->options) - $visibleOptionCount);
+        $this->scrollOffset = max(0, min($offset, $maxScrollOffset));
+        $this->refreshContent();
+        $this->markDirty();
+    }
+
+    protected function resolveVerticalScrollbarState(): ?array
+    {
+        $visibleOptionCount = $this->getVisibleOptionCount();
+        $optionCount = count($this->options);
+
+        if ($visibleOptionCount <= 0 || $optionCount <= $visibleOptionCount) {
+            return null;
+        }
+
+        return [
+            'offset' => $this->scrollOffset,
+            'visible' => $visibleOptionCount,
+            'total' => $optionCount,
+            'start' => 0,
+        ];
     }
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
@@ -206,5 +257,22 @@ class OptionListModal extends Widget
         if ($this->selectedIndex > $visibleEnd) {
             $this->scrollOffset = $this->selectedIndex - $visibleOptionCount + 1;
         }
+    }
+
+    private function resolveOptionIndexFromPoint(int $y): ?int
+    {
+        $lineIndex = $y - $this->getContentAreaTop();
+
+        if ($lineIndex < 0) {
+            return null;
+        }
+
+        $optionIndex = $this->scrollOffset + $lineIndex;
+
+        if (!isset($this->options[$optionIndex])) {
+            return null;
+        }
+
+        return $optionIndex;
     }
 }

@@ -42,7 +42,12 @@ Mouse support is intentionally small and practical:
 
 - click a panel to focus it
 - click a row in `Hierarchy` or `Assets` to select it
+- click an expand icon in `Hierarchy` or `Assets` to toggle it
+- double-click a row in `Hierarchy` or `Assets` to activate it
 - click a tab title in the `Main` panel to switch tabs
+- click a visible object in `Scene` view to select it
+- double-click an Inspector control to activate it
+- in `Sprite`, left-click to paint with the current brush, left-drag to draw, and right-click/right-drag to erase without changing the brush
 
 You should still expect the editor to behave primarily like a keyboard UI.
 
@@ -82,6 +87,8 @@ The editor uses modals for focused tasks such as:
 - asset creation
 - delete confirmations
 - add-component selection
+- prefab selection for `GameObject` reference fields
+- console filter and clear confirmations
 - special character selection
 - path input actions
 - file selection for texture and map paths
@@ -102,6 +109,8 @@ Each panel owns its own local navigation model:
 
 - `Hierarchy` and `Assets` use a tree-browser pattern.
 - `Shift+A` is panel-local: it adds objects in `Hierarchy`, opens the create menu in `Assets`, and opens the add-component menu in `Inspector` when a hierarchy object is loaded.
+- `Shift+E` is also panel-local: it exports the selected hierarchy object as a prefab, and in `Main -> Scene` it switches to Pan mode.
+- In `Hierarchy`, `Shift+W` enters hierarchy move mode for the selected object, and `Shift+Q` returns to normal selection.
 - `Main` switches between scene interaction, play view, and sprite editing.
 - `Inspector` switches between selecting controls, selecting sub-properties, and editing.
 - `Console` switches between tabs and scroll positions.

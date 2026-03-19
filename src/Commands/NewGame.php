@@ -23,580 +23,584 @@ use Symfony\Component\Console\Question\Question;
 )]
 class NewGame extends Command
 {
-  /**
-   * @var OutputInterface|null The output interface.
-   */
-  private ?OutputInterface $output = null;
-  /**
-   * @var InputInterface|null The input interface.
-   */
-  private ?InputInterface $input = null;
+    const string ENGINE_PACKAGE_NAME = 'sendamaphp/engine';
 
-  // Directories
-  /**
-   * @var string The target directory.
-   */
-  private string $targetDirectory = '';
-  /**
-   * @var string The maps' directory.
-   */
-  private string $mapsDirectory = '';
+    /**
+     * @var OutputInterface|null The output interface.
+     */
+    private ?OutputInterface $output = null;
+    /**
+     * @var InputInterface|null The input interface.
+     */
+    private ?InputInterface $input = null;
 
-  /**
-   * @inheritDoc
-   */
-  public function configure(): void
-  {
-    $this
-      ->addArgument('name', InputArgument::REQUIRED, 'The name of the game')
-      ->addOption('directory', ['d', 'dir'], InputArgument::OPTIONAL, 'The directory to create the game in', getcwd());
-    $this->output = new ConsoleOutput();
-  }
+    // Directories
+    /**
+     * @var string The target directory.
+     */
+    private string $targetDirectory = '';
+    /**
+     * @var string The maps' directory.
+     */
+    private string $mapsDirectory = '';
 
-  /**
-   * @inheritDoc
-   */
-  public function execute(InputInterface $input, OutputInterface $output): int
-  {
-    $this->input = $input;
-    $this->output = $output;
-
-    // Configure the target directory
-    $projectName = $input->getArgument('name');
-    $output->writeln("<info>Creating $projectName...</info>", OutputInterface::VERBOSITY_VERBOSE);
-    $this->targetDirectory = Path::join(
-      $this->targetDirectory,
-      $input->getOption('directory'),
-      strtolower(filter_string($projectName))
-    );
-
-    // Create project directory
-    $this->createProjectDirectory();
-
-    // Create project structure
-    $this->output->writeln('<info>Creating project structure...</info>', OutputInterface::VERBOSITY_VERBOSE);
-
-    $this->createConfigDirectory();
-    $this->createLogsDirectory();
-    $assetsDirectory = $this->createAssetsDirectory();
-    $this->createAssetsScenesDirectory($assetsDirectory);
-    $this->createAssetsScriptsDirectory($assetsDirectory);
-    $this->createAssetsMapsDirectory($assetsDirectory);
-    $this->createAssetsPrefabsDirectory($assetsDirectory);
-    $this->createAssetsTexturesDirectory($assetsDirectory);
-
-    // Create project files
-    $this->output->writeln('<info>Creating project files...</info>', OutputInterface::VERBOSITY_VERBOSE);
-
-    $this->createMainFile($projectName);
-    $this->createDotEnvFile($this->targetDirectory);
-    $this->createGitIgnoreFile($this->targetDirectory);
-    $this->createSplashScreenTextureFile($assetsDirectory);
-    $this->createPlayerTextureFile($assetsDirectory);
-    $this->createTheExampleMapFile($this->mapsDirectory);
-    $this->createDefaultSceneFile($assetsDirectory);
-    $this->createDocsDirectory($this->targetDirectory);
-    $this->createReadmeFile($this->targetDirectory);
-
-    // Create project configuration
-    $this->createProjectConfiguration($projectName);
-
-    // Done
-    $this->output->writeln("\nDone! 🎮🎮🎮");
-
-    // Tell user cd into the project directory
-    $this->output->writeln("\nTo get started:");
-    $targetDirectory = basename($this->targetDirectory);
-
-    $this->output->writeln("\n\t<fg=gray>cd $targetDirectory</>");
-    $this->output->writeln("\t<fg=gray>php $targetDirectory.php</>\n");
-
-    return Command::SUCCESS;
-  }
-
-  /**
-   * Ask the user to confirm an action.
-   *
-   * @param string $question The question to ask the user.
-   * @param bool $default The default response. Default is false.
-   * @return bool The user's response.
-   */
-  private function confirm(string $question, bool $default = false): bool
-  {
-    /** @var QuestionHelper $helper */
-    $helper = $this->getHelper('question');
-    $question = new ConfirmationQuestion($question, $default);
-
-    return $helper->ask($this->input, $this->output, $question);
-  }
-
-  /**
-   * Get the project configuration.
-   *
-   * @param string $projectName The project name.
-   * @return string The project configuration.
-   */
-  private function getProjectConfiguration(string $projectName): string
-  {
-    $mainFilename = strtolower(filter_string($projectName)) . '.php';
-
-    return ProjectNormalizer::buildSendamaConfiguration(
-      projectName: $projectName,
-      description: 'A 2D ASCII terminal game.',
-      version: '0.0.1',
-      mainFile: $mainFilename,
-      loadedScenes: ['Scenes/Level.scene.php'],
-      consoleRefreshInterval: 5.0,
-    );
-  }
-
-  /**
-   * Get the project configuration.
-   *
-   * @param string $packageName The package name.
-   * @return string The project configuration.
-   */
-  private function getComposerConfiguration(string $packageName): string
-  {
-    [$organization, $projectName] = explode('/', $packageName);
-    $namespace = to_title_case($organization) . '\\' . to_title_case($projectName) . '\\';
-
-    return json_encode([
-      'name' => $packageName,
-      'version' => '1.0.0',
-      'description' => 'A new 2D ASCII terminal game.',
-      'type' => 'project',
-      'require' => [
-        'php' => '^8.3',
-        'sendamaphp/engine' => '*'
-      ],
-      'require-dev' => [
-        'pestphp/pest' => '^4.3',
-        'phpstan/phpstan' => '^1.10',
-      ],
-      'autoload' => [
-        'psr-4' => [
-          $namespace => 'Assets/'
-        ]
-      ],
-      'config' => [
-        'allow-plugins' => [
-          'pestphp/pest-plugin' => true
-        ]
-      ]
-    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-  }
-
-  /**
-   * Get the package name.
-   *
-   * @param string $default The default package name.
-   * @return string The package name.
-   */
-  private function getPackageName(string $default): string
-  {
-    /** @var QuestionHelper $helper */
-    $helper = $this->getHelper('question');
-    $question = new Question("<info>?</info> Package name: <fg=gray>($default)</> ", $default);
-
-    $packageName = $helper->ask($this->input, $this->output, $question);
-
-    $validPackageNamePattern = '/[a-zA-Z0-9_]+(-*[a-zA-Z0-9_]*)*\/[a-zA-Z0-9_]+(-*[a-zA-Z0-9_]*)*/';
-    if (! preg_match($validPackageNamePattern, $packageName) ) {
-      throw new RuntimeException('Invalid package name');
+    /**
+     * @inheritDoc
+     */
+    public function configure(): void
+    {
+        $this
+            ->addArgument('name', InputArgument::REQUIRED, 'The name of the game')
+            ->addOption('directory', ['d', 'dir'], InputArgument::OPTIONAL, 'The directory to create the game in', getcwd());
+        $this->output = new ConsoleOutput();
     }
 
-    return $packageName;
-  }
+    /**
+     * @inheritDoc
+     */
+    public function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $this->input = $input;
+        $this->output = $output;
 
-  /**
-   * Install the dependencies.
-   *
-   * @param string $targetDirectory The target directory.
-   */
-  private function installDependencies(string $targetDirectory): void
-  {
-    // Install dependencies
-    $this->output->writeln('<comment>Installing dependencies...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $installCommand = "composer install --working-dir=" . escapeshellarg($targetDirectory) . " --ansi";
-    if (false === shell_exec($installCommand)) {
-      throw new RuntimeException('Unable to install dependencies');
-    }
-  }
+        // Configure the target directory
+        $projectName = $input->getArgument('name');
+        $output->writeln("<info>Creating $projectName...</info>", OutputInterface::VERBOSITY_VERBOSE);
+        $this->targetDirectory = Path::join(
+            $this->targetDirectory,
+            $input->getOption('directory'),
+            strtolower(filter_string($projectName))
+        );
 
-  /**
-   * Create the project configuration.
-   *
-   * @param string $projectName The project name.
-   */
-  private function createProjectConfiguration(string $projectName): void
-  {
-    $this->output->writeln('<comment>Creating project configuration...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        // Create project directory
+        $this->createProjectDirectory();
 
-    $targetConfigFilename = Path::join($this->targetDirectory, 'sendama.json');
-    if (false === file_put_contents($targetConfigFilename, $this->getProjectConfiguration($projectName))) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
-    }
+        // Create project structure
+        $this->output->writeln('<info>Creating project structure...</info>', OutputInterface::VERBOSITY_VERBOSE);
 
-    $this->createConfigurationJsonFile($projectName);
+        $this->createConfigDirectory();
+        $this->createLogsDirectory();
+        $assetsDirectory = $this->createAssetsDirectory();
+        $this->createAssetsScenesDirectory($assetsDirectory);
+        $this->createAssetsScriptsDirectory($assetsDirectory);
+        $this->createAssetsMapsDirectory($assetsDirectory);
+        $this->createAssetsPrefabsDirectory($assetsDirectory);
+        $this->createAssetsTexturesDirectory($assetsDirectory);
 
-    $this->output->writeln('<comment>Creating package configuration</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $projectName = strtolower(filter_string($projectName));
-    $packageName = $this->getPackageName("sendama-engine/$projectName");
+        // Create project files
+        $this->output->writeln('<info>Creating project files...</info>', OutputInterface::VERBOSITY_VERBOSE);
 
-    $this->createInputConfigurationFile($packageName);
+        $this->createMainFile($projectName);
+        $this->createDotEnvFile($this->targetDirectory);
+        $this->createGitIgnoreFile($this->targetDirectory);
+        $this->createSplashScreenTextureFile($assetsDirectory);
+        $this->createPlayerTextureFile($assetsDirectory);
+        $this->createTheExampleMapFile($this->mapsDirectory);
+        $this->createDefaultSceneFile($assetsDirectory);
+        $this->createDocsDirectory($this->targetDirectory);
+        $this->createReadmeFile($this->targetDirectory);
 
-    $targetConfigFilename = Path::join($this->targetDirectory, 'composer.json');
-    if (false === file_put_contents($targetConfigFilename, $this->getComposerConfiguration($packageName))) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
-    }
+        // Create project configuration
+        $this->createProjectConfiguration($projectName);
 
-    if ($this->confirm('<info>?</info> Would you like to install the dependencies? <fg=gray>(Y/n)</> ', 'y') ) {
-      $this->installDependencies($this->targetDirectory);
-    }
-  }
+        // Done
+        $this->output->writeln("\nDone! 🎮🎮🎮");
 
-  private function createConfigurationJsonFile(string $projectName): void
-  {
-    $targetConfigurationFilename = Path::join($this->targetDirectory, 'configuration.json');
-    $mainFilename = strtolower(filter_string($projectName)) . '.php';
+        // Tell user cd into the project directory
+        $this->output->writeln("\nTo get started:");
+        $targetDirectory = basename($this->targetDirectory);
 
-    if (false === file_put_contents(
-      $targetConfigurationFilename,
-      ProjectNormalizer::buildConfigurationJson(
-        projectName: $projectName,
-        description: 'A simple ASCII terminal game',
-        version: '0.0.1',
-        mainFile: $mainFilename,
-      )
-    )) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigurationFilename));
-    }
-  }
+        $this->output->writeln("\n\t<fg=gray>cd $targetDirectory</>");
+        $this->output->writeln("\t<fg=gray>php $targetDirectory.php</>\n");
 
-  private function createInputConfigurationFile(string $packageName): void
-  {
-    $targetConfigFilename = Path::join($this->targetDirectory, 'config', 'input.php');
-    $inputConfigContents = ProjectNormalizer::buildInputConfiguration();
-    $inputConfigContents = str_replace('%PACKAGE_NAME%', $packageName, $inputConfigContents);
-
-    if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
-    }
-  }
-
-  private function createDefaultSceneFile(string $assetsDirectory): void
-  {
-    $targetSceneFilename = Path::join($assetsDirectory, 'Scenes', 'Level.scene.php');
-
-    if (false === file_put_contents($targetSceneFilename, SceneFileGenerationStrategy::buildMetaSceneContents())) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetSceneFilename));
-    }
-  }
-
-  /**
-   * Create the main file.
-   *
-   * @param mixed $projectName The project name.
-   */
-  private function createMainFile(string $projectName): void
-  {
-    $targetMainFilename = Path::join(
-      $this->targetDirectory,
-      basename($this->targetDirectory) . '.php'
-    );
-    $sourceMainFilename = Path::join(dirname(__DIR__, 2), 'templates', 'game.php');
-    if (! copy($sourceMainFilename, $targetMainFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceMainFilename, $targetMainFilename));
+        return Command::SUCCESS;
     }
 
-    ## Replace the game name in the main file
-    $mainFileContents = file_get_contents($targetMainFilename);
-    $mainFileContents = str_replace('%GAME_NAME%', $projectName, $mainFileContents);
-    if (false === file_put_contents($targetMainFilename, $mainFileContents)) {
-      throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetMainFilename));
+    /**
+     * Create the project directory.
+     */
+    private function createProjectDirectory(): void
+    {
+        $this->output->writeln('<comment>Creating project directory...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        if (file_exists($this->targetDirectory)) {
+            $this->output->writeln('<error>Project directory already exists...</error>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
+
+        if (!mkdir($this->targetDirectory) && !is_dir($this->targetDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $this->targetDirectory));
+        }
     }
 
-  }
+    /**
+     * Create the config directory.
+     * @return void
+     */
+    private function createConfigDirectory(): void
+    {
+        $configDirectory = Path::join($this->targetDirectory, 'config');
+        if (file_exists($configDirectory)) {
+            $this->output->writeln('<comment>Config directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the splash screen texture file.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createSplashScreenTextureFile(string $assetsDirectory): void
-  {
-    $this->output->writeln('<comment>Creating splash screen texture file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetSplashScreenTextureFilename = Path::join($assetsDirectory, 'splash.texture');
-
-    ## Load the splash screen texture from Assets/splash.texture
-    $sourceSplashScreenTextureFilename = Path::join(dirname(__DIR__, 2), 'templates', 'assets', 'splash.texture');
-    if (! copy($sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename));
-    }
-  }
-
-  /**
-   * Create the example map file.
-   *
-   * @param string $mapsDirectory The maps' directory.
-   */
-  private function createTheExampleMapFile(string $mapsDirectory): void
-  {
-    $this->output->writeln('<comment>Creating example map file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetExampleMapFilename = Path::join($mapsDirectory, 'example.tmap');
-    $sourceExampleMapFilename = Path::join(dirname(__DIR__, 2), 'templates', 'assets', 'Maps', 'example.tmap');
-
-    if (! copy($sourceExampleMapFilename, $targetExampleMapFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceExampleMapFilename, $targetExampleMapFilename));
+        if (!mkdir($configDirectory) && !is_dir($configDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $configDirectory));
+        }
     }
 
-  }
+    /**
+     * Create the logs' directory.
+     */
+    private function createLogsDirectory(): void
+    {
+        $logsDirectory = Path::join($this->targetDirectory, 'logs');
+        if (file_exists($logsDirectory)) {
+            $this->output->writeln('<comment>Logs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the assets' textures directory.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createAssetsTexturesDirectory(string $assetsDirectory): void
-  {
-    $texturesDirectory = Path::join($assetsDirectory, 'Textures');
-    if (file_exists($texturesDirectory)) {
-      $this->output->writeln('<comment>Textures directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        if (!mkdir($logsDirectory) && !is_dir($logsDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $logsDirectory));
+        }
     }
 
-    if (! mkdir($texturesDirectory) && ! is_dir($texturesDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $texturesDirectory));
-    }
-  }
+    /**
+     * Create the assets' directory.
+     *
+     * @return string The assets' directory.
+     */
+    private function createAssetsDirectory(): string
+    {
+        $assetsDirectory = Path::join($this->targetDirectory, 'Assets');
+        if (file_exists($assetsDirectory)) {
+            return $assetsDirectory;
+        }
 
-  /**
-   * Create the assets' prefabs directory.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createAssetsPrefabsDirectory(string $assetsDirectory): void
-  {
-    $prefabsDirectory = Path::join($assetsDirectory, 'Prefabs');
-    if (file_exists($prefabsDirectory)) {
-      $this->output->writeln('<comment>Prefabs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
-    }
+        if (!mkdir($assetsDirectory) && !is_dir($assetsDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $assetsDirectory));
+        }
 
-    if (! mkdir($prefabsDirectory) && ! is_dir($prefabsDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $prefabsDirectory));
-    }
-  }
-
-  /**
-   * Create the assets' maps directory.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createAssetsMapsDirectory(string $assetsDirectory): void
-  {
-    $this->mapsDirectory = Path::join($assetsDirectory, 'Maps');
-    if (file_exists($this->mapsDirectory)) {
-      $this->output->writeln('<comment>Maps directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        return $assetsDirectory;
     }
 
-    if (! mkdir($this->mapsDirectory) && ! is_dir($this->mapsDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $this->mapsDirectory));
-    }
-  }
+    /**
+     * Create the assets' scenes directory.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createAssetsScenesDirectory(string $assetsDirectory): void
+    {
+        $scenesDirectory = Path::join($assetsDirectory, 'Scenes');
+        if (file_exists($scenesDirectory)) {
+            $this->output->writeln('<comment>Scenes directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the assets' scripts directory.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createAssetsScriptsDirectory(string $assetsDirectory): void
-  {
-    $scriptsDirectory = Path::join($assetsDirectory, 'Scripts');
-    if (file_exists($scriptsDirectory)) {
-      $this->output->writeln('<comment>Scripts directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
-    }
-
-    if (! mkdir($scriptsDirectory) && ! is_dir($scriptsDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $scriptsDirectory));
-    }
-  }
-
-  /**
-   * Create the assets' scenes directory.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createAssetsScenesDirectory(string $assetsDirectory): void
-  {
-    $scenesDirectory = Path::join($assetsDirectory, 'Scenes');
-    if (file_exists($scenesDirectory)) {
-      $this->output->writeln('<comment>Scenes directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        if (!mkdir($scenesDirectory) && !is_dir($scenesDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $scenesDirectory));
+        }
     }
 
-    if (! mkdir($scenesDirectory) && ! is_dir($scenesDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $scenesDirectory));
-    }
-  }
+    /**
+     * Create the assets' scripts directory.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createAssetsScriptsDirectory(string $assetsDirectory): void
+    {
+        $scriptsDirectory = Path::join($assetsDirectory, 'Scripts');
+        if (file_exists($scriptsDirectory)) {
+            $this->output->writeln('<comment>Scripts directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the assets' directory.
-   *
-   * @return string The assets' directory.
-   */
-  private function createAssetsDirectory(): string
-  {
-    $assetsDirectory = Path::join($this->targetDirectory, 'Assets');
-    if (file_exists($assetsDirectory)) {
-      return $assetsDirectory;
-    }
-
-    if (! mkdir($assetsDirectory) && ! is_dir($assetsDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $assetsDirectory));
+        if (!mkdir($scriptsDirectory) && !is_dir($scriptsDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $scriptsDirectory));
+        }
     }
 
-    return $assetsDirectory;
-  }
+    /**
+     * Create the assets' maps directory.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createAssetsMapsDirectory(string $assetsDirectory): void
+    {
+        $this->mapsDirectory = Path::join($assetsDirectory, 'Maps');
+        if (file_exists($this->mapsDirectory)) {
+            $this->output->writeln('<comment>Maps directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the logs' directory.
-   */
-  private function createLogsDirectory(): void
-  {
-    $logsDirectory = Path::join($this->targetDirectory, 'logs');
-    if (file_exists($logsDirectory)) {
-      $this->output->writeln('<comment>Logs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        if (!mkdir($this->mapsDirectory) && !is_dir($this->mapsDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $this->mapsDirectory));
+        }
     }
 
-    if (! mkdir($logsDirectory) && ! is_dir($logsDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $logsDirectory));
-    }
-  }
+    /**
+     * Create the assets' prefabs directory.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createAssetsPrefabsDirectory(string $assetsDirectory): void
+    {
+        $prefabsDirectory = Path::join($assetsDirectory, 'Prefabs');
+        if (file_exists($prefabsDirectory)) {
+            $this->output->writeln('<comment>Prefabs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the config directory.
-   * @return void
-   */
-  private function createConfigDirectory(): void
-  {
-    $configDirectory = Path::join($this->targetDirectory, 'config');
-    if (file_exists($configDirectory)) {
-      $this->output->writeln('<comment>Config directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
-    }
-
-    if (! mkdir($configDirectory) && ! is_dir($configDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $configDirectory));
-    }
-  }
-
-  /**
-   * Create the project directory.
-   */
-  private function createProjectDirectory(): void
-  {
-    $this->output->writeln('<comment>Creating project directory...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    if (file_exists($this->targetDirectory)) {
-      $this->output->writeln('<error>Project directory already exists...</error>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        if (!mkdir($prefabsDirectory) && !is_dir($prefabsDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $prefabsDirectory));
+        }
     }
 
-    if (! mkdir($this->targetDirectory) && ! is_dir($this->targetDirectory)) {
-      throw new RuntimeException(sprintf('Directory "%s" was not created', $this->targetDirectory));
-    }
-  }
+    /**
+     * Create the assets' textures directory.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createAssetsTexturesDirectory(string $assetsDirectory): void
+    {
+        $texturesDirectory = Path::join($assetsDirectory, 'Textures');
+        if (file_exists($texturesDirectory)) {
+            $this->output->writeln('<comment>Textures directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
 
-  /**
-   * Create the player texture file.
-   *
-   * @param string $assetsDirectory The assets' directory.
-   */
-  private function createPlayerTextureFile(string $assetsDirectory): void
-  {
-    $this->output->writeln('<comment>Creating player texture file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetPlayerTextureFilename = Path::join($assetsDirectory, 'Textures', 'player.texture');
-    $sourcePlayerTextureFilename = Path::join(dirname(__DIR__, 2), 'templates', 'assets', 'Textures', 'player.texture');
-
-    if (! copy($sourcePlayerTextureFilename, $targetPlayerTextureFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourcePlayerTextureFilename, $targetPlayerTextureFilename));
-    }
-  }
-
-  /**
-   * Create the .gitignore file.
-   *
-   * @param string $targetDirectory The target directory.
-   */
-  private function createDotEnvFile(string $targetDirectory): void
-  {
-    $this->output->writeln('<comment>Creating .env file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetDotEnvFilename = Path::join($targetDirectory, '.env');
-    $sourceDotEnvFilename = Path::join(dirname(__DIR__, 2), 'templates', '.env');
-
-    if (! copy($sourceDotEnvFilename, $targetDotEnvFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceDotEnvFilename, $targetDotEnvFilename));
-    }
-  }
-
-  /**
-   * Create the .gitignore file.
-   *
-   * @param string $targetDirectory The target directory.
-   * @return void
-   */
-  private function createGitIgnoreFile(string $targetDirectory): void
-  {
-    $this->output->writeln('<comment>Creating .gitignore file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetGitIgnoreFilename = Path::join($targetDirectory, '.gitignore');
-    $sourceGitIgnoreFilename = Path::join(dirname(__DIR__, 2), 'templates', '.gitignore');
-
-    if (! copy($sourceGitIgnoreFilename, $targetGitIgnoreFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceGitIgnoreFilename, $targetGitIgnoreFilename));
-    }
-  }
-
-  /**
-   * Create the docs' directory.
-   *
-   * @param string $targetDirectory The target directory.
-   * @return void
-   */
-  private function createDocsDirectory(string $targetDirectory): void
-  {
-    $this->output->writeln('<comment>Creating docs directory...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $docsDirectory = Path::join($targetDirectory, 'docs');
-    $sourceDocsDirectory = Path::join(dirname(__DIR__, 2), 'templates', 'docs');
-
-    if (file_exists($docsDirectory)) {
-      $this->output->writeln('<comment>Docs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-      return;
+        if (!mkdir($texturesDirectory) && !is_dir($texturesDirectory)) {
+            throw new RuntimeException(sprintf('Directory "%s" was not created', $texturesDirectory));
+        }
     }
 
-    # Copy the docs directory
-    if (false === passthru("cp -r $sourceDocsDirectory $docsDirectory") ) {
-      throw new RuntimeException(sprintf('Directory "%s" was not copied to "%s"', $sourceDocsDirectory, $docsDirectory));
-    }
-  }
+    /**
+     * Create the main file.
+     *
+     * @param mixed $projectName The project name.
+     */
+    private function createMainFile(string $projectName): void
+    {
+        $targetMainFilename = Path::join(
+            $this->targetDirectory,
+            basename($this->targetDirectory) . '.php'
+        );
+        $sourceMainFilename = Path::join(dirname(__DIR__, 2), 'templates', 'game.php');
+        if (!copy($sourceMainFilename, $targetMainFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceMainFilename, $targetMainFilename));
+        }
 
-  /**
-   * Create the README file.
-   *
-   * @param string $targetDirectory The target directory.
-   * @return void
-   */
-  private function createReadmeFile(string $targetDirectory): void
-  {
-    $this->output->writeln('<comment>Creating README file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
-    $targetReadmeFilename = Path::join($targetDirectory, 'README.md');
-    $sourceReadmeFilename = Path::join(dirname(__DIR__, 2), 'templates', 'README.md');
+        ## Replace the game name in the main file
+        $mainFileContents = file_get_contents($targetMainFilename);
+        $mainFileContents = str_replace('%GAME_NAME%', $projectName, $mainFileContents);
+        if (false === file_put_contents($targetMainFilename, $mainFileContents)) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetMainFilename));
+        }
 
-    if (! copy($sourceReadmeFilename, $targetReadmeFilename) ) {
-      throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceReadmeFilename, $targetReadmeFilename));
     }
-  }
+
+    /**
+     * Create the .gitignore file.
+     *
+     * @param string $targetDirectory The target directory.
+     */
+    private function createDotEnvFile(string $targetDirectory): void
+    {
+        $this->output->writeln('<comment>Creating .env file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetDotEnvFilename = Path::join($targetDirectory, '.env');
+        $sourceDotEnvFilename = Path::join(dirname(__DIR__, 2), 'templates', '.env');
+
+        if (!copy($sourceDotEnvFilename, $targetDotEnvFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceDotEnvFilename, $targetDotEnvFilename));
+        }
+    }
+
+    /**
+     * Create the .gitignore file.
+     *
+     * @param string $targetDirectory The target directory.
+     * @return void
+     */
+    private function createGitIgnoreFile(string $targetDirectory): void
+    {
+        $this->output->writeln('<comment>Creating .gitignore file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetGitIgnoreFilename = Path::join($targetDirectory, '.gitignore');
+        $sourceGitIgnoreFilename = Path::join(dirname(__DIR__, 2), 'templates', '.gitignore');
+
+        if (!copy($sourceGitIgnoreFilename, $targetGitIgnoreFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceGitIgnoreFilename, $targetGitIgnoreFilename));
+        }
+    }
+
+    /**
+     * Create the splash screen texture file.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createSplashScreenTextureFile(string $assetsDirectory): void
+    {
+        $this->output->writeln('<comment>Creating splash screen texture file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetSplashScreenTextureFilename = Path::join($assetsDirectory, 'splash.texture');
+
+        ## Load the splash screen texture from Assets/splash.texture
+        $sourceSplashScreenTextureFilename = Path::join(dirname(__DIR__, 2), 'templates', 'Assets', 'splash.texture');
+        if (!copy($sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceSplashScreenTextureFilename, $targetSplashScreenTextureFilename));
+        }
+    }
+
+    /**
+     * Create the player texture file.
+     *
+     * @param string $assetsDirectory The assets' directory.
+     */
+    private function createPlayerTextureFile(string $assetsDirectory): void
+    {
+        $this->output->writeln('<comment>Creating player texture file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetPlayerTextureFilename = Path::join($assetsDirectory, 'Textures', 'player.texture');
+        $sourcePlayerTextureFilename = Path::join(dirname(__DIR__, 2), 'templates', 'Assets', 'Textures', 'player.texture');
+
+        if (!copy($sourcePlayerTextureFilename, $targetPlayerTextureFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourcePlayerTextureFilename, $targetPlayerTextureFilename));
+        }
+    }
+
+    /**
+     * Create the example map file.
+     *
+     * @param string $mapsDirectory The maps' directory.
+     */
+    private function createTheExampleMapFile(string $mapsDirectory): void
+    {
+        $this->output->writeln('<comment>Creating example map file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetExampleMapFilename = Path::join($mapsDirectory, 'example.tmap');
+        $sourceExampleMapFilename = Path::join(dirname(__DIR__, 2), 'templates', 'Assets', 'Maps', 'example.tmap');
+
+        if (!copy($sourceExampleMapFilename, $targetExampleMapFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceExampleMapFilename, $targetExampleMapFilename));
+        }
+
+    }
+
+    private function createDefaultSceneFile(string $assetsDirectory): void
+    {
+        $targetSceneFilename = Path::join($assetsDirectory, 'Scenes', 'Level.scene.php');
+
+        if (false === file_put_contents($targetSceneFilename, SceneFileGenerationStrategy::buildMetaSceneContents())) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetSceneFilename));
+        }
+    }
+
+    /**
+     * Create the docs' directory.
+     *
+     * @param string $targetDirectory The target directory.
+     * @return void
+     */
+    private function createDocsDirectory(string $targetDirectory): void
+    {
+        $this->output->writeln('<comment>Creating docs directory...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $docsDirectory = Path::join($targetDirectory, 'docs');
+        $sourceDocsDirectory = Path::join(dirname(__DIR__, 2), 'templates', 'docs');
+
+        if (file_exists($docsDirectory)) {
+            $this->output->writeln('<comment>Docs directory already exists...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
+
+        # Copy the docs directory
+        if (false === passthru("cp -r $sourceDocsDirectory $docsDirectory")) {
+            throw new RuntimeException(sprintf('Directory "%s" was not copied to "%s"', $sourceDocsDirectory, $docsDirectory));
+        }
+    }
+
+    /**
+     * Create the README file.
+     *
+     * @param string $targetDirectory The target directory.
+     * @return void
+     */
+    private function createReadmeFile(string $targetDirectory): void
+    {
+        $this->output->writeln('<comment>Creating README file...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $targetReadmeFilename = Path::join($targetDirectory, 'README.md');
+        $sourceReadmeFilename = Path::join(dirname(__DIR__, 2), 'templates', 'README.md');
+
+        if (!copy($sourceReadmeFilename, $targetReadmeFilename)) {
+            throw new RuntimeException(sprintf('File "%s" was not copied to "%s"', $sourceReadmeFilename, $targetReadmeFilename));
+        }
+    }
+
+    /**
+     * Create the project configuration.
+     *
+     * @param string $projectName The project name.
+     */
+    private function createProjectConfiguration(string $projectName): void
+    {
+        $this->output->writeln('<comment>Creating project configuration...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+
+        $targetConfigFilename = Path::join($this->targetDirectory, 'sendama.json');
+        if (false === file_put_contents($targetConfigFilename, $this->getProjectConfiguration($projectName))) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
+        }
+
+        $this->createConfigurationJsonFile($projectName);
+
+        $this->output->writeln('<comment>Creating package configuration</comment>', OutputInterface::VERBOSITY_VERBOSE);
+        $projectName = strtolower(filter_string($projectName));
+        $packageName = $this->getPackageName("sendama-engine/$projectName");
+
+        $this->createInputConfigurationFile($packageName);
+
+        $targetConfigFilename = Path::join($this->targetDirectory, 'composer.json');
+        if (false === file_put_contents($targetConfigFilename, $this->getComposerConfiguration($packageName))) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
+        }
+
+        if ($this->confirm('<info>?</info> Would you like to install the dependencies? <fg=gray>(Y/n)</> ', 'y')) {
+            $this->installDependencies($this->targetDirectory);
+        }
+    }
+
+    /**
+     * Get the project configuration.
+     *
+     * @param string $projectName The project name.
+     * @return string The project configuration.
+     */
+    private function getProjectConfiguration(string $projectName): string
+    {
+        $mainFilename = strtolower(filter_string($projectName)) . '.php';
+
+        return ProjectNormalizer::buildSendamaConfiguration(
+            projectName: $projectName,
+            description: 'A 2D ASCII terminal game.',
+            version: '0.0.1',
+            mainFile: $mainFilename,
+            loadedScenes: ['Scenes/Level.scene.php'],
+            consoleRefreshInterval: 5.0,
+        );
+    }
+
+    private function createConfigurationJsonFile(string $projectName): void
+    {
+        $targetConfigurationFilename = Path::join($this->targetDirectory, 'preferences.json');
+        $mainFilename = strtolower(filter_string($projectName)) . '.php';
+
+        if (false === file_put_contents(
+                $targetConfigurationFilename,
+                ProjectNormalizer::buildPreferencesJson()
+            )) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigurationFilename));
+        }
+    }
+
+    /**
+     * Get the package name.
+     *
+     * @param string $default The default package name.
+     * @return string The package name.
+     */
+    private function getPackageName(string $default): string
+    {
+        /** @var QuestionHelper $helper */
+        $helper = $this->getHelper('question');
+        $question = new Question("<info>?</info> Package name: <fg=gray>($default)</> ", $default);
+
+        $packageName = $helper->ask($this->input, $this->output, $question);
+
+        $validPackageNamePattern = '/[a-zA-Z0-9_]+(-*[a-zA-Z0-9_]*)*\/[a-zA-Z0-9_]+(-*[a-zA-Z0-9_]*)*/';
+        if (!preg_match($validPackageNamePattern, $packageName)) {
+            throw new RuntimeException('Invalid package name');
+        }
+
+        return $packageName;
+    }
+
+    private function createInputConfigurationFile(string $packageName): void
+    {
+        $targetConfigFilename = Path::join($this->targetDirectory, 'config', 'input.php');
+        $inputConfigContents = ProjectNormalizer::buildInputConfiguration();
+        $inputConfigContents = str_replace('%PACKAGE_NAME%', $packageName, $inputConfigContents);
+
+        if (false === file_put_contents($targetConfigFilename, $inputConfigContents)) {
+            throw new RuntimeException(sprintf('Unable to write to file "%s"', $targetConfigFilename));
+        }
+    }
+
+    /**
+     * Get the project configuration.
+     *
+     * @param string $packageName The package name.
+     * @return string The project configuration.
+     */
+    private function getComposerConfiguration(string $packageName): string
+    {
+        [$organization, $projectName] = explode('/', $packageName);
+        $namespace = to_title_case($organization) . '\\' . to_title_case($projectName) . '\\';
+
+        return json_encode([
+            'name' => $packageName,
+            'version' => '1.0.0',
+            'description' => 'A new 2D ASCII terminal game.',
+            'type' => 'project',
+            'require' => [
+                'php' => '^8.3',
+                'sendamaphp/engine' => '*'
+            ],
+            'require-dev' => [
+                'pestphp/pest' => '^4.3',
+                'phpstan/phpstan' => '^1.10',
+            ],
+            'autoload' => [
+                'psr-4' => [
+                    $namespace => 'Assets/'
+                ]
+            ],
+            'config' => [
+                'allow-plugins' => [
+                    'pestphp/pest-plugin' => true
+                ]
+            ]
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Ask the user to confirm an action.
+     *
+     * @param string $question The question to ask the user.
+     * @param bool $default The default response. Default is false.
+     * @return bool The user's response.
+     */
+    private function confirm(string $question, bool $default = false): bool
+    {
+        /** @var QuestionHelper $helper */
+        $helper = $this->getHelper('question');
+        $question = new ConfirmationQuestion($question, $default);
+
+        return $helper->ask($this->input, $this->output, $question);
+    }
+
+    /**
+     * Install the dependencies.
+     *
+     * @param string $targetDirectory The target directory.
+     */
+    private function installDependencies(string $targetDirectory): void
+    {
+        // Install dependencies
+        $this->output->writeln('<comment>Installing dependencies...</comment>', OutputInterface::VERBOSITY_VERBOSE);
+
+        $installEngineCommand = "composer require --working-dir " . escapeshellarg($targetDirectory) . " --ansi " . self::ENGINE_PACKAGE_NAME;
+
+        if (false === shell_exec($installEngineCommand)) {
+            throw new RuntimeException(sprintf('Unable to install dependencies: %s', $installEngineCommand));
+        }
+
+        $installCommand = "composer install --working-dir=" . escapeshellarg($targetDirectory) . " --ansi";
+        if (false === shell_exec($installCommand)) {
+            throw new RuntimeException('Unable to install dependencies');
+        }
+    }
 }

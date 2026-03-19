@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor;
 
 use Assegai\Collections\ItemList;
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\Events\Interfaces\ObservableInterface;
 use Atatusoft\Termutil\Events\Traits\ObservableTrait;
 use Atatusoft\Termutil\IO\Console\Console;
@@ -33,6 +34,7 @@ use Sendama\Console\Editor\Widgets\InspectorPanel;
 use Sendama\Console\Editor\Widgets\MainPanel;
 use Sendama\Console\Editor\Widgets\OptionListModal;
 use Sendama\Console\Editor\Widgets\PanelListModal;
+use Sendama\Console\Editor\Widgets\Snackbar;
 use Sendama\Console\Editor\Widgets\Widget;
 use Sendama\Console\Exceptions\IOException;
 use Sendama\Console\Exceptions\SendamaConsoleException;
@@ -43,6 +45,8 @@ use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Output\ConsoleOutput;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Throwable;
 
 /**
@@ -55,6 +59,9 @@ final class Editor implements ObservableInterface
     use ObservableTrait;
 
     const int FPS = 60;
+    private const float ASSET_WATCH_INTERVAL_SECONDS = 0.5;
+    private const string TMUX_GAME_CHILD_ENV_KEY = 'SENDAMA_TMUX_CHILD';
+    private const int TMUX_PLAY_PANE_PERCENT = 40;
     /**
      * @var bool Whether the editor is currently running.
      */
@@ -147,6 +154,11 @@ final class Editor implements ObservableInterface
     protected PrefabWriter $prefabWriter;
     protected ?ProjectNormalizer $projectNormalizer = null;
     protected array $projectDiscrepancies = [];
+    protected Snackbar $snackbar;
+    protected ?string $tmuxPlayPaneId = null;
+    protected ?string $tmuxPreviousStatusValue = null;
+    protected array $watchedAssetSnapshot = [];
+    protected float $lastAssetWatchPollAt = 0.0;
 
     /**
      * @param string $name
@@ -158,6 +170,8 @@ final class Editor implements ObservableInterface
     )
     {
         try {
+            $this->workingDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+
             register_shutdown_function(function () {
                 $this->finish();
             });
@@ -172,6 +186,8 @@ final class Editor implements ObservableInterface
             $this->sceneWriter = new SceneWriter();
             $this->prefabWriter = new PrefabWriter();
             $this->initializeWidgets();
+            $this->watchedAssetSnapshot = $this->captureWatchedAssetSnapshot();
+            $this->lastAssetWatchPollAt = microtime(true);
             $this->initializeEditorStates();
             $this->initializeProjectIntegrityCheck();
             $this->splashScreen = new SplashScreen(
@@ -208,13 +224,65 @@ final class Editor implements ObservableInterface
             $this->stop();
         }
 
-        $this->workingDirectory = $directory;
+        $this->workingDirectory = $this->resolveAbsoluteDirectory($directory);
 
         if ($restartAfterSettingWorkingDirectory) {
             $this->start();
         }
 
         return $this;
+    }
+
+    private function resolveAbsoluteDirectory(string $directory): string
+    {
+        $normalizedDirectory = Path::normalize(trim($directory));
+
+        if ($normalizedDirectory === '' || $normalizedDirectory === '.') {
+            $normalizedDirectory = getcwd() ?: '.';
+        }
+
+        if (!str_starts_with($normalizedDirectory, '/')) {
+            $normalizedDirectory = Path::join(getcwd() ?: '.', $normalizedDirectory);
+        }
+
+        $resolvedDirectory = realpath($normalizedDirectory);
+
+        if (is_string($resolvedDirectory) && $resolvedDirectory !== '') {
+            return Path::normalize($resolvedDirectory);
+        }
+
+        return Path::normalize($normalizedDirectory);
+    }
+
+    private function resolveAbsolutePath(string $path, ?string $baseDirectory = null): string
+    {
+        $normalizedPath = Path::normalize(trim($path));
+
+        if ($normalizedPath === '') {
+            $resolvedBaseDirectory = is_string($baseDirectory) && $baseDirectory !== ''
+                ? $this->resolveAbsoluteDirectory($baseDirectory)
+                : $this->resolveAbsoluteDirectory('.');
+
+            return $resolvedBaseDirectory;
+        }
+
+        if (str_starts_with($normalizedPath, '/')) {
+            $resolvedPath = realpath($normalizedPath);
+
+            return is_string($resolvedPath) && $resolvedPath !== ''
+                ? Path::normalize($resolvedPath)
+                : $normalizedPath;
+        }
+
+        $resolvedBaseDirectory = is_string($baseDirectory) && $baseDirectory !== ''
+            ? $this->resolveAbsoluteDirectory($baseDirectory)
+            : $this->resolveAbsoluteDirectory('.');
+        $candidatePath = Path::join($resolvedBaseDirectory, $normalizedPath);
+        $resolvedPath = realpath($candidatePath);
+
+        return is_string($resolvedPath) && $resolvedPath !== ''
+            ? Path::normalize($resolvedPath)
+            : Path::normalize($candidatePath);
     }
 
     /**
@@ -259,6 +327,7 @@ final class Editor implements ObservableInterface
      */
     public function stop(): void
     {
+        $this->stopManagedTmuxPlayPane();
         Console::reset();
 
         Debug::info("Stopping editor");
@@ -285,6 +354,7 @@ final class Editor implements ObservableInterface
      */
     public function finish(): void
     {
+        $this->stopManagedTmuxPlayPane();
         Debug::info("Shutting down editor");
 
         Console::restoreSettings();
@@ -379,6 +449,8 @@ final class Editor implements ObservableInterface
             $this->refreshTerminalSize();
         }
 
+        $this->snackbar->update();
+
         if ($this->projectNormalizationModal?->isVisible()) {
             $this->handleProjectNormalizationModalInput();
             $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
@@ -403,12 +475,16 @@ final class Editor implements ObservableInterface
         $this->synchronizeAssetCreations();
         $this->synchronizeHierarchyDeletions();
         $this->synchronizeHierarchyAdditions();
+        $this->synchronizeHierarchyMoves();
+        $this->synchronizeHierarchyDuplications();
+        $this->synchronizeHierarchyPrefabCreations();
         $this->synchronizeMainPanelSceneChanges();
         $this->synchronizeMainPanelAssetChanges();
         $this->synchronizeInspectorSceneChanges();
         $this->synchronizeInspectorPrefabChanges();
         $this->synchronizeInspectorAssetChanges();
         $this->synchronizeInspectorPanel();
+        $this->synchronizeWatchedAssetChanges();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
     }
@@ -416,16 +492,26 @@ final class Editor implements ObservableInterface
     private function render(): void
     {
         $this->frameCount++;
+        $hasActiveSnackbar = $this->snackbar->hasActiveNotice();
+        $snackbarIsDirty = $this->snackbar->isDirty();
+        $shouldRefreshForSnackbar = $snackbarIsDirty;
+
         if ($this->projectNormalizationModal?->isVisible()) {
             $this->didRenderOverlayLastFrame = true;
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->projectNormalizationModal->isDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->projectNormalizationModal->isDirty() || $shouldRefreshForSnackbar) {
                 $this->projectNormalizationModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->projectNormalizationModal->markClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -436,13 +522,19 @@ final class Editor implements ObservableInterface
         if ($this->panelListModal->isVisible()) {
             $this->didRenderOverlayLastFrame = true;
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->panelListModal->isDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->panelListModal->isDirty() || $shouldRefreshForSnackbar) {
                 $this->panelListModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->panelListModal->markClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -458,13 +550,19 @@ final class Editor implements ObservableInterface
                 $this->shouldRefreshBackgroundUnderModal = true;
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal) {
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
                 $this->renderEditorFrame();
             }
 
-            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty()) {
+            if ($this->shouldRefreshBackgroundUnderModal || $this->focusedPanel->isModalDirty() || $shouldRefreshForSnackbar) {
                 $this->focusedPanel->renderActiveModal();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
                 $this->focusedPanel->markModalClean();
+                $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
 
@@ -479,6 +577,14 @@ final class Editor implements ObservableInterface
 
         $this->shouldRefreshBackgroundUnderModal = false;
         $this->renderEditorFrame();
+
+        if ($hasActiveSnackbar) {
+            $this->snackbar->render();
+        }
+
+        if ($snackbarIsDirty || $hasActiveSnackbar) {
+            $this->snackbar->markClean();
+        }
 
         $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
     }
@@ -607,8 +713,14 @@ final class Editor implements ObservableInterface
     {
         if ($this->editorState instanceof PlayState) {
             $this->setState($this->editState);
+            $this->stopManagedTmuxPlayPane();
         } else {
             $this->setState($this->playState);
+
+            if ($this->canUseTmuxIntegration() && !$this->startManagedTmuxPlayPaneIfAvailable()) {
+                $this->setState($this->editState);
+                $this->pushNotification('Failed to launch the game pane for play mode.', 'error');
+            }
         }
 
         $this->shouldRefreshBackgroundUnderModal = true;
@@ -688,6 +800,7 @@ final class Editor implements ObservableInterface
             workingDirectory: $this->workingDirectory,
         );
         $this->inspectorPanel->setSceneHierarchy($this->loadedScene?->hierarchy ?? []);
+        $this->snackbar = new Snackbar($this->settings->notificationDurationSeconds);
 
         $this->panels->add($this->hierarchyPanel);
         $this->panels->add($this->assetsPanel);
@@ -702,31 +815,117 @@ final class Editor implements ObservableInterface
 
     private function handlePanelFocus(): void
     {
-        if (
-            $this->projectNormalizationModal?->isVisible()
-            || $this->panelListModal->isVisible()
-            || $this->focusedPanel?->hasActiveModal()
-        ) {
-            return;
-        }
-
-        if (!Input::isLeftMouseButtonDown()) {
-            return;
-        }
-
         $mouseEvent = Input::getMouseEvent();
 
         if (!$mouseEvent) {
             return;
         }
 
+        if ($this->projectNormalizationModal?->isVisible()) {
+            $this->handleProjectNormalizationModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($this->panelListModal->isVisible()) {
+            $this->handlePanelListModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($this->focusedPanel?->hasActiveModal()) {
+            $this->focusedPanel->handleModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if (!in_array($mouseEvent->buttonIndex, [0, 2], true)) {
+            return;
+        }
+
+        if ($mouseEvent->action === 'Dragged') {
+            if ($this->focusedPanel?->containsPoint($mouseEvent->x, $mouseEvent->y)) {
+                $this->focusedPanel->handleMouseEvent($mouseEvent);
+            }
+
+            return;
+        }
+
+        if ($mouseEvent->action === 'Released') {
+            $this->focusedPanel?->handleMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($mouseEvent->buttonIndex === 2) {
+            if ($this->focusedPanel?->containsPoint($mouseEvent->x, $mouseEvent->y)) {
+                $this->focusedPanel->handleMouseEvent($mouseEvent);
+            }
+
+            return;
+        }
+
+        if (!Input::isLeftMouseButtonPressed()) {
+            return;
+        }
+
         foreach ($this->panels as $panel) {
             if ($panel->containsPoint($mouseEvent->x, $mouseEvent->y)) {
                 $this->setFocusedPanel($panel);
-                $panel->handleMouseClick($mouseEvent->x, $mouseEvent->y);
+                $panel->handleMouseEvent($mouseEvent);
                 return;
             }
         }
+    }
+
+    private function handleProjectNormalizationModalMouseEvent(MouseEvent $mouseEvent): void
+    {
+        if (!$this->projectNormalizationModal instanceof OptionListModal) {
+            return;
+        }
+
+        if ($this->projectNormalizationModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return;
+        }
+
+        $selectedOption = $this->projectNormalizationModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selectedOption) || $selectedOption === '') {
+            return;
+        }
+
+        $this->projectNormalizationModal->hide();
+
+        if ($selectedOption === 'Normalize') {
+            $this->normalizeLoadedProject();
+        }
+
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function handlePanelListModalMouseEvent(MouseEvent $mouseEvent): void
+    {
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return;
+        }
+
+        $selectedIndex = $this->panelListModal->clickPanelAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_int($selectedIndex)) {
+            return;
+        }
+
+        $this->panelListModal->hide();
+        $panels = $this->panels->toArray();
+
+        if (!isset($panels[$selectedIndex])) {
+            return;
+        }
+
+        /** @var Widget $panel */
+        $panel = $panels[$selectedIndex];
+        $this->setFocusedPanel($panel);
+        $this->shouldRefreshBackgroundUnderModal = true;
     }
 
     private function setFocusedPanel(Widget $panel): void
@@ -875,6 +1074,7 @@ final class Editor implements ObservableInterface
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->projectNormalizationModal?->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->focusedPanel?->syncModalLayout($this->terminalWidth, $this->terminalHeight);
+        $this->snackbar->syncLayout($this->terminalWidth, $this->terminalHeight);
     }
 
     private function handleProjectNormalizationModalInput(): void
@@ -1077,9 +1277,14 @@ final class Editor implements ObservableInterface
         } elseif (($selectedItem['context'] ?? null) === 'asset') {
             $asset = is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null;
             $openInMainPanel = ($selectedItem['openInMainPanel'] ?? false) === true;
+            $openInTerminalEditor = ($selectedItem['openInTerminalEditor'] ?? false) === true;
             $selectedItem = is_array($asset)
                 ? $this->buildAssetInspectionTarget($asset, $openInMainPanel)
                 : $selectedItem;
+
+            if ($openInTerminalEditor && is_array($asset)) {
+                $this->openAssetInConfiguredEditor($asset);
+            }
 
             if ($openInMainPanel && $this->isEditableSpriteAsset($asset)) {
                 $this->mainPanel->loadSpriteAsset($asset);
@@ -1089,6 +1294,48 @@ final class Editor implements ObservableInterface
         }
 
         $this->inspectorPanel->inspectTarget($selectedItem);
+    }
+
+    private function synchronizeWatchedAssetChanges(bool $force = false): void
+    {
+        if (!isset($this->assetsPanel) || !isset($this->inspectorPanel)) {
+            return;
+        }
+
+        $assetsDirectory = $this->resolveWatchedAssetsDirectory();
+        $now = microtime(true);
+
+        if ($assetsDirectory === null) {
+            $this->watchedAssetSnapshot = [];
+            $this->lastAssetWatchPollAt = $now;
+            return;
+        }
+
+        if (
+            !$force
+            && $this->lastAssetWatchPollAt > 0.0
+            && ($now - $this->lastAssetWatchPollAt) < self::ASSET_WATCH_INTERVAL_SECONDS
+        ) {
+            return;
+        }
+
+        $currentSnapshot = $this->captureWatchedAssetSnapshot($assetsDirectory);
+        $previousSnapshot = $this->watchedAssetSnapshot;
+        $this->watchedAssetSnapshot = $currentSnapshot;
+        $this->lastAssetWatchPollAt = $now;
+
+        if ($previousSnapshot === []) {
+            return;
+        }
+
+        $changedAssetPaths = $this->detectChangedWatchedAssetPaths($previousSnapshot, $currentSnapshot);
+
+        if ($changedAssetPaths === []) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->refreshInspectionAfterWatchedAssetChanges($changedAssetPaths);
     }
 
     private function synchronizeInspectorSceneChanges(): void
@@ -1203,6 +1450,7 @@ final class Editor implements ObservableInterface
 
         if (!$this->prefabWriter->save($mutation['prefabPath'], $mutation['value'])) {
             $this->consolePanel->append('[ERROR] - Failed to save prefab ' . basename($mutation['prefabPath']) . '.');
+            $this->pushNotification('Failed to save prefab ' . basename($mutation['prefabPath']) . '.', 'error');
             return;
         }
 
@@ -1229,19 +1477,170 @@ final class Editor implements ObservableInterface
     {
         $newItem = $this->hierarchyPanel->consumeCreationRequest();
 
-        if (!$this->loadedScene instanceof DTOs\SceneDTO || !is_array($newItem) || $newItem === []) {
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($newItem)
+            || !is_array($newItem['value'] ?? null)
+        ) {
             return;
         }
 
-        $this->loadedScene->hierarchy[] = $newItem;
+        $parentPath = is_string($newItem['parentPath'] ?? null) ? $newItem['parentPath'] : null;
+        $newPath = $parentPath !== null
+            ? $this->appendHierarchyChild($parentPath, $newItem['value'])
+            : $this->appendHierarchyRoot($newItem['value']);
+
+        if (!is_string($newPath) || $newPath === '') {
+            return;
+        }
+
         $this->loadedScene->isDirty = true;
         $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
         $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
-        $newPath = 'scene.' . (count($this->loadedScene->hierarchy) - 1);
+
+        if ($parentPath !== null) {
+            $this->hierarchyPanel->expandPath($parentPath);
+        }
+
         $this->hierarchyPanel->selectPath($newPath);
         $this->syncScenePanels(true);
         $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
         $this->mainPanel->selectSceneObject($newPath);
+    }
+
+    private function synchronizeHierarchyMoves(): void
+    {
+        $moveRequest = $this->hierarchyPanel->consumeMoveRequest();
+
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($moveRequest)
+            || !is_string($moveRequest['path'] ?? null)
+            || ($moveRequest['path'] ?? '') === ''
+            || !is_string($moveRequest['targetPath'] ?? null)
+            || ($moveRequest['targetPath'] ?? '') === ''
+            || !in_array($moveRequest['position'] ?? null, ['before', 'after', 'append_child'], true)
+        ) {
+            return;
+        }
+
+        $targetPathForExpansion = $moveRequest['position'] === 'append_child'
+            ? $this->adjustHierarchyPathAfterRemoval($moveRequest['path'], $moveRequest['targetPath'])
+            : null;
+
+        $newPath = $this->moveHierarchyNodeRelative(
+            $moveRequest['path'],
+            $moveRequest['targetPath'],
+            $moveRequest['position'],
+        );
+
+        if (!is_string($newPath) || $newPath === '') {
+            return;
+        }
+
+        $movedValue = $this->findHierarchyNodeByPath($newPath);
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+
+        if (is_string($targetPathForExpansion) && $targetPathForExpansion !== '') {
+            $this->hierarchyPanel->expandPath($targetPathForExpansion);
+        }
+
+        $this->hierarchyPanel->selectPath($newPath);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObject($newPath);
+
+        if (is_array($movedValue)) {
+            $this->inspectorPanel->inspectTarget([
+                'context' => 'hierarchy',
+                'name' => $movedValue['name'] ?? 'Unnamed Object',
+                'type' => $this->resolveHierarchyInspectionType($movedValue),
+                'path' => $newPath,
+                'value' => $movedValue,
+            ]);
+        }
+    }
+
+    private function synchronizeHierarchyPrefabCreations(): void
+    {
+        $prefabCreationRequest = $this->hierarchyPanel->consumePrefabCreationRequest();
+
+        if (
+            !is_array($prefabCreationRequest)
+            || !is_array($prefabCreationRequest['value'] ?? null)
+        ) {
+            return;
+        }
+
+        $createdPrefabAsset = $this->createPrefabFromHierarchyObject($prefabCreationRequest['value']);
+
+        if (!is_array($createdPrefabAsset)) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->assetsPanel->selectAssetByAbsolutePath($createdPrefabAsset['path']);
+        $this->assetsPanel->consumeInspectionRequest();
+        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdPrefabAsset, true));
+        $this->setFocusedPanel($this->inspectorPanel);
+    }
+
+    private function synchronizeHierarchyDuplications(): void
+    {
+        $duplicationRequest = $this->hierarchyPanel->consumeDuplicationRequest()
+            ?? $this->mainPanel->consumeDuplicationRequest();
+
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !is_array($duplicationRequest)
+            || !is_array($duplicationRequest['items'] ?? null)
+        ) {
+            return;
+        }
+
+        $duplicationItems = $this->filterRedundantDuplicationItems($duplicationRequest['items']);
+
+        if ($duplicationItems === []) {
+            return;
+        }
+
+        usort($duplicationItems, [$this, 'compareHierarchyPathsDescending']);
+        $newPaths = [];
+
+        foreach ($duplicationItems as $duplicationItem) {
+            $path = $duplicationItem['path'] ?? null;
+            $value = $duplicationItem['value'] ?? null;
+
+            if (!is_string($path) || $path === '' || !is_array($value)) {
+                continue;
+            }
+
+            $duplicatedValue = $value;
+            $duplicatedValue['name'] = $this->buildUniqueDuplicateHierarchyName($path, $value['name'] ?? 'Object');
+            $newPath = $this->insertHierarchyNodeAfter($path, $duplicatedValue);
+
+            if (is_string($newPath) && $newPath !== '') {
+                $newPaths[] = $newPath;
+            }
+        }
+
+        if ($newPaths === []) {
+            return;
+        }
+
+        usort($newPaths, [$this, 'compareHierarchyPathsAscending']);
+        $primaryPath = end($newPaths);
+
+        $this->loadedScene->isDirty = true;
+        $this->loadedScene->rawData['hierarchy'] = $this->loadedScene->hierarchy;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->hierarchyPanel->selectPaths($newPaths, is_string($primaryPath) ? $primaryPath : null);
+        $this->syncScenePanels(true);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->mainPanel->selectSceneObjects($newPaths, is_string($primaryPath) ? $primaryPath : null);
     }
 
     private function synchronizeHierarchyDeletions(): void
@@ -1309,8 +1708,17 @@ final class Editor implements ObservableInterface
 
         $this->assetsPanel->reloadAssets();
         $this->assetsPanel->selectAssetByAbsolutePath($createdAsset['path']);
-        $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($createdAsset));
+        $inspectionTarget = $this->buildAssetInspectionTarget($createdAsset);
+        $this->inspectorPanel->inspectTarget($inspectionTarget);
         $this->mainPanel->loadSpriteAsset($createdAsset);
+
+        if ($this->isEditableSpriteAsset($createdAsset)) {
+            $this->mainPanel->selectTab('Sprite');
+            $this->setFocusedPanel($this->mainPanel);
+            return;
+        }
+
+        $this->setFocusedPanel($this->inspectorPanel);
     }
 
     private function synchronizeMainPanelSceneChanges(): void
@@ -1363,6 +1771,308 @@ final class Editor implements ObservableInterface
         if (($assetSyncRequest['clearInspection'] ?? false) === true) {
             $this->inspectorPanel->inspectTarget(null);
         }
+    }
+
+    private function resolveWatchedAssetsDirectory(): ?string
+    {
+        $assetsDirectory = is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== ''
+            ? $this->resolveAbsolutePath($this->assetsDirectoryPath, $this->workingDirectory)
+            : Path::resolveAssetsDirectory($this->workingDirectory);
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '' || !is_dir($assetsDirectory)) {
+            return null;
+        }
+
+        return Path::normalize($assetsDirectory);
+    }
+
+    private function captureWatchedAssetSnapshot(?string $assetsDirectory = null): array
+    {
+        $resolvedAssetsDirectory = $assetsDirectory ?? $this->resolveWatchedAssetsDirectory();
+
+        if (!is_string($resolvedAssetsDirectory) || $resolvedAssetsDirectory === '' || !is_dir($resolvedAssetsDirectory)) {
+            return [];
+        }
+
+        clearstatcache();
+
+        $snapshot = [
+            $resolvedAssetsDirectory => $this->buildWatchedAssetSignature($resolvedAssetsDirectory, true),
+        ];
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($resolvedAssetsDirectory, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
+        );
+
+        foreach ($iterator as $entry) {
+            $entryPath = Path::normalize($entry->getPathname());
+            $snapshot[$entryPath] = $this->buildWatchedAssetSignature($entryPath, $entry->isDir());
+        }
+
+        ksort($snapshot);
+
+        return $snapshot;
+    }
+
+    private function buildWatchedAssetSignature(string $path, bool $isDirectory): string
+    {
+        $mtime = @filemtime($path);
+
+        if ($isDirectory) {
+            return 'd:' . ($mtime === false ? 'missing' : (string) $mtime);
+        }
+
+        $size = @filesize($path);
+        $signature = sprintf(
+            'f:%s:%s',
+            $mtime === false ? 'missing' : (string) $mtime,
+            $size === false ? 'missing' : (string) $size,
+        );
+
+        if (str_ends_with(strtolower($path), '.php')) {
+            $hash = @md5_file($path);
+
+            if (is_string($hash) && $hash !== '') {
+                $signature .= ':' . $hash;
+            }
+        }
+
+        return $signature;
+    }
+
+    private function detectChangedWatchedAssetPaths(array $previousSnapshot, array $currentSnapshot): array
+    {
+        $changedPaths = [];
+        $allPaths = array_values(array_unique([
+            ...array_keys($previousSnapshot),
+            ...array_keys($currentSnapshot),
+        ]));
+
+        foreach ($allPaths as $path) {
+            if (($previousSnapshot[$path] ?? null) === ($currentSnapshot[$path] ?? null)) {
+                continue;
+            }
+
+            if (is_string($path) && $path !== '') {
+                $changedPaths[] = $path;
+            }
+        }
+
+        sort($changedPaths);
+
+        return $changedPaths;
+    }
+
+    private function refreshInspectionAfterWatchedAssetChanges(array $changedAssetPaths): void
+    {
+        if (!isset($this->inspectorPanel)) {
+            return;
+        }
+
+        $inspectionTarget = $this->inspectorPanel->getInspectionTarget();
+
+        if (!is_array($inspectionTarget)) {
+            return;
+        }
+
+        $hasChangedPhpAsset = $this->hasChangedPhpAsset($changedAssetPaths);
+
+        switch ($inspectionTarget['context'] ?? null) {
+            case 'hierarchy':
+                if (!$hasChangedPhpAsset || !$this->refreshLoadedSceneComponentMetadata()) {
+                    return;
+                }
+
+                $path = is_string($inspectionTarget['path'] ?? null) ? $inspectionTarget['path'] : null;
+
+                if (!is_string($path) || $path === '') {
+                    return;
+                }
+
+                $value = $this->findHierarchyNodeByPath($path);
+
+                if (!is_array($value)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->hierarchyPanel->selectPath($path);
+                $this->mainPanel->selectSceneObject($path);
+                $this->inspectorPanel->inspectTarget([
+                    'context' => 'hierarchy',
+                    'name' => $value['name'] ?? 'Unnamed Object',
+                    'type' => $this->resolveHierarchyInspectionType($value),
+                    'path' => $path,
+                    'value' => $value,
+                ]);
+                return;
+
+            case 'scene':
+                if (!$hasChangedPhpAsset || !$this->refreshLoadedSceneComponentMetadata()) {
+                    return;
+                }
+
+                $this->hierarchyPanel->selectPath('scene');
+                $this->inspectorPanel->inspectTarget($this->buildSceneInspectionTarget());
+                return;
+
+            case 'prefab':
+                $prefabPath = $this->resolveInspectionAssetAbsolutePath($inspectionTarget);
+
+                if (
+                    !is_string($prefabPath)
+                    || $prefabPath === ''
+                    || (!$hasChangedPhpAsset && !$this->didWatchedAssetChange($prefabPath, $changedAssetPaths))
+                ) {
+                    return;
+                }
+
+                $asset = $this->resolveAssetEntryByAbsolutePath($prefabPath);
+
+                if (!is_array($asset)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $prefabInspectionTarget = $this->buildPrefabInspectionTarget($asset);
+
+                if (!is_array($prefabInspectionTarget)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->inspectorPanel->inspectTarget($prefabInspectionTarget);
+                return;
+
+            case 'asset':
+                $assetPath = $this->resolveInspectionAssetAbsolutePath($inspectionTarget);
+
+                if (
+                    !is_string($assetPath)
+                    || $assetPath === ''
+                    || !$this->didWatchedAssetChange($assetPath, $changedAssetPaths)
+                ) {
+                    return;
+                }
+
+                $asset = $this->resolveAssetEntryByAbsolutePath($assetPath);
+
+                if (!is_array($asset)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($asset));
+                return;
+        }
+    }
+
+    private function hasChangedPhpAsset(array $changedAssetPaths): bool
+    {
+        foreach ($changedAssetPaths as $path) {
+            if (is_string($path) && str_ends_with(strtolower($path), '.php')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function didWatchedAssetChange(string $absolutePath, array $changedAssetPaths): bool
+    {
+        $normalizedPath = Path::normalize($absolutePath);
+
+        foreach ($changedAssetPaths as $changedPath) {
+            if (!is_string($changedPath) || $changedPath === '') {
+                continue;
+            }
+
+            if (Path::normalize($changedPath) === $normalizedPath) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function resolveInspectionAssetAbsolutePath(array $inspectionTarget): ?string
+    {
+        $candidatePath = $inspectionTarget['asset']['path'] ?? $inspectionTarget['value']['path'] ?? null;
+
+        if (!is_string($candidatePath) || $candidatePath === '') {
+            return null;
+        }
+
+        return Path::normalize($candidatePath);
+    }
+
+    private function resolveAssetEntryByAbsolutePath(string $absolutePath): ?array
+    {
+        if (!isset($this->assetsPanel)) {
+            return null;
+        }
+
+        $normalizedAbsolutePath = Path::normalize($absolutePath);
+        $this->assetsPanel->selectAssetByAbsolutePath($normalizedAbsolutePath);
+        $this->assetsPanel->consumeInspectionRequest();
+        $selectedAsset = $this->assetsPanel->getSelectedAssetEntry();
+        $selectedAssetPath = is_string($selectedAsset['path'] ?? null)
+            ? Path::normalize($selectedAsset['path'])
+            : null;
+
+        return $selectedAssetPath === $normalizedAbsolutePath
+            ? $selectedAsset
+            : null;
+    }
+
+    private function refreshLoadedSceneComponentMetadata(): bool
+    {
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !isset($this->hierarchyPanel)
+            || !isset($this->mainPanel)
+        ) {
+            return false;
+        }
+
+        if (!isset($this->sceneWriter)) {
+            $this->sceneWriter = new SceneWriter();
+        }
+
+        $temporarySceneSeed = tempnam(sys_get_temp_dir(), 'sendama-editor-watch-');
+
+        if (!is_string($temporarySceneSeed) || $temporarySceneSeed === '') {
+            return false;
+        }
+
+        @unlink($temporarySceneSeed);
+        $temporaryScenePath = $temporarySceneSeed . '.scene.php';
+
+        if (file_put_contents($temporaryScenePath, $this->sceneWriter->serialize($this->loadedScene)) === false) {
+            @unlink($temporaryScenePath);
+            return false;
+        }
+
+        try {
+            $refreshedScene = (new SceneLoader($this->workingDirectory))->loadFromPath($temporaryScenePath);
+        } finally {
+            @unlink($temporaryScenePath);
+        }
+
+        if (!$refreshedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $sceneWasDirty = $this->loadedScene->isDirty;
+        $this->loadedScene->hierarchy = $refreshedScene->hierarchy;
+        $this->loadedScene->rawData['hierarchy'] = $this->sceneWriter->snapshot($this->loadedScene)['hierarchy']
+            ?? $this->loadedScene->hierarchy;
+        $this->loadedScene->isDirty = $sceneWasDirty;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->syncScenePanels($sceneWasDirty);
+
+        return true;
     }
 
     private function applyHierarchyMutation(string $path, array $value): bool
@@ -1466,6 +2176,494 @@ final class Editor implements ObservableInterface
         return false;
     }
 
+    private function insertHierarchyNodeAfter(string $path, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                array_splice($nodeArray, $numericSegment + 1, 0, [$value]);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                $parentSegments = $segments;
+                array_pop($parentSegments);
+                $newPathSegments = ['scene', ...$parentSegments, (string) ($numericSegment + 1)];
+
+                return implode('.', $newPathSegments);
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function insertHierarchyNodeBefore(string $path, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                array_splice($nodeArray, $numericSegment, 0, [$value]);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                $parentSegments = $segments;
+                array_pop($parentSegments);
+                $newPathSegments = ['scene', ...$parentSegments, (string) $numericSegment];
+
+                return implode('.', $newPathSegments);
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function appendHierarchyRoot(array $value): string
+    {
+        $this->loadedScene->hierarchy[] = $value;
+
+        return 'scene.' . (count($this->loadedScene->hierarchy) - 1);
+    }
+
+    private function appendHierarchyChild(string $parentPath, array $value): ?string
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $parentPath);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return $this->appendHierarchyRoot($value);
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                $nodeArray[$numericSegment]['children'] ??= [];
+
+                if (!is_array($nodeArray[$numericSegment]['children'])) {
+                    return null;
+                }
+
+                $nodeArray[$numericSegment]['children'][] = $value;
+                $newChildIndex = count($nodeArray[$numericSegment]['children']) - 1;
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return $parentPath . '.' . $newChildIndex;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function moveHierarchyNodeRelative(string $path, string $targetPath, string $position): ?string
+    {
+        if ($path === $targetPath || str_starts_with($targetPath, $path . '.')) {
+            return null;
+        }
+
+        $node = $this->extractHierarchyNode($path);
+
+        if (!is_array($node)) {
+            return null;
+        }
+
+        $adjustedTargetPath = $this->adjustHierarchyPathAfterRemoval($path, $targetPath);
+
+        return match ($position) {
+            'before' => $this->insertHierarchyNodeBefore($adjustedTargetPath, $node),
+            'after' => $this->insertHierarchyNodeAfter($adjustedTargetPath, $node),
+            'append_child' => $this->appendHierarchyChild($adjustedTargetPath, $node),
+            default => null,
+        };
+    }
+
+    private function extractHierarchyNode(string $path): ?array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $hierarchy = $this->loadedScene->hierarchy;
+        $nodeArray = &$hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                $node = $nodeArray[$numericSegment];
+                unset($nodeArray[$numericSegment]);
+                $nodeArray = array_values($nodeArray);
+                $this->loadedScene->hierarchy = array_values($hierarchy);
+
+                return is_array($node) ? $node : null;
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = &$nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function adjustHierarchyPathAfterRemoval(string $removedPath, string $targetPath): string
+    {
+        $removedSegments = array_slice(explode('.', $removedPath), 1);
+        $targetSegments = array_slice(explode('.', $targetPath), 1);
+
+        if ($removedSegments === [] || $targetSegments === []) {
+            return $targetPath;
+        }
+
+        $removedIndex = (int) array_pop($removedSegments);
+        $removedParentSegments = $removedSegments;
+        $removedDepth = count($removedParentSegments);
+
+        if (count($targetSegments) <= $removedDepth) {
+            return $targetPath;
+        }
+
+        if (array_slice($targetSegments, 0, $removedDepth) !== $removedParentSegments) {
+            return $targetPath;
+        }
+
+        $targetIndex = (int) ($targetSegments[$removedDepth] ?? -1);
+
+        if ($targetIndex <= $removedIndex) {
+            return $targetPath;
+        }
+
+        $targetSegments[$removedDepth] = (string) ($targetIndex - 1);
+
+        return 'scene.' . implode('.', $targetSegments);
+    }
+
+    private function findHierarchyNodeByPath(string $path): ?array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return null;
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return null;
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return null;
+        }
+
+        $nodeArray = $this->loadedScene->hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return null;
+            }
+
+            $numericSegment = (int) $segment;
+
+            if (!isset($nodeArray[$numericSegment]) || !is_array($nodeArray[$numericSegment])) {
+                return null;
+            }
+
+            if ($index === $lastIndex) {
+                return $nodeArray[$numericSegment];
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return null;
+            }
+
+            $nodeArray = $nodeArray[$numericSegment]['children'];
+        }
+
+        return null;
+    }
+
+    private function resolveHierarchyInspectionType(array $value): string
+    {
+        $type = $value['type'] ?? null;
+
+        if (!is_string($type) || $type === '') {
+            return 'Unknown';
+        }
+
+        $normalizedType = ltrim($type, '\\');
+        $normalizedType = preg_replace('/::class$/', '', $normalizedType) ?? $normalizedType;
+        $typeSegments = explode('\\', $normalizedType);
+
+        return end($typeSegments) ?: $normalizedType;
+    }
+
+    private function filterRedundantDuplicationItems(array $items): array
+    {
+        $normalizedItems = [];
+
+        foreach ($items as $item) {
+            $path = $item['path'] ?? null;
+            $value = $item['value'] ?? null;
+
+            if (!is_string($path) || $path === '' || !is_array($value)) {
+                continue;
+            }
+
+            $normalizedItems[$path] = [
+                'path' => $path,
+                'value' => $value,
+            ];
+        }
+
+        $paths = array_keys($normalizedItems);
+        usort($paths, static function (string $left, string $right): int {
+            return substr_count($left, '.') <=> substr_count($right, '.');
+        });
+
+        $filteredItems = [];
+
+        foreach ($paths as $path) {
+            $hasSelectedAncestor = false;
+
+            foreach (array_keys($filteredItems) as $keptPath) {
+                if (str_starts_with($path, $keptPath . '.')) {
+                    $hasSelectedAncestor = true;
+                    break;
+                }
+            }
+
+            if ($hasSelectedAncestor) {
+                continue;
+            }
+
+            $filteredItems[$path] = $normalizedItems[$path];
+        }
+
+        return array_values($filteredItems);
+    }
+
+    private function buildUniqueDuplicateHierarchyName(string $path, string $originalName): string
+    {
+        $siblingNames = $this->collectSiblingHierarchyNames($path);
+        $trimmedName = trim($originalName);
+        $baseName = $trimmedName !== '' ? $trimmedName : 'Object';
+
+        if (preg_match('/^(.*?)(\d+)$/', $baseName, $matches) === 1) {
+            $prefix = $matches[1];
+            $numericSuffix = $matches[2];
+            $nextNumber = ((int) $numericSuffix) + 1;
+            $padding = strlen($numericSuffix);
+
+            do {
+                $candidateName = $prefix . str_pad((string) $nextNumber, $padding, '0', STR_PAD_LEFT);
+                $nextNumber++;
+            } while (in_array($candidateName, $siblingNames, true));
+
+            return $candidateName;
+        }
+
+        $prefix = rtrim($baseName) . ' ';
+        $nextNumber = 1;
+
+        do {
+            $candidateName = $prefix . $nextNumber;
+            $nextNumber++;
+        } while (in_array($candidateName, $siblingNames, true));
+
+        return $candidateName;
+    }
+
+    private function collectSiblingHierarchyNames(string $path): array
+    {
+        if (!$this->loadedScene instanceof DTOs\SceneDTO) {
+            return [];
+        }
+
+        $segments = explode('.', $path);
+
+        if (($segments[0] ?? null) !== 'scene') {
+            return [];
+        }
+
+        array_shift($segments);
+
+        if ($segments === []) {
+            return [];
+        }
+
+        $nodeArray = $this->loadedScene->hierarchy;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if (!ctype_digit((string) $segment)) {
+                return [];
+            }
+
+            $numericSegment = (int) $segment;
+
+            if ($index === $lastIndex) {
+                return array_values(array_filter(array_map(
+                    static fn (mixed $item): ?string => is_array($item) && is_string($item['name'] ?? null) ? $item['name'] : null,
+                    $nodeArray
+                )));
+            }
+
+            if (!isset($nodeArray[$numericSegment]['children']) || !is_array($nodeArray[$numericSegment]['children'])) {
+                return [];
+            }
+
+            $nodeArray = $nodeArray[$numericSegment]['children'];
+        }
+
+        return [];
+    }
+
+    private function compareHierarchyPathsDescending(array $left, array $right): int
+    {
+        return $this->compareHierarchyPaths($right['path'] ?? '', $left['path'] ?? '');
+    }
+
+    private function compareHierarchyPathsAscending(string $left, string $right): int
+    {
+        return $this->compareHierarchyPaths($left, $right);
+    }
+
+    private function compareHierarchyPaths(string $left, string $right): int
+    {
+        $leftSegments = array_map('intval', array_slice(explode('.', $left), 1));
+        $rightSegments = array_map('intval', array_slice(explode('.', $right), 1));
+        $maxLength = max(count($leftSegments), count($rightSegments));
+
+        for ($index = 0; $index < $maxLength; $index++) {
+            $leftSegment = $leftSegments[$index] ?? -1;
+            $rightSegment = $rightSegments[$index] ?? -1;
+
+            if ($leftSegment !== $rightSegment) {
+                return $leftSegment <=> $rightSegment;
+            }
+        }
+
+        return count($leftSegments) <=> count($rightSegments);
+    }
+
     private function deleteAssetPath(string $path): bool
     {
         if (is_file($path) || is_link($path)) {
@@ -1513,8 +2711,10 @@ final class Editor implements ObservableInterface
             return null;
         }
 
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+
         try {
-            if (!@chdir($this->workingDirectory)) {
+            if (!@chdir($projectDirectory)) {
                 $this->consolePanel->append('[ERROR] - Failed to switch to the project directory.');
                 return null;
             }
@@ -1538,6 +2738,53 @@ final class Editor implements ObservableInterface
         $this->consolePanel->append('[ERROR] - Failed to create asset after multiple attempts.');
 
         return null;
+    }
+
+    private function createPrefabFromHierarchyObject(array $item): ?array
+    {
+        $assetsDirectory = $this->assetsDirectoryPath;
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            $assetsDirectory = Path::resolveAssetsDirectory($this->workingDirectory);
+        }
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '') {
+            $this->consolePanel->append('[ERROR] - Failed to resolve the assets directory for prefab export.');
+            $this->pushNotification('Failed to resolve the assets directory for prefab export.', 'error');
+            return null;
+        }
+
+        $prefabsDirectory = Path::join($assetsDirectory, 'Prefabs');
+
+        if (!is_dir($prefabsDirectory) && !@mkdir($prefabsDirectory, 0777, true) && !is_dir($prefabsDirectory)) {
+            $this->consolePanel->append('[ERROR] - Failed to create the Prefabs directory.');
+            $this->pushNotification('Failed to create the Prefabs directory.', 'error');
+            return null;
+        }
+
+        if (!isset($this->prefabWriter)) {
+            $this->prefabWriter = new PrefabWriter();
+        }
+
+        $prefabPath = $this->buildUniquePrefabPath($prefabsDirectory, $item['name'] ?? null);
+
+        if (!$this->prefabWriter->save($prefabPath, $item)) {
+            $this->consolePanel->append('[ERROR] - Failed to create prefab ' . basename($prefabPath) . '.');
+            $this->pushNotification('Failed to create prefab ' . basename($prefabPath) . '.', 'error');
+            return null;
+        }
+
+        $relativePath = $this->buildRelativeAssetPath($prefabPath);
+        $this->consolePanel->append('[INFO] - Created prefab ' . $relativePath . '.');
+        $this->pushNotification('Created prefab ' . basename($prefabPath) . '.', 'success');
+
+        return [
+            'name' => basename($prefabPath),
+            'path' => $prefabPath,
+            'relativePath' => $relativePath,
+            'isDirectory' => false,
+            'children' => [],
+        ];
     }
 
     private function resolveAssetCreationDefinition(string $kind): ?array
@@ -1598,6 +2845,7 @@ final class Editor implements ObservableInterface
                 ? preg_replace('/\s+/', ' ', strip_tags($commandOutput))
                 : 'Asset generation failed.';
             $this->consolePanel->append('[ERROR] - ' . $message);
+            $this->pushNotification($message, 'error');
 
             return ['status' => 'fatal'];
         }
@@ -1606,6 +2854,7 @@ final class Editor implements ObservableInterface
 
         if (!is_string($relativeFilename) || $relativeFilename === '') {
             $this->consolePanel->append('[ERROR] - Asset generation succeeded but the created file could not be resolved.');
+            $this->pushNotification('Created asset could not be resolved.', 'error');
             return ['status' => 'fatal'];
         }
 
@@ -1613,6 +2862,7 @@ final class Editor implements ObservableInterface
 
         if (!is_string($absolutePath) || !is_file($absolutePath)) {
             $this->consolePanel->append('[ERROR] - Generated asset file could not be found.');
+            $this->pushNotification('Generated asset file could not be found.', 'error');
             return ['status' => 'fatal'];
         }
 
@@ -1620,10 +2870,12 @@ final class Editor implements ObservableInterface
 
         if (!is_string($finalPath) || !is_file($finalPath)) {
             $this->consolePanel->append('[ERROR] - Generated asset file could not be activated in the current assets directory.');
+            $this->pushNotification('Generated asset file could not be activated.', 'error');
             return ['status' => 'fatal'];
         }
 
         $this->consolePanel->append('[INFO] - Created asset ' . $this->buildRelativeAssetPath($finalPath) . '.');
+        $this->pushNotification('Created asset ' . basename($finalPath) . '.', 'success');
 
         return [
             'status' => 'success',
@@ -1653,22 +2905,65 @@ final class Editor implements ObservableInterface
     private function resolveGeneratedAssetAbsolutePath(string $relativeFilename): ?string
     {
         $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
         $candidatePaths = [
-            Path::join($this->workingDirectory, $normalizedRelativeFilename),
+            $this->resolveAbsolutePath($normalizedRelativeFilename, $projectDirectory),
         ];
 
         if (is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== '') {
+            $assetsDirectory = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
             $segments = explode('/', $normalizedRelativeFilename);
 
             if (count($segments) > 1 && strcasecmp($segments[0], 'assets') === 0) {
                 array_shift($segments);
-                $candidatePaths[] = Path::join($this->assetsDirectoryPath, ...$segments);
+                $candidatePaths[] = Path::join($assetsDirectory, ...$segments);
             }
         }
 
         foreach ($candidatePaths as $candidatePath) {
             if (is_file($candidatePath)) {
                 return $candidatePath;
+            }
+        }
+
+        $relativeTail = ltrim(preg_replace('/^assets\//i', '', $normalizedRelativeFilename) ?? $normalizedRelativeFilename, '/');
+        $relativeTailSegments = $relativeTail !== '' ? explode('/', $relativeTail) : [];
+        $relativeTailBasename = $relativeTailSegments !== [] ? end($relativeTailSegments) : null;
+
+        $searchRoots = [];
+
+        if (is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== '') {
+            $searchRoots[] = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
+        }
+
+        $searchRoots[] = Path::resolveAssetsDirectory($projectDirectory);
+        $searchRoots = array_values(array_unique(array_filter($searchRoots, static fn (mixed $root): bool => is_string($root) && $root !== '' && is_dir($root))));
+
+        foreach ($searchRoots as $searchRoot) {
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($searchRoot, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            foreach ($iterator as $entry) {
+                if (!$entry->isFile()) {
+                    continue;
+                }
+
+                $entryPath = Path::normalize($entry->getPathname());
+
+                if ($relativeTailBasename !== null && basename($entryPath) !== $relativeTailBasename) {
+                    continue;
+                }
+
+                $relativeToSearchRoot = ltrim(substr($entryPath, strlen($searchRoot)), '/');
+
+                if (
+                    $relativeTail !== ''
+                    && str_ends_with(str_replace('\\', '/', $relativeToSearchRoot), $relativeTail)
+                ) {
+                    return $entryPath;
+                }
             }
         }
 
@@ -1681,6 +2976,8 @@ final class Editor implements ObservableInterface
             return $absolutePath;
         }
 
+        $projectDirectory = $this->resolveAbsoluteDirectory($this->workingDirectory);
+        $activeAssetsDirectory = $this->resolveAbsolutePath($this->assetsDirectoryPath, $projectDirectory);
         $normalizedRelativeFilename = str_replace('\\', '/', $relativeFilename);
         $segments = explode('/', $normalizedRelativeFilename);
         $generatedRootSegment = $segments[0] ?? 'Assets';
@@ -1690,7 +2987,7 @@ final class Editor implements ObservableInterface
         }
 
         array_shift($segments);
-        $targetPath = Path::join($this->assetsDirectoryPath, ...$segments);
+        $targetPath = Path::join($activeAssetsDirectory, ...$segments);
 
         if ($targetPath === $absolutePath) {
             return $absolutePath;
@@ -1708,7 +3005,7 @@ final class Editor implements ObservableInterface
             return $absolutePath;
         }
 
-        $generatedAssetsRoot = Path::join($this->workingDirectory, $generatedRootSegment);
+        $generatedAssetsRoot = Path::join($projectDirectory, $generatedRootSegment);
 
         if (str_starts_with($absolutePath, $generatedAssetsRoot)) {
             $this->cleanupEmptyDirectories(dirname($absolutePath), $generatedAssetsRoot);
@@ -1967,9 +3264,35 @@ final class Editor implements ObservableInterface
             return basename($absolutePath);
         }
 
+        $assetsDirectory = $this->resolveAbsolutePath($assetsDirectory, $this->workingDirectory);
         $relativePath = substr($absolutePath, strlen($assetsDirectory));
 
         return ltrim(str_replace('\\', '/', (string) $relativePath), '/');
+    }
+
+    private function buildUniquePrefabPath(string $prefabsDirectory, mixed $displayName): string
+    {
+        $baseName = is_string($displayName) ? trim($displayName) : '';
+        $baseName = $baseName !== '' ? to_kebab_case($baseName) : 'new-prefab';
+        $baseName = preg_replace('/[^A-Za-z0-9]+/', '-', $baseName) ?? $baseName;
+        $baseName = trim($baseName, '-');
+        $baseName = strtolower($baseName);
+        $baseName = $baseName !== '' ? $baseName : 'new-prefab';
+        $candidatePath = Path::join($prefabsDirectory, $baseName . '.prefab.php');
+
+        if (!file_exists($candidatePath)) {
+            return $candidatePath;
+        }
+
+        for ($index = 2; $index <= 200; $index++) {
+            $candidatePath = Path::join($prefabsDirectory, $baseName . '-' . $index . '.prefab.php');
+
+            if (!file_exists($candidatePath)) {
+                return $candidatePath;
+            }
+        }
+
+        return Path::join($prefabsDirectory, $baseName . '-' . uniqid() . '.prefab.php');
     }
 
     private function updateSceneAssetReferences(string $oldRelativePath, string $newRelativePath): bool
@@ -2166,10 +3489,447 @@ final class Editor implements ObservableInterface
         return in_array($extension, ['texture', 'tmap'], true);
     }
 
+    private function openAssetInConfiguredEditor(array $asset): bool
+    {
+        $assetPath = is_string($asset['path'] ?? null) ? $asset['path'] : null;
+
+        if (!is_string($assetPath) || $assetPath === '') {
+            $this->consolePanel->append('[ERROR] - Selected script path could not be resolved.');
+            $this->pushNotification('Selected script path could not be resolved.', 'error');
+            return false;
+        }
+
+        $command = $this->buildExternalEditorCommand($assetPath);
+
+        if ($command === null) {
+            $this->consolePanel->append('[ERROR] - No editor command found. Configure editor.externalEditor or set $VISUAL/$EDITOR.');
+            $this->pushNotification('No editor command found. Configure editor.externalEditor or set $VISUAL/$EDITOR.', 'error');
+            return false;
+        }
+
+        $workingDirectory = dirname($assetPath);
+        $editorMode = $this->resolveExternalEditorMode($command);
+        $shouldBlock = $this->shouldBlockOnExternalEditor($command, $editorMode);
+        $opened = $editorMode === 'terminal'
+            ? (
+                $this->canUseTmuxIntegration()
+                    ? $this->launchCommandInTmuxWindow(
+                        $command,
+                        $workingDirectory,
+                        self::buildTmuxLabel((string) pathinfo($assetPath, PATHINFO_FILENAME), 'sendama-script')
+                    )
+                    : $this->launchForegroundExternalCommand($command, $workingDirectory)
+            )
+            : (
+                $shouldBlock
+                    ? $this->launchForegroundExternalCommand($command, $workingDirectory)
+                    : $this->launchDetachedExternalCommand($command, $workingDirectory)
+            );
+
+        if ($opened) {
+            $this->consolePanel->append('[INFO] - Opened script in editor: ' . ($asset['relativePath'] ?? basename($assetPath)) . '.');
+            return true;
+        }
+
+        $this->consolePanel->append('[ERROR] - Failed to open script in editor.');
+        $this->pushNotification('Failed to open script in editor.', 'error');
+
+        return false;
+    }
+
+    private function buildExternalEditorCommand(string $assetPath): ?string
+    {
+        $configuredEditor = '';
+
+        if (
+            isset($this->settings)
+            && is_string($this->settings->externalEditorCommand)
+            && trim($this->settings->externalEditorCommand) !== ''
+        ) {
+            $configuredEditor = trim($this->settings->externalEditorCommand);
+        } else {
+            $configuredEditor = trim(
+                (string) (
+                    $_ENV['VISUAL']
+                    ?? getenv('VISUAL')
+                    ?? $_ENV['EDITOR']
+                    ?? getenv('EDITOR')
+                    ?? ''
+                )
+            );
+        }
+
+        if ($configuredEditor !== '') {
+            return self::buildEditorCommandFromTemplate($configuredEditor, $assetPath);
+        }
+
+        $fallbackEditor = self::findFirstAvailableCommand(['vim', 'vi', 'nano', 'nvim']);
+
+        if ($fallbackEditor === null) {
+            return null;
+        }
+
+        return $fallbackEditor . ' ' . escapeshellarg($assetPath);
+    }
+
+    private function resolveExternalEditorMode(string $command): string
+    {
+        $configuredMode = isset($this->settings)
+            ? $this->settings->externalEditorMode
+            : EditorSettings::DEFAULT_EXTERNAL_EDITOR_MODE;
+
+        if (in_array($configuredMode, ['terminal', 'gui'], true)) {
+            return $configuredMode;
+        }
+
+        return self::isLikelyGuiEditorCommand($command) ? 'gui' : 'terminal';
+    }
+
+    private function shouldBlockOnExternalEditor(string $command, string $editorMode): bool
+    {
+        if (isset($this->settings) && is_bool($this->settings->externalEditorBlocking)) {
+            return $this->settings->externalEditorBlocking;
+        }
+
+        if ($editorMode === 'terminal') {
+            return true;
+        }
+
+        return preg_match('/(^|\s)(--wait|-w)(\s|$)/', $command) === 1;
+    }
+
+    private function launchForegroundExternalCommand(string $command, string $workingDirectory): bool
+    {
+        $this->suspendTerminalForExternalCommand();
+
+        try {
+            passthru(
+                sprintf(
+                    'cd %s && %s',
+                    escapeshellarg($workingDirectory),
+                    $command,
+                ),
+                $exitCode,
+            );
+        } finally {
+            $this->resumeTerminalAfterExternalCommand();
+        }
+
+        return $exitCode === 0;
+    }
+
+    private function launchDetachedExternalCommand(string $command, string $workingDirectory): bool
+    {
+        exec(
+            sprintf(
+                'sh -lc %s >/dev/null 2>&1 &',
+                escapeshellarg(sprintf(
+                    'cd %s && %s',
+                    escapeshellarg($workingDirectory),
+                    $command,
+                )),
+            ),
+            result_code: $exitCode,
+        );
+
+        return $exitCode === 0;
+    }
+
+    private function suspendTerminalForExternalCommand(): void
+    {
+        Console::disableMouseReporting();
+        Console::cursor()->show();
+        InputManager::disableNonBlockingMode();
+        InputManager::enableEcho();
+    }
+
+    private function resumeTerminalAfterExternalCommand(): void
+    {
+        Console::restoreSettings();
+        $this->refreshTerminalSize(force: true);
+        Console::setName('Sendama Editor | ' . ($this->gameSettings?->name ?? 'Unknown Game'));
+        Console::setSize($this->terminalWidth, $this->terminalHeight);
+        Console::cursor()->hide();
+        Console::enableMouseReporting();
+        InputManager::disableEcho();
+        InputManager::enableNonBlockingMode();
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function startManagedTmuxPlayPaneIfAvailable(): bool
+    {
+        if (!$this->canUseTmuxIntegration()) {
+            return false;
+        }
+
+        $command = $this->buildTmuxPlayCommand();
+
+        if ($command === null) {
+            $this->consolePanel->append('[WARN] - Unable to resolve the Sendama CLI entrypoint for tmux play mode.');
+            return false;
+        }
+
+        $this->stopManagedTmuxPlayPane();
+        $paneCommand = self::buildTmuxSplitPaneCommand($this->workingDirectory, $command);
+        $output = [];
+        $exitCode = 0;
+
+        exec($paneCommand, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            $this->consolePanel->append('[WARN] - Failed to open a tmux pane for play mode.');
+            return false;
+        }
+
+        $paneId = trim(implode("\n", $output));
+
+        if ($paneId === '') {
+            $this->consolePanel->append('[WARN] - Tmux play pane started without returning a pane id.');
+            return false;
+        }
+
+        $this->tmuxPlayPaneId = $paneId;
+        $this->disableTmuxStatusBarForPlayPaneIfNeeded();
+        $this->consolePanel->append('[INFO] - Play mode launched in tmux pane ' . $paneId . '.');
+
+        return true;
+    }
+
+    private function stopManagedTmuxPlayPane(): void
+    {
+        if (is_string($this->tmuxPlayPaneId) && $this->tmuxPlayPaneId !== '' && self::isTmuxInstalled()) {
+            exec(sprintf('tmux kill-pane -t %s 2>/dev/null', escapeshellarg($this->tmuxPlayPaneId)));
+        }
+
+        $this->tmuxPlayPaneId = null;
+        $this->restoreTmuxStatusBarAfterPlayPane();
+    }
+
+    private function disableTmuxStatusBarForPlayPaneIfNeeded(): void
+    {
+        if (
+            !$this->canUseTmuxIntegration()
+            || ($this->gameSettings?->isDebugMode ?? false)
+            || $this->tmuxPreviousStatusValue !== null
+        ) {
+            return;
+        }
+
+        $statusValue = trim((string) shell_exec('tmux show-options -v status 2>/dev/null'));
+
+        if ($statusValue === '') {
+            return;
+        }
+
+        $this->tmuxPreviousStatusValue = $statusValue;
+        exec('tmux set-option status off 2>/dev/null');
+    }
+
+    private function restoreTmuxStatusBarAfterPlayPane(): void
+    {
+        if (
+            !$this->canUseTmuxIntegration()
+            || !is_string($this->tmuxPreviousStatusValue)
+            || $this->tmuxPreviousStatusValue === ''
+        ) {
+            $this->tmuxPreviousStatusValue = null;
+            return;
+        }
+
+        exec(sprintf(
+            'tmux set-option status %s 2>/dev/null',
+            escapeshellarg($this->tmuxPreviousStatusValue),
+        ));
+        $this->tmuxPreviousStatusValue = null;
+    }
+
+    private function buildTmuxPlayCommand(): ?string
+    {
+        $cliEntrypoint = $this->resolveSendamaCliEntrypoint();
+
+        if ($cliEntrypoint === null) {
+            return null;
+        }
+
+        return sprintf(
+            '%s=1 %s %s play --directory %s',
+            self::TMUX_GAME_CHILD_ENV_KEY,
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($cliEntrypoint),
+            escapeshellarg($this->workingDirectory),
+        );
+    }
+
+    private function resolveSendamaCliEntrypoint(): ?string
+    {
+        $candidates = [
+            Path::join(dirname(__DIR__, 2), 'bin', 'sendama'),
+        ];
+        $argvEntrypoint = $_SERVER['argv'][0] ?? null;
+
+        if (is_string($argvEntrypoint) && $argvEntrypoint !== '') {
+            $candidates[] = $this->resolveAbsolutePath($argvEntrypoint, getcwd() ?: $this->workingDirectory);
+        }
+
+        foreach (array_unique($candidates) as $candidate) {
+            if (is_string($candidate) && $candidate !== '' && is_file($candidate)) {
+                return Path::normalize($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private function launchCommandInTmuxWindow(string $command, string $workingDirectory, string $windowName): bool
+    {
+        if (!$this->canUseTmuxIntegration()) {
+            return false;
+        }
+
+        exec(
+            self::buildTmuxNewWindowCommand($windowName, $workingDirectory, $command),
+            result_code: $exitCode,
+        );
+
+        return $exitCode === 0;
+    }
+
+    private function canUseTmuxIntegration(): bool
+    {
+        return self::isTmuxInstalled() && $this->isInsideTmuxSession();
+    }
+
+    private function isInsideTmuxSession(): bool
+    {
+        $tmuxValue = getenv('TMUX');
+
+        return is_string($tmuxValue) && trim($tmuxValue) !== '';
+    }
+
+    private static function isTmuxInstalled(): bool
+    {
+        $tmuxPath = shell_exec('command -v tmux 2>/dev/null');
+
+        return is_string($tmuxPath) && trim($tmuxPath) !== '';
+    }
+
+    private static function findFirstAvailableCommand(array $commands): ?string
+    {
+        foreach ($commands as $command) {
+            if (!is_string($command) || $command === '') {
+                continue;
+            }
+
+            $resolvedCommand = shell_exec('command -v ' . escapeshellarg($command) . ' 2>/dev/null');
+
+            if (is_string($resolvedCommand) && trim($resolvedCommand) !== '') {
+                return $command;
+            }
+        }
+
+        return null;
+    }
+
+    private static function buildEditorCommandFromTemplate(string $commandTemplate, string $assetPath): string
+    {
+        $replacements = [
+            '{path}' => escapeshellarg($assetPath),
+            '{file}' => escapeshellarg($assetPath),
+            '{dir}' => escapeshellarg(dirname($assetPath)),
+            '{name}' => escapeshellarg(basename($assetPath)),
+        ];
+
+        foreach ($replacements as $placeholder => $replacement) {
+            if (str_contains($commandTemplate, $placeholder)) {
+                return strtr($commandTemplate, $replacements);
+            }
+        }
+
+        return $commandTemplate . ' ' . escapeshellarg($assetPath);
+    }
+
+    private static function isLikelyGuiEditorCommand(string $command): bool
+    {
+        $binary = self::extractCommandBinary($command);
+
+        if ($binary === null) {
+            return false;
+        }
+
+        return in_array($binary, [
+            'code',
+            'code-insiders',
+            'codium',
+            'cursor',
+            'fleet',
+            'idea',
+            'phpstorm',
+            'pycharm',
+            'webstorm',
+            'goland',
+            'clion',
+            'rubymine',
+            'zed',
+            'subl',
+            'sublime_text',
+            'mate',
+            'open',
+        ], true);
+    }
+
+    private static function extractCommandBinary(string $command): ?string
+    {
+        $trimmedCommand = ltrim($command);
+
+        if ($trimmedCommand === '') {
+            return null;
+        }
+
+        if (!preg_match('/^([^\s]+)/', $trimmedCommand, $matches)) {
+            return null;
+        }
+
+        return strtolower(basename(trim($matches[1], "'\"")));
+    }
+
+    private static function buildTmuxNewWindowCommand(string $windowName, string $workingDirectory, string $command): string
+    {
+        return sprintf(
+            'tmux new-window -n %s -c %s %s',
+            escapeshellarg($windowName),
+            escapeshellarg($workingDirectory),
+            escapeshellarg($command),
+        );
+    }
+
+    private static function buildTmuxSplitPaneCommand(string $workingDirectory, string $command): string
+    {
+        return sprintf(
+            'tmux split-window -v -d -P -F %s -p %d -c %s %s',
+            escapeshellarg('#{pane_id}'),
+            self::TMUX_PLAY_PANE_PERCENT,
+            escapeshellarg($workingDirectory),
+            escapeshellarg($command),
+        );
+    }
+
+    private static function buildTmuxLabel(string $label, string $fallback): string
+    {
+        $sanitizedLabel = preg_replace('/[^A-Za-z0-9_-]+/', '-', trim($label)) ?? '';
+        $sanitizedLabel = trim($sanitizedLabel, '-_');
+
+        if ($sanitizedLabel === '') {
+            return $fallback;
+        }
+
+        return substr($sanitizedLabel, 0, 30);
+    }
+
     private function saveLoadedScene(): void
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
             $this->consolePanel->append('[INFO] - No scene loaded to save.');
+            $this->pushNotification('No scene loaded to save.', 'info');
             return;
         }
 
@@ -2203,12 +3963,14 @@ final class Editor implements ObservableInterface
             $this->loadedScene->sourceData = $snapshot;
             $this->syncScenePanels(false);
             $this->consolePanel->append('[INFO] - Saved scene ' . $this->loadedScene->name . '.scene.php');
+            $this->pushNotification('Saved scene ' . $this->loadedScene->name . '.scene.php', 'success');
             return;
         }
 
         $this->loadedScene->isDirty = $sceneWasDirty;
         $this->syncScenePanels($sceneWasDirty);
         $this->consolePanel->append('[ERROR] - Failed to save scene.');
+        $this->pushNotification('Failed to save scene.', 'error');
     }
 
     private function applySceneMutation(array $value): bool
@@ -2268,6 +4030,17 @@ final class Editor implements ObservableInterface
         ];
     }
 
+    private function buildSceneInspectionTarget(): array
+    {
+        return [
+            'context' => 'scene',
+            'name' => $this->loadedScene?->name ?? 'Scene',
+            'type' => 'Scene',
+            'path' => 'scene',
+            'value' => $this->buildSceneInspectionValue(),
+        ];
+    }
+
     private function normalizeEnvironmentTileMapPath(mixed $value): string
     {
         if (!is_string($value)) {
@@ -2315,6 +4088,11 @@ final class Editor implements ObservableInterface
         $this->inspectorPanel->setSceneHierarchy($this->loadedScene->hierarchy);
         $this->mainPanel->setSceneDimensions($this->loadedScene->width, $this->loadedScene->height);
         $this->mainPanel->setEnvironmentTileMapPath($this->loadedScene->environmentTileMapPath);
+    }
+
+    private function pushNotification(string $message, string $status = 'info'): void
+    {
+        $this->snackbar->enqueue($message, $status);
     }
 
     private function resolveTargetSceneSourcePath(DTOs\SceneDTO $scene): ?string

@@ -3,12 +3,11 @@
   "description": "A simple ASCII terminal game.",
   "license": "proprietary",
   "require": {
-    "php": ">=8.3",
-    "atatusoft-ltd/sendama-engine": "^0.3"
+    "php": ">=8.3"
   },
   "autoload": {
     "psr-4": {
-      "Sendama\\Game\\": "assets/"
+      "Sendama\\Game\\": "Assets/"
     }
   }
 }

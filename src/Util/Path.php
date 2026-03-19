@@ -138,10 +138,8 @@ final class Path
     $legacyExists = is_dir($legacyAssetsDirectory);
 
     if ($canonicalExists && $legacyExists) {
-      $canonicalEntries = scandir($canonicalAssetsDirectory);
-      $legacyEntries = scandir($legacyAssetsDirectory);
-      $canonicalHasContent = $canonicalEntries !== false && array_diff($canonicalEntries, ['.', '..']) !== [];
-      $legacyHasContent = $legacyEntries !== false && array_diff($legacyEntries, ['.', '..']) !== [];
+      $canonicalHasContent = self::directoryContainsFiles($canonicalAssetsDirectory);
+      $legacyHasContent = self::directoryContainsFiles($legacyAssetsDirectory);
 
       if (!$canonicalHasContent && $legacyHasContent) {
         return $legacyAssetsDirectory;
@@ -155,6 +153,26 @@ final class Path
     }
 
     return $legacyAssetsDirectory;
+  }
+
+  private static function directoryContainsFiles(string $directory): bool
+  {
+    if (!is_dir($directory)) {
+      return false;
+    }
+
+    $iterator = new \RecursiveIteratorIterator(
+      new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+      \RecursiveIteratorIterator::SELF_FIRST
+    );
+
+    foreach ($iterator as $entry) {
+      if ($entry->isFile()) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**

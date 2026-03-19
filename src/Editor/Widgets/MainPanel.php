@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -35,6 +36,7 @@ class MainPanel extends Widget
     private const string SPRITE_MODAL_CHARACTER = 'character_picker';
     private const int DEFAULT_TEXTURE_WIDTH = 16;
     private const int DEFAULT_TEXTURE_HEIGHT = 16;
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const array SPECIAL_CHARACTER_OPTIONS = [
         '█ Full Block',
         '▓ Dark Shade',
@@ -116,10 +118,13 @@ class MainPanel extends Widget
     protected array $sceneObjects = [];
     protected array $visibleSceneObjects = [];
     protected ?string $selectedScenePath = null;
+    protected array $selectedScenePaths = [];
     protected ?array $pendingInspectionItem = null;
     protected ?array $pendingHierarchyMutation = null;
+    protected ?array $pendingDuplicationItems = null;
     protected string $sceneInteractionMode = self::SCENE_VIEW_MODE_SELECT;
     protected array $sceneLineHighlights = [];
+    protected array $sceneClickTargets = [];
     protected string $projectDirectory;
     protected int $sceneWidth = DEFAULT_TERMINAL_WIDTH;
     protected int $sceneHeight = DEFAULT_TERMINAL_HEIGHT;
@@ -145,6 +150,11 @@ class MainPanel extends Widget
     protected ?string $spriteModalState = null;
     protected ?array $pendingAssetSyncRequest = null;
     protected ?string $lastPrintedSpriteCharacter = null;
+    protected ?string $lastClickedScenePath = null;
+    protected float $lastClickedSceneAt = 0.0;
+    protected bool $isSpriteMousePainting = false;
+    protected bool $isSpriteMouseErasing = false;
+    protected ?array $lastSpritePaintedCell = null;
 
     public function __construct(
         array $position = ['x' => 37, 'y' => 1],
@@ -188,6 +198,11 @@ class MainPanel extends Widget
 
     public function blur(FocusTargetContext $context): void
     {
+        $this->isSpriteMousePainting = false;
+        $this->isSpriteMouseErasing = false;
+        $this->lastSpritePaintedCell = null;
+        $this->lastClickedScenePath = null;
+        $this->lastClickedSceneAt = 0.0;
         parent::blur($context);
         $this->refreshContent();
     }
@@ -226,6 +241,26 @@ class MainPanel extends Widget
     public function selectSceneObject(?string $path): void
     {
         $this->selectedScenePath = $path;
+        $this->selectedScenePaths = is_string($path) && $path !== '' ? [$path] : [];
+        $this->syncSelectedScenePath();
+        $this->refreshContent();
+    }
+
+    public function selectSceneObjects(array $paths, ?string $primaryPath = null): void
+    {
+        $normalizedPaths = array_values(array_unique(array_filter(
+            $paths,
+            static fn (mixed $path): bool => is_string($path) && $path !== ''
+        )));
+
+        if ($normalizedPaths === []) {
+            return;
+        }
+
+        $this->selectedScenePath = is_string($primaryPath) && in_array($primaryPath, $normalizedPaths, true)
+            ? $primaryPath
+            : end($normalizedPaths);
+        $this->selectedScenePaths = $normalizedPaths;
         $this->syncSelectedScenePath();
         $this->refreshContent();
     }
@@ -259,6 +294,14 @@ class MainPanel extends Widget
         $this->pendingHierarchyMutation = null;
 
         return $pendingHierarchyMutation;
+    }
+
+    public function consumeDuplicationRequest(): ?array
+    {
+        $pendingDuplicationItems = $this->pendingDuplicationItems;
+        $this->pendingDuplicationItems = null;
+
+        return $pendingDuplicationItems;
     }
 
     public function consumeAssetSyncRequest(): ?array
@@ -339,6 +382,38 @@ class MainPanel extends Widget
         }
     }
 
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        $activeModal = match ($this->spriteModalState) {
+            self::SPRITE_MODAL_CREATE => $this->createSpriteAssetModal,
+            self::SPRITE_MODAL_DELETE => $this->deleteSpriteAssetModal,
+            self::SPRITE_MODAL_CHARACTER => $this->characterPickerModal,
+            default => null,
+        };
+
+        if (!$activeModal instanceof OptionListModal) {
+            return false;
+        }
+
+        if ($activeModal->handleScrollbarMouseEvent($mouseEvent)) {
+            return true;
+        }
+
+        if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+            return false;
+        }
+
+        $selection = $activeModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+        if (!is_string($selection) || $selection === '') {
+            return false;
+        }
+
+        $this->handleSpriteModalSelection($selection);
+
+        return true;
+    }
+
     public function loadSpriteAsset(?array $asset): void
     {
         if (!$this->isEditableSpriteAsset($asset)) {
@@ -417,6 +492,11 @@ class MainPanel extends Widget
                 return;
             }
 
+            if (Input::getCurrentInput() === 'D') {
+                $this->beginSceneDuplicationWorkflow();
+                return;
+            }
+
             if ($this->sceneInteractionMode === self::SCENE_VIEW_MODE_MOVE) {
                 if ($this->handleSceneMoveModeInput()) {
                     return;
@@ -471,28 +551,59 @@ class MainPanel extends Widget
 
     public function handleMouseClick(int $x, int $y): void
     {
-        if (!$this->containsPoint($x, $y) || $y !== $this->getContentAreaTop()) {
+        if (!$this->containsPoint($x, $y)) {
             return;
         }
 
-        $currentX = $this->getContentAreaLeft();
+        if ($y === $this->getContentAreaTop()) {
+            $currentX = $this->getContentAreaLeft();
 
-        foreach (self::TAB_TITLES as $index => $tabTitle) {
-            if ($index > 0) {
-                $currentX += 2;
+            foreach (self::TAB_TITLES as $index => $tabTitle) {
+                if ($index > 0) {
+                    $currentX += 2;
+                }
+
+                $tabStart = $currentX;
+                $tabEnd = $tabStart + mb_strlen($tabTitle) - 1;
+
+                if ($x >= $tabStart && $x <= $tabEnd) {
+                    $this->activeTabIndex = $index;
+                    $this->refreshContent();
+                    return;
+                }
+
+                $currentX = $tabEnd + 1;
             }
 
-            $tabStart = $currentX;
-            $tabEnd = $tabStart + mb_strlen($tabTitle) - 1;
-
-            if ($x >= $tabStart && $x <= $tabEnd) {
-                $this->activeTabIndex = $index;
-                $this->refreshContent();
-                return;
-            }
-
-            $currentX = $tabEnd + 1;
+            return;
         }
+
+        if ($this->isSceneTabActive() && !$this->isPlayModeActive) {
+            $this->handleSceneCanvasClick($x, $y);
+            return;
+        }
+
+        if ($this->isSpriteTabActive() && !$this->isPlayModeActive) {
+            $this->handleSpriteCanvasPress($x, $y);
+        }
+    }
+
+    public function handleMouseDrag(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y)) {
+            return;
+        }
+
+        if ($this->isSpriteTabActive() && !$this->isPlayModeActive) {
+            $this->handleSpriteCanvasDrag($x, $y);
+        }
+    }
+
+    public function handleMouseRelease(int $x, int $y): void
+    {
+        $this->isSpriteMousePainting = false;
+        $this->isSpriteMouseErasing = false;
+        $this->lastSpritePaintedCell = null;
     }
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
@@ -652,6 +763,7 @@ class MainPanel extends Widget
         $this->gameIdleContentIndexes = [];
         $this->gameIdlePromptContentIndex = null;
         $this->sceneLineHighlights = [];
+        $this->sceneClickTargets = [];
         $this->spriteLineHighlights = [];
         $this->visibleSceneObjects = $this->flattenSceneObjects($this->sceneObjects);
         $this->syncSelectedScenePath();
@@ -721,7 +833,7 @@ class MainPanel extends Widget
                     'Mode: Scene Pan',
                 ],
                 default => [
-                    'Arrows cycle  Enter inspect  Shift+W move  Shift+E pan',
+                    'Arrows cycle  Enter inspect  Shift+D duplicate  Shift+W move  Shift+E pan',
                     'Mode: Scene Select',
                 ],
             };
@@ -986,7 +1098,11 @@ class MainPanel extends Widget
         }
 
         $selection = $activeModal->getSelectedOption();
+        $this->handleSpriteModalSelection($selection);
+    }
 
+    private function handleSpriteModalSelection(?string $selection): void
+    {
         if ($selection === null || $selection === 'Cancel') {
             $this->dismissSpriteModals();
             return;
@@ -1046,6 +1162,7 @@ class MainPanel extends Widget
         $selectedIndex = $this->getSelectedSceneObjectIndex() ?? 0;
         $nextIndex = ($selectedIndex + $offset + count($this->visibleSceneObjects)) % count($this->visibleSceneObjects);
         $this->selectedScenePath = $this->visibleSceneObjects[$nextIndex]['path'] ?? $this->selectedScenePath;
+        $this->selectedScenePaths = $this->selectedScenePath !== null ? [$this->selectedScenePath] : [];
         $this->queueInspectionForSelectedSceneObject();
         $this->refreshContent();
     }
@@ -1098,8 +1215,9 @@ class MainPanel extends Widget
     {
         $canvasWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
         $canvasHeight = max(0, $this->innerHeight - 2);
-        $maxOffsetX = max(0, $this->sceneWidth - max(1, $canvasWidth));
-        $maxOffsetY = max(0, $this->sceneHeight - max(1, $canvasHeight));
+        $sceneBounds = $this->resolveSceneViewportBounds();
+        $maxOffsetX = max(0, $sceneBounds['width'] - max(1, $canvasWidth));
+        $maxOffsetY = max(0, $sceneBounds['height'] - max(1, $canvasHeight));
 
         $this->sceneViewportOffsetX = max(0, min($this->sceneViewportOffsetX + $deltaX, $maxOffsetX));
         $this->sceneViewportOffsetY = max(0, min($this->sceneViewportOffsetY + $deltaY, $maxOffsetY));
@@ -1108,13 +1226,24 @@ class MainPanel extends Widget
 
     private function decorateSceneLine(string $line, ?Color $contentColor, int $contentIndex): string
     {
-        $highlight = $this->sceneLineHighlights[$contentIndex] ?? null;
+        $highlights = $this->sceneLineHighlights[$contentIndex] ?? null;
 
-        if (!is_array($highlight)) {
+        if (!is_array($highlights)) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        if (!$this->hasFocus() && ($highlight['kind'] ?? null) !== 'placeholder') {
+        if (isset($highlights['start'])) {
+            $highlights = [$highlights];
+        }
+
+        if (!$this->hasFocus()) {
+            $highlights = array_values(array_filter(
+                $highlights,
+                static fn (mixed $highlight): bool => is_array($highlight) && (($highlight['kind'] ?? null) === 'placeholder')
+            ));
+        }
+
+        if ($highlights === []) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
@@ -1130,38 +1259,72 @@ class MainPanel extends Widget
         $rightBorder = mb_substr($visibleLine, -1);
         $borderColor = $this->hasFocus() ? $this->focusBorderColor : $contentColor;
         $middleWidth = $this->getDisplayWidth($middle);
-        $highlightStart = min(
-            max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
-            $middleWidth,
-        );
-        $highlightLength = max(
-            0,
-            min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
-        );
+        $normalizedHighlights = [];
 
-        if ($highlightLength === 0) {
+        foreach ($highlights as $highlight) {
+            if (!is_array($highlight)) {
+                continue;
+            }
+
+            $highlightStart = min(
+                max(0, $this->padding->leftPadding + (int) ($highlight['start'] ?? 0)),
+                $middleWidth,
+            );
+            $highlightLength = max(
+                0,
+                min((int) ($highlight['length'] ?? 0), $middleWidth - $highlightStart),
+            );
+
+            if ($highlightLength <= 0) {
+                continue;
+            }
+
+            $normalizedHighlights[] = [
+                'start' => $highlightStart,
+                'length' => $highlightLength,
+                'kind' => $highlight['kind'] ?? 'selection',
+            ];
+        }
+
+        if ($normalizedHighlights === []) {
             return parent::decorateContentLine($line, $contentColor, $contentIndex);
         }
 
-        [
-            'before' => $beforeHighlight,
-            'highlight' => $highlightText,
-            'after' => $afterHighlight,
-        ] = $this->splitContentByDisplayWidth($middle, $highlightStart, $highlightLength);
+        usort($normalizedHighlights, static function (array $left, array $right): int {
+            return ($left['start'] <=> $right['start']) ?: ($left['length'] <=> $right['length']);
+        });
 
-        if (($highlight['kind'] ?? null) === 'placeholder') {
-            return $this->wrapWithColor($leftBorder, $borderColor)
-                . $this->wrapWithColor($beforeHighlight, $contentColor)
-                . $this->wrapWithColor($highlightText, Color::DARK_GRAY)
-                . $this->wrapWithColor($afterHighlight, $contentColor)
-                . $this->wrapWithColor($rightBorder, $borderColor);
+        $output = $this->wrapWithColor($leftBorder, $borderColor);
+        $remainingText = $middle;
+        $currentOffset = 0;
+
+        foreach ($normalizedHighlights as $highlight) {
+            $highlightStart = max($currentOffset, (int) $highlight['start']);
+            $highlightLength = (int) $highlight['length'] - max(0, $currentOffset - (int) $highlight['start']);
+
+            if ($highlightLength <= 0) {
+                continue;
+            }
+
+            $relativeStart = max(0, $highlightStart - $currentOffset);
+            [
+                'before' => $beforeHighlight,
+                'highlight' => $highlightText,
+                'after' => $afterHighlight,
+            ] = $this->splitContentByDisplayWidth($remainingText, $relativeStart, $highlightLength);
+
+            $output .= $this->wrapWithColor($beforeHighlight, $contentColor);
+            $output .= ($highlight['kind'] ?? null) === 'placeholder'
+                ? $this->wrapWithColor($highlightText, Color::DARK_GRAY)
+                : $this->wrapWithSequence($highlightText, $this->resolveSceneHighlightSequence());
+
+            $remainingText = $afterHighlight;
+            $currentOffset = $highlightStart + $highlightLength;
         }
 
-        return $this->wrapWithColor($leftBorder, $borderColor)
-            . $this->wrapWithColor($beforeHighlight, $contentColor)
-            . $this->wrapWithSequence($highlightText, $this->resolveSceneHighlightSequence())
-            . $this->wrapWithColor($afterHighlight, $contentColor)
-            . $this->wrapWithColor($rightBorder, $borderColor);
+        $output .= $this->wrapWithColor($remainingText, $contentColor);
+
+        return $output . $this->wrapWithColor($rightBorder, $borderColor);
     }
 
     private function resolveSceneHighlightSequence(): string
@@ -1183,6 +1346,7 @@ class MainPanel extends Widget
     {
         $canvasWidth = max(0, $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding);
         $canvasHeight = max(0, $this->innerHeight - 2);
+        $this->sceneClickTargets = [];
 
         if ($canvasWidth <= 0 || $canvasHeight <= 0) {
             return [];
@@ -1204,14 +1368,18 @@ class MainPanel extends Widget
             }
 
             $position = $sceneObject['position'] ?? $this->normalizeVector($item['position'] ?? null);
-            $row = (int) ($position['y'] ?? 0) - $this->sceneViewportOffsetY;
-            $column = (int) ($position['x'] ?? 0) - $this->sceneViewportOffsetX;
+            $projectedPosition = $this->projectScenePositionToCanvas($position);
+            $row = $projectedPosition['y'] - $this->sceneViewportOffsetY;
+            $column = $projectedPosition['x'] - $this->sceneViewportOffsetX;
             $renderLines = is_array($sceneObject['renderLines'] ?? null)
                 ? $sceneObject['renderLines']
                 : [];
 
             if ($renderLines === []) {
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath || !$this->hasFocus()) {
+                if (
+                    !in_array($sceneObject['path'] ?? null, $this->selectedScenePaths, true)
+                    || !$this->hasFocus()
+                ) {
                     continue;
                 }
 
@@ -1220,7 +1388,7 @@ class MainPanel extends Widget
                 }
 
                 $canvas[$row][$column] = self::SCENE_PLACEHOLDER_CHARACTER;
-                $this->sceneLineHighlights[2 + $row] = [
+                $this->sceneLineHighlights[2 + $row][] = [
                     'start' => $column,
                     'length' => 1,
                     'kind' => 'placeholder',
@@ -1242,17 +1410,25 @@ class MainPanel extends Widget
                     $canvasWidth,
                 );
 
-                if (($sceneObject['path'] ?? null) !== $this->selectedScenePath) {
-                    continue;
-                }
-
                 if (($placement['length'] ?? 0) <= 0) {
                     continue;
                 }
 
-                $this->sceneLineHighlights[2 + $targetRow] = [
+                $this->sceneClickTargets[$targetRow] ??= [];
+                $this->sceneClickTargets[$targetRow][] = [
+                    'path' => $sceneObject['path'] ?? null,
                     'start' => $placement['start'] ?? max(0, $column),
                     'length' => $placement['length'],
+                ];
+
+                if (!in_array($sceneObject['path'] ?? null, $this->selectedScenePaths, true)) {
+                    continue;
+                }
+
+                $this->sceneLineHighlights[2 + $targetRow][] = [
+                    'start' => $placement['start'] ?? max(0, $column),
+                    'length' => $placement['length'],
+                    'kind' => 'selection',
                 ];
             }
         }
@@ -1418,10 +1594,19 @@ class MainPanel extends Widget
             return;
         }
 
-        $this->spriteCursorX = max(0, min($this->spriteCursorX + $deltaX, $this->spriteGridWidth - 1));
-        $this->spriteCursorY = max(0, min($this->spriteCursorY + $deltaY, $this->spriteGridHeight - 1));
-        $this->syncSpriteViewport();
+        $this->setSpriteCursorPosition($this->spriteCursorX + $deltaX, $this->spriteCursorY + $deltaY);
         $this->refreshContent();
+    }
+
+    private function setSpriteCursorPosition(int $x, int $y): void
+    {
+        if ($this->activeSpriteAsset === null || $this->spriteGridWidth <= 0 || $this->spriteGridHeight <= 0) {
+            return;
+        }
+
+        $this->spriteCursorX = max(0, min($x, $this->spriteGridWidth - 1));
+        $this->spriteCursorY = max(0, min($y, $this->spriteGridHeight - 1));
+        $this->syncSpriteViewport();
     }
 
     private function syncSpriteViewport(): void
@@ -1454,6 +1639,15 @@ class MainPanel extends Widget
 
     private function writeSpriteCharacter(string $character): void
     {
+        $this->writeSpriteCharacterAtCursor($character);
+    }
+
+    private function writeSpriteCharacterAtCursor(
+        string $character,
+        bool $advanceCursor = true,
+        bool $rememberCharacter = true,
+    ): void
+    {
         if ($this->activeSpriteAsset === null) {
             return;
         }
@@ -1464,9 +1658,12 @@ class MainPanel extends Widget
             return;
         }
 
-        $this->lastPrintedSpriteCharacter = $nextCharacter;
+        if ($rememberCharacter) {
+            $this->lastPrintedSpriteCharacter = $nextCharacter;
+        }
 
         if (($this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] ?? ' ') === $nextCharacter) {
+            $this->refreshContent();
             return;
         }
 
@@ -1474,7 +1671,7 @@ class MainPanel extends Widget
         $this->spriteGrid[$this->spriteCursorY][$this->spriteCursorX] = $nextCharacter;
         $this->persistActiveSpriteAsset();
 
-        if ($this->spriteCursorX < $this->spriteGridWidth - 1) {
+        if ($advanceCursor && $this->spriteCursorX < $this->spriteGridWidth - 1) {
             $this->spriteCursorX++;
         }
 
@@ -1708,16 +1905,26 @@ class MainPanel extends Widget
     {
         if ($this->visibleSceneObjects === []) {
             $this->selectedScenePath = null;
+            $this->selectedScenePaths = [];
             return;
         }
 
+        $this->selectedScenePaths = array_values(array_filter(
+            $this->selectedScenePaths,
+            fn (mixed $path): bool => is_string($path) && $this->findVisibleSceneObjectIndexByPath($path) !== null
+        ));
+
         foreach ($this->visibleSceneObjects as $sceneObject) {
             if (($sceneObject['path'] ?? null) === $this->selectedScenePath) {
+                if ($this->selectedScenePaths === []) {
+                    $this->selectedScenePaths = [$this->selectedScenePath];
+                }
                 return;
             }
         }
 
         $this->selectedScenePath = $this->visibleSceneObjects[0]['path'] ?? null;
+        $this->selectedScenePaths = $this->selectedScenePath !== null ? [$this->selectedScenePath] : [];
     }
 
     private function queueInspectionForSelectedSceneObject(): void
@@ -1757,14 +1964,203 @@ class MainPanel extends Widget
 
     private function getSelectedSceneObjectIndex(): ?int
     {
-        if ($this->selectedScenePath === null) {
+        return $this->findVisibleSceneObjectIndexByPath($this->selectedScenePath);
+    }
+
+    private function handleSceneCanvasClick(int $x, int $y): void
+    {
+        $canvasRow = $y - $this->getContentAreaTop() - 2;
+
+        if ($canvasRow < 0) {
+            return;
+        }
+
+        $canvasColumn = $x - $this->getContentAreaLeft();
+
+        if ($canvasColumn < 0) {
+            return;
+        }
+
+        $clickedPath = $this->resolveSceneClickPath($canvasRow, $canvasColumn);
+
+        if (!is_string($clickedPath) || $clickedPath === '') {
+            return;
+        }
+
+        $isDoubleClick = $this->registerSceneClickAndCheckDoubleClick($clickedPath);
+        $isAdditiveSelection = Input::getMouseEvent()?->isCtrlPressed === true;
+
+        $this->selectedScenePath = $clickedPath;
+
+        if ($isAdditiveSelection) {
+            if (!in_array($clickedPath, $this->selectedScenePaths, true)) {
+                $this->selectedScenePaths[] = $clickedPath;
+            }
+        } else {
+            $this->selectedScenePaths = [$clickedPath];
+        }
+
+        $this->queueInspectionForSelectedSceneObject();
+        $this->refreshContent();
+
+        if ($isDoubleClick) {
+            $this->activateSceneSelection();
+        }
+    }
+
+    private function registerSceneClickAndCheckDoubleClick(string $path): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedScenePath === $path
+            && ($now - $this->lastClickedSceneAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedScenePath = $path;
+        $this->lastClickedSceneAt = $now;
+
+        return $isDoubleClick;
+    }
+
+    private function beginSceneDuplicationWorkflow(): void
+    {
+        $selectedItems = [];
+
+        foreach ($this->visibleSceneObjects as $sceneObject) {
+            $path = $sceneObject['path'] ?? null;
+
+            if (
+                !is_string($path)
+                || !in_array($path, $this->selectedScenePaths, true)
+                || !is_array($sceneObject['item'] ?? null)
+            ) {
+                continue;
+            }
+
+            $selectedItems[] = [
+                'path' => $path,
+                'value' => $sceneObject['item'],
+            ];
+        }
+
+        if ($selectedItems === []) {
+            return;
+        }
+
+        $this->pendingDuplicationItems = [
+            'items' => $selectedItems,
+            'primaryPath' => $this->selectedScenePath,
+        ];
+    }
+
+    private function findVisibleSceneObjectIndexByPath(?string $path): ?int
+    {
+        if (!is_string($path) || $path === '') {
             return null;
         }
 
         foreach ($this->visibleSceneObjects as $index => $sceneObject) {
-            if (($sceneObject['path'] ?? null) === $this->selectedScenePath) {
+            if (($sceneObject['path'] ?? null) === $path) {
                 return $index;
             }
+        }
+
+        return null;
+    }
+
+    private function handleSpriteCanvasPress(int $x, int $y): void
+    {
+        $mouseEvent = Input::getMouseEvent();
+        $buttonIndex = $mouseEvent?->buttonIndex;
+        $this->lastSpritePaintedCell = null;
+        $this->isSpriteMouseErasing = $buttonIndex === 2;
+        $this->isSpriteMousePainting = $this->isSpriteMouseErasing || $this->lastPrintedSpriteCharacter !== null;
+        $this->applySpriteMouseInteraction($x, $y, $this->isSpriteMousePainting, $this->isSpriteMouseErasing);
+    }
+
+    private function handleSpriteCanvasDrag(int $x, int $y): void
+    {
+        if (!$this->isSpriteMousePainting && !$this->isSpriteMouseErasing) {
+            return;
+        }
+
+        $this->applySpriteMouseInteraction($x, $y, true, $this->isSpriteMouseErasing);
+    }
+
+    private function applySpriteMouseInteraction(int $x, int $y, bool $shouldPaint, bool $shouldErase = false): void
+    {
+        $gridPosition = $this->resolveSpriteGridPositionFromPoint($x, $y);
+
+        if (!is_array($gridPosition)) {
+            return;
+        }
+
+        if ($shouldPaint && $this->lastSpritePaintedCell === $gridPosition) {
+            return;
+        }
+
+        $this->setSpriteCursorPosition($gridPosition['x'], $gridPosition['y']);
+
+        if (!$shouldPaint) {
+            $this->refreshContent();
+            return;
+        }
+
+        $character = $shouldErase ? ' ' : $this->lastPrintedSpriteCharacter;
+
+        if ($character === null) {
+            $this->refreshContent();
+            return;
+        }
+
+        $this->lastSpritePaintedCell = $gridPosition;
+        $this->writeSpriteCharacterAtCursor($character, false, !$shouldErase);
+    }
+
+    private function resolveSpriteGridPositionFromPoint(int $x, int $y): ?array
+    {
+        if ($this->activeSpriteAsset === null) {
+            return null;
+        }
+
+        $gridRow = $y - $this->getContentAreaTop() - 2;
+        $gridColumn = $x - $this->getContentAreaLeft();
+
+        if ($gridRow < 0 || $gridColumn < 0) {
+            return null;
+        }
+
+        $gridX = $this->spriteViewportOffsetX + $gridColumn;
+        $gridY = $this->spriteViewportOffsetY + $gridRow;
+
+        if ($gridX < 0 || $gridY < 0 || $gridX >= $this->spriteGridWidth || $gridY >= $this->spriteGridHeight) {
+            return null;
+        }
+
+        return ['x' => $gridX, 'y' => $gridY];
+    }
+
+    private function resolveSceneClickPath(int $row, int $column): ?string
+    {
+        $rowTargets = $this->sceneClickTargets[$row] ?? null;
+
+        if (!is_array($rowTargets) || $rowTargets === []) {
+            return null;
+        }
+
+        for ($index = count($rowTargets) - 1; $index >= 0; $index--) {
+            $target = $rowTargets[$index] ?? null;
+
+            if (!is_array($target)) {
+                continue;
+            }
+
+            $start = (int) ($target['start'] ?? -1);
+            $length = (int) ($target['length'] ?? 0);
+
+            if ($length <= 0 || $column < $start || $column >= ($start + $length)) {
+                continue;
+            }
+
+            return is_string($target['path'] ?? null) ? $target['path'] : null;
         }
 
         return null;
@@ -1776,10 +2172,10 @@ class MainPanel extends Widget
             return [];
         }
 
-        $spriteRenderLines = $this->buildSpriteRenderLines($item);
+        $textureRenderLines = $this->buildTextureRenderLines($item);
 
-        if ($spriteRenderLines !== []) {
-            return $spriteRenderLines;
+        if ($textureRenderLines !== []) {
+            return $textureRenderLines;
         }
 
         if (is_string($item['text'] ?? null) && $item['text'] !== '') {
@@ -1877,30 +2273,37 @@ class MainPanel extends Widget
         return 0;
     }
 
-    private function buildSpriteRenderLines(array $item): array
+    private function projectScenePositionToCanvas(array $position): array
     {
-        $sprite = is_array($item['sprite'] ?? null) ? $item['sprite'] : [];
-        $texture = is_array($sprite['texture'] ?? null) ? $sprite['texture'] : [];
-        $texturePath = is_string($texture['path'] ?? null) && $texture['path'] !== ''
-            ? $texture['path']
-            : null;
-
-        if ($texturePath === null) {
-            return [];
-        }
-
-        $offset = $this->normalizeVector($texture['position'] ?? null);
-        $size = $this->normalizeVector($texture['size'] ?? null);
-
-        return $this->buildTexturePreviewLines($texturePath, $offset, $size);
+        return [
+            'x' => $this->projectSceneCoordinateToCanvas((int) ($position['x'] ?? 0)),
+            'y' => $this->projectSceneCoordinateToCanvas((int) ($position['y'] ?? 0)),
+        ];
     }
 
-    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
+    private function projectSceneCoordinateToCanvas(int $coordinate): int
     {
-        if ((int) $size['x'] <= 0 || (int) $size['y'] <= 0) {
+        return max(1, $coordinate) - 1;
+    }
+
+    private function buildTextureRenderLines(array $item): array
+    {
+        $textureSource = $this->resolveTextureRenderSource($item);
+
+        if (!is_array($textureSource)) {
             return [];
         }
 
+        return $this->buildTexturePreviewLines(
+            $textureSource['path'],
+            $textureSource['offset'],
+            $textureSource['size'],
+            (bool) ($textureSource['naturalSizeFallback'] ?? true),
+        );
+    }
+
+    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size, bool $naturalSizeFallback = true): array
+    {
         $resolvedTextureFilePath = $this->resolveAssetFilePath($texturePath, 'texture');
 
         if ($resolvedTextureFilePath === null) {
@@ -1919,17 +2322,35 @@ class MainPanel extends Widget
             return [];
         }
 
+        $offsetX = max(0, (int) ($offset['x'] ?? 0));
+        $offsetY = max(0, (int) ($offset['y'] ?? 0));
+        $previewWidth = (int) ($size['x'] ?? 0);
+        $previewHeight = (int) ($size['y'] ?? 0);
+
+        if ($naturalSizeFallback && $previewWidth <= 0) {
+            $previewWidth = $this->resolveTextureRowWidth($textureRows) - $offsetX;
+        }
+
+        if ($naturalSizeFallback && $previewHeight <= 0) {
+            $previewHeight = count($textureRows) - $offsetY;
+        }
+
+        if (!$naturalSizeFallback) {
+            $previewWidth = max(1, $previewWidth);
+            $previewHeight = max(1, $previewHeight);
+        }
+
+        if ($previewWidth <= 0 || $previewHeight <= 0) {
+            return [];
+        }
+
         if (count($textureRows) <= 1) {
             $textureRows = $this->expandSingleLineTexture(
                 $textureRows[0] ?? '',
-                (int) $size['x'],
+                $previewWidth,
             );
         }
 
-        $previewWidth = (int) $size['x'];
-        $previewHeight = (int) $size['y'];
-        $offsetX = max(0, (int) $offset['x']);
-        $offsetY = max(0, (int) $offset['y']);
         $previewLines = [];
 
         for ($rowIndex = 0; $rowIndex < $previewHeight; $rowIndex++) {
@@ -2096,6 +2517,63 @@ class MainPanel extends Widget
         return is_array($tileMapLines) ? $tileMapLines : [];
     }
 
+    private function resolveSceneViewportBounds(): array
+    {
+        $bounds = [
+            'width' => max(1, $this->sceneWidth),
+            'height' => max(1, $this->sceneHeight),
+        ];
+
+        $tileMapBounds = $this->resolveEnvironmentTileMapBounds();
+        $bounds['width'] = max($bounds['width'], $tileMapBounds['width']);
+        $bounds['height'] = max($bounds['height'], $tileMapBounds['height']);
+
+        foreach ($this->visibleSceneObjects as $sceneObject) {
+            $item = is_array($sceneObject['item'] ?? null) ? $sceneObject['item'] : null;
+            $position = is_array($sceneObject['position'] ?? null)
+                ? $sceneObject['position']
+                : $this->normalizeVector($item['position'] ?? null);
+            $renderLines = is_array($sceneObject['renderLines'] ?? null)
+                ? $sceneObject['renderLines']
+                : [];
+
+            $projectedPosition = $this->projectScenePositionToCanvas($position);
+            $objectWidth = $this->resolveRenderLinesWidth($renderLines);
+            $objectHeight = max(1, count($renderLines));
+
+            $bounds['width'] = max($bounds['width'], $projectedPosition['x'] + max(1, $objectWidth));
+            $bounds['height'] = max($bounds['height'], $projectedPosition['y'] + $objectHeight);
+        }
+
+        return $bounds;
+    }
+
+    private function resolveEnvironmentTileMapBounds(): array
+    {
+        $tileMapLines = $this->buildEnvironmentTileMapLines();
+        $maxWidth = 0;
+
+        foreach ($tileMapLines as $tileMapLine) {
+            $maxWidth = max($maxWidth, $this->getDisplayWidth((string) $tileMapLine));
+        }
+
+        return [
+            'width' => max(1, $maxWidth),
+            'height' => max(1, count($tileMapLines)),
+        ];
+    }
+
+    private function resolveRenderLinesWidth(array $renderLines): int
+    {
+        $maxWidth = 0;
+
+        foreach ($renderLines as $renderLine) {
+            $maxWidth = max($maxWidth, $this->getDisplayWidth((string) $renderLine));
+        }
+
+        return $maxWidth;
+    }
+
     private function buildSplitHelpBorder(string $leftLabel, string $rightLabel): string
     {
         $availableLabelWidth = max(0, $this->width - 3);
@@ -2138,6 +2616,63 @@ class MainPanel extends Widget
         }
 
         return $rows;
+    }
+
+    private function resolveTextureRowWidth(array $textureRows): int
+    {
+        $maxWidth = 0;
+
+        foreach ($textureRows as $textureRow) {
+            $maxWidth = max(
+                $maxWidth,
+                function_exists('mb_strlen')
+                    ? mb_strlen((string) $textureRow, 'UTF-8')
+                    : strlen((string) $textureRow),
+            );
+        }
+
+        return $maxWidth;
+    }
+
+    private function resolveTextureRenderSource(array $item): ?array
+    {
+        $sprite = is_array($item['sprite'] ?? null) ? $item['sprite'] : [];
+        $texture = is_array($sprite['texture'] ?? null) ? $sprite['texture'] : [];
+        $spriteTexturePath = is_string($texture['path'] ?? null) && trim((string) $texture['path']) !== ''
+            ? trim((string) $texture['path'])
+            : null;
+
+        if ($spriteTexturePath !== null && strcasecmp($spriteTexturePath, 'None') !== 0) {
+            return [
+                'path' => $spriteTexturePath,
+                'offset' => $this->normalizeVector($texture['position'] ?? null),
+                'size' => $this->normalizeVector($texture['size'] ?? null),
+                'naturalSizeFallback' => true,
+            ];
+        }
+
+        $directTexturePath = is_string($item['texture'] ?? null) && trim((string) $item['texture']) !== ''
+            ? trim((string) $item['texture'])
+            : null;
+
+        if ($directTexturePath !== null && strcasecmp($directTexturePath, 'None') !== 0) {
+            return [
+                'path' => $directTexturePath,
+                'offset' => ['x' => 0, 'y' => 0],
+                'size' => $this->normalizeTextureElementSize($this->normalizeVector($item['size'] ?? null)),
+                'naturalSizeFallback' => false,
+            ];
+        }
+
+        return null;
+    }
+
+    private function normalizeTextureElementSize(array $size): array
+    {
+        return [
+            'x' => max(1, (int) ($size['x'] ?? 0)),
+            'y' => max(1, (int) ($size['y'] ?? 0)),
+        ];
     }
 
     private function applySceneObjectMutation(string $path, array $value): bool

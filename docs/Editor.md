@@ -27,7 +27,7 @@ The editor expects a valid Sendama project workspace. In particular:
 - the active scene is loaded from the configured scene metadata
 
 When the editor opens a project, it also runs a startup sanity check.
-If it finds missing structure such as `config/input.php`, `configuration.json`, log files, or required asset directories, it opens a normalize prompt:
+If it finds missing structure such as `config/input.php`, `preferences.json`, log files, or required asset directories, it opens a normalize prompt:
 
 - `Normalize`: create the missing directories and bootstrap files
 - `Cancel` or `Escape`: continue without changing the project
@@ -62,6 +62,13 @@ These shortcuts work regardless of the currently focused panel unless a modal is
 - in `Hierarchy`, it opens the add-object workflow
 - in `Assets`, it opens the create-asset workflow
 - in `Inspector`, it opens the add-component menu when a hierarchy object is loaded
+
+`Shift+E` is also panel-local:
+
+- in `Hierarchy`, it exports the selected object as a prefab into `Assets/Prefabs`, expands that folder, selects the new prefab, and opens it in the `Inspector`
+- in `Main > Scene`, it enters Pan Mode
+
+`Shift+D` is panel-local in `Hierarchy` and duplicates the selected object beside the original.
 
 ## Panel List Modal
 
@@ -103,6 +110,7 @@ Current scene rendering behavior:
 - scene coordinates are rendered into a scrollable viewport
 - UI text objects render their `text`
 - selected objects without a visible representation render as a muted `x`
+- `Ctrl+Click` adds another visible object to the current Scene selection set
 - the main panel help line shows the current scene controls on the left and the active mode on the right
 
 When the main panel has focus and the `Scene` tab is active, it uses scene-view modes.
@@ -126,6 +134,10 @@ Controls:
 - `Down` / `Right`: select the next visible scene object
 - changing the selection immediately syncs the Inspector and Hierarchy to the selected object
 - `Enter`: reload the selected object into the Inspector
+- `Shift+D`: duplicate the selected Scene object set
+- clicking a visible scene object selects it
+- `Ctrl+Click` adds the clicked object to the current Scene selection set
+- double-clicking a visible scene object activates it like `Enter`
 
 #### Move Mode
 
@@ -190,6 +202,9 @@ Controls:
 - `Ctrl+Y`: redo the last undone grid change
 - `Shift+R`: reset the loaded asset back to the state it had when it was opened
 - `Delete`: open the delete-asset confirmation modal
+- left-clicking a cell paints with the current brush
+- left-click-dragging paints continuously across the grid
+- right-clicking or right-click-dragging erases without changing the current brush
 
 Delete workflow:
 
@@ -199,6 +214,7 @@ Delete workflow:
 Character selector workflow:
 
 - `Shift+2` opens a modal of curated special characters useful for sprites and maps
+- list-based modals and file pickers support mouse selection
 - `Up` / `Down`: move selection
 - `Enter`: insert the selected character at the current cursor position
 - `Escape`: close the modal without inserting anything
@@ -221,6 +237,10 @@ Controls:
 - `Left`: collapse an expanded node, or move to its parent
 - `Enter`: load the selected object into the Inspector
 - `Shift+A`: open the add-object workflow
+- `Shift+D`: duplicate the selected object set
+- `Shift+E`: create a prefab from the selected object and open it in the Inspector
+- `Shift+W`: enter hierarchy move mode for the selected object
+- `Shift+Q`: return to hierarchy select mode
 - `Delete`: open the delete confirmation dialog
 
 Selected rows are highlighted, and when the hierarchy has focus the selected row blinks.
@@ -229,10 +249,17 @@ Selected rows are highlighted, and when the hierarchy has focus the selected row
 
 Press `Shift+A` to add a new scene object while the editor is in edit mode.
 
+Press `Shift+E` on a selected hierarchy object to export that object to a `.prefab.php` file under `Assets/Prefabs`. The editor expands the `Prefabs` folder in `Assets`, selects the new prefab, and moves focus to the `Inspector`.
+
+Press `Shift+D` on a selected hierarchy object to duplicate it in place. The duplicate is inserted immediately after the original, its name is adjusted to avoid a clash, and it becomes the newly selected object. Trailing numbers are incremented, so `Enemy 01` becomes `Enemy 02`; names without trailing numbers become `Enemy 1`.
+
+`Ctrl+Click` in `Hierarchy` adds the clicked node to the current selection set. When multiple hierarchy objects are selected, `Shift+D` duplicates the full selected set.
+
 Flow:
 
 1. Choose `GameObject` or `UIElement`
-2. If `UIElement` is selected, choose a concrete type
+2. If `GameObject` is selected while a `GameObject` row is selected, choose whether to add it at the scene root or as a child of that selected object
+3. If `UIElement` is selected, choose a concrete type
 
 Currently supported UI element types:
 
@@ -247,6 +274,17 @@ Examples:
 
 - `GameObject #1`
 - `Label #2`
+
+### Hierarchy Children And Move Mode
+
+When a hierarchy object has children, the row shows an expand/collapse icon and can be opened into a descendant tree. Each expanded object tracks its own expand state, so nested branches stay open until you collapse them.
+
+Press `Shift+W` on a selected hierarchy object to enter hierarchy move mode. In move mode:
+
+- `Up` / `Down` reinsert the selected object before or after other visible hierarchy objects
+- objects can move between branches, so a root object can be moved into another object's child list
+- `Delete` still opens the normal delete confirmation flow
+- `Shift+Q` returns the hierarchy to normal select mode
 
 ### Delete Workflow
 
@@ -362,6 +400,7 @@ Controls:
 
 - `Up` / `Down`: move between controls
 - `Enter`: activate the selected control
+- double-clicking a control activates it too
 - `Shift+A`: open the add-component menu when a hierarchy object is being inspected
 - `Shift+W`: toggle component move mode when a component header is focused
 - `Delete`: open the remove-component confirmation modal when a component header is focused
@@ -410,6 +449,18 @@ Controls:
 - `Enter`: commit the value
 - `Escape`: cancel the edit
 
+##### Prefab Reference
+
+For exposed component fields typed as `GameObject`, `Enter` opens a prefab picker instead of entering text edit.
+
+Controls:
+
+- `Up` / `Down`: choose a prefab
+- `Enter`: assign the selected prefab
+- `Escape`: cancel
+
+The stored value is the prefab asset path, for example `Prefabs/enemy.prefab.php`. When the scene metadata is loaded again, the Inspector resolves that path back to the referenced prefab.
+
 ### Current Hierarchy Inspection Layout
 
 For hierarchy objects, the Inspector currently renders:
@@ -424,6 +475,12 @@ For hierarchy objects, the Inspector currently renders:
 3. Script/component sections from the scene metadata
 
 Component headers are visually marked as collapsible sections.
+
+Exposed `GameObject` component fields are treated as prefab references:
+
+- pressing `Enter` on the field opens the prefab picker
+- choosing a prefab stores its relative prefab path in component `data`
+- the control displays the referenced prefab name when that metadata is loaded again
 
 ### Add Component Workflow
 
@@ -532,6 +589,7 @@ Current behavior:
 - when the console has focus and the editor is not in play mode, it supports scrolling
 - if no refresh interval is configured, the editor uses a default of `5` seconds
 - each tab can be filtered by log level with a modal picker
+- the `Debug` tab defaults to the `DEBUG` filter on startup
 
 Filter options:
 
@@ -554,6 +612,19 @@ Clear behavior:
 - after rotation, the active log file is cleared
 - on cancel, nothing changes and the Console panel returns to its normal state
 
+## Notifications
+
+Current behavior:
+
+- the editor now has a top-right snackbar for transient system notifications
+- it slides in from the right, stays visible for the configured duration, then slides back out to the right
+- status colors currently map as follows:
+  - `success`: green
+  - `error`: red
+  - `info`: blue
+  - `warn`: yellow
+- scene save success and failure currently use the snackbar
+
 The scroll stops:
 
 - at the beginning of the file
@@ -573,6 +644,9 @@ Configuration:
   "editor": {
     "console": {
       "refreshInterval": 5
+    },
+    "notifications": {
+      "duration": 4
     }
   }
 }

@@ -198,6 +198,20 @@ Components can also be managed after they are added:
 
 For a full breakdown, continue with [Inspector and Properties](inspector-and-properties.md).
 
+## Exporting Objects As Prefabs
+
+When a scene object is selected in `Hierarchy`, press `Shift+E` to export it as a prefab.
+
+What happens next:
+
+- the editor writes a `.prefab.php` file under `Assets/Prefabs`
+- the filename is derived from the object's name in kebab-case, with a numeric suffix if needed
+- the `Prefabs` folder expands in `Assets`
+- the new prefab is selected automatically
+- focus moves to `Inspector` so you can keep refining the prefab
+
+Prefab export writes the prefab file immediately. It does not wait for `Ctrl+S`, because prefabs are separate assets from the current scene file.
+
 ## Saving
 
 Press `Ctrl+S` to write the active scene back to disk.
@@ -226,7 +240,8 @@ Here is a practical level-building sequence:
 4. Assign a texture to its renderer and set its crop rectangle.
 5. In `Inspector`, press `Shift+A` to add a controller or movement component.
 6. Add a `Label` for score or health.
-7. Switch to `Scene`, enter Move mode, and place the player and UI elements.
-8. Press `Ctrl+S`.
+7. If the player or an enemy should be reusable, select it in `Hierarchy` and press `Shift+E` to export a prefab.
+8. Switch to `Scene`, enter Move mode, and place the player and UI elements.
+9. Press `Ctrl+S`.
 
 If your scene also depends on new textures or a new map, build those next in [Working with Assets](working-with-assets.md).

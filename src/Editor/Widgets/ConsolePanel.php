@@ -2,6 +2,7 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
@@ -40,7 +41,7 @@ class ConsolePanel extends Widget
     protected int $activeTabLength = 0;
     protected Color $activeIndicatorColor = Color::LIGHT_CYAN;
     protected array $activeFiltersByTab = [
-        'Debug' => 'ALL',
+        'Debug' => 'DEBUG',
         'Error' => 'ALL',
     ];
     protected OptionListModal $filterModal;
@@ -101,9 +102,57 @@ class ConsolePanel extends Widget
         }
     }
 
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($this->filterModal->isVisible()) {
+            if ($this->filterModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return false;
+            }
+
+            $selection = $this->filterModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (!is_string($selection) || $selection === '') {
+                return false;
+            }
+
+            $this->applyFilterSelection($selection);
+            return true;
+        }
+
+        if ($this->clearConfirmModal->isVisible()) {
+            if ($this->clearConfirmModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return false;
+            }
+
+            $selection = $this->clearConfirmModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (!is_string($selection) || $selection === '') {
+                return false;
+            }
+
+            $this->applyClearConfirmSelection($selection);
+            return true;
+        }
+
+        return false;
+    }
+
     public function getActiveTab(): string
     {
         return self::TAB_TITLES[$this->activeTabIndex];
+    }
+
+    public function getActiveFilter(): string
+    {
+        return $this->activeFiltersByTab[$this->getActiveTab()] ?? 'ALL';
     }
 
     public function cycleFocusForward(): bool
@@ -118,6 +167,35 @@ class ConsolePanel extends Widget
         $this->activatePreviousTab();
 
         return true;
+    }
+
+    public function handleMouseClick(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y)) {
+            return;
+        }
+
+        if ($y !== $this->getContentAreaTop()) {
+            return;
+        }
+
+        $currentX = $this->getContentAreaLeft();
+
+        foreach (self::TAB_TITLES as $index => $tabTitle) {
+            if ($index > 0) {
+                $currentX += 2;
+            }
+
+            $tabStart = $currentX;
+            $tabEnd = $tabStart + mb_strlen($tabTitle) - 1;
+
+            if ($x >= $tabStart && $x <= $tabEnd) {
+                $this->activateTabByIndex($index);
+                return;
+            }
+
+            $currentX = $tabEnd + 1;
+        }
     }
 
     public function append(string $message): void
@@ -237,6 +315,35 @@ class ConsolePanel extends Widget
         $this->refreshVisibleContent();
     }
 
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return false;
+    }
+
+    protected function setScrollbarOffset(int $offset): void
+    {
+        $this->scrollOffset = $this->clampScrollOffsetValue($offset, count($this->messages));
+        $this->persistScrollOffset();
+        $this->refreshVisibleContent();
+    }
+
+    protected function resolveVerticalScrollbarState(): ?array
+    {
+        $visibleLineCount = $this->getVisibleLogLineCount();
+        $messageCount = count($this->messages);
+
+        if ($visibleLineCount <= 0 || $messageCount <= $visibleLineCount) {
+            return null;
+        }
+
+        return [
+            'offset' => $this->scrollOffset,
+            'visible' => $visibleLineCount,
+            'total' => $messageCount,
+            'start' => 2,
+        ];
+    }
+
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         if ($lineIndex === 1) {
@@ -266,17 +373,23 @@ class ConsolePanel extends Widget
 
     private function activateNextTab(): void
     {
-        $previousTabTitle = $this->getActiveTab();
-        $this->scrollOffsetsByTab[$previousTabTitle] = $this->scrollOffset;
-        $this->activeTabIndex = ($this->activeTabIndex + 1) % count(self::TAB_TITLES);
-        $this->restoreActiveTabState();
+        $this->activateTabByIndex(($this->activeTabIndex + 1) % count(self::TAB_TITLES));
     }
 
     private function activatePreviousTab(): void
     {
+        $this->activateTabByIndex(($this->activeTabIndex - 1 + count(self::TAB_TITLES)) % count(self::TAB_TITLES));
+    }
+
+    private function activateTabByIndex(int $tabIndex): void
+    {
+        if (!isset(self::TAB_TITLES[$tabIndex])) {
+            return;
+        }
+
         $previousTabTitle = $this->getActiveTab();
         $this->scrollOffsetsByTab[$previousTabTitle] = $this->scrollOffset;
-        $this->activeTabIndex = ($this->activeTabIndex - 1 + count(self::TAB_TITLES)) % count(self::TAB_TITLES);
+        $this->activeTabIndex = $tabIndex;
         $this->restoreActiveTabState();
     }
 
@@ -480,7 +593,7 @@ class ConsolePanel extends Widget
             ...($this->sessionMessagesByTab[$tabTitle] ?? []),
         ];
 
-        return $this->applyActiveFilter($tabTitle, $messages);
+        return $this->wrapMessagesForDisplay($this->applyActiveFilter($tabTitle, $messages));
     }
 
     private function shouldRefreshFromLogFile(): bool
@@ -637,6 +750,11 @@ class ConsolePanel extends Widget
         }
 
         $selection = $this->filterModal->getSelectedOption();
+        $this->applyFilterSelection($selection);
+    }
+
+    private function applyFilterSelection(?string $selection): void
+    {
         $this->filterModal->hide();
 
         if (!is_string($selection) || $selection === '') {
@@ -686,6 +804,11 @@ class ConsolePanel extends Widget
         }
 
         $selection = $this->clearConfirmModal->getSelectedOption();
+        $this->applyClearConfirmSelection($selection);
+    }
+
+    private function applyClearConfirmSelection(?string $selection): void
+    {
         $this->clearConfirmModal->hide();
 
         if ($selection !== 'Clear') {
@@ -748,14 +871,14 @@ class ConsolePanel extends Widget
 
         return array_values(array_filter(
             $messages,
-            fn(string $message): bool => $this->messageMatchesFilter($message, $activeFilter)
+            fn(string $message): bool => $this->messageMatchesFilter($tabTitle, $message, $activeFilter)
         ));
     }
 
-    private function messageMatchesFilter(string $message, string $filter): bool
+    private function messageMatchesFilter(string $tabTitle, string $message, string $filter): bool
     {
         if (preg_match('/\[(ERROR|CRITICAL|FATAL|INFO|WARN|WARNING|DEBUG)\]/', $message, $matches) !== 1) {
-            return false;
+            return $tabTitle === 'Debug' && $filter === 'DEBUG';
         }
 
         $level = $matches[1];
@@ -765,5 +888,56 @@ class ConsolePanel extends Widget
         }
 
         return $level === $filter;
+    }
+
+    private function wrapMessagesForDisplay(array $messages): array
+    {
+        $wrappedMessages = [];
+
+        foreach ($messages as $message) {
+            $wrappedMessages = [
+                ...$wrappedMessages,
+                ...$this->wrapMessageForDisplay((string) $message),
+            ];
+        }
+
+        return $wrappedMessages;
+    }
+
+    private function wrapMessageForDisplay(string $message): array
+    {
+        $availableWidth = $this->getWrappedMessageWidth();
+        $segments = preg_split("/\\R/u", $message) ?: [$message];
+        $wrappedLines = [];
+
+        foreach ($segments as $segment) {
+            $remaining = (string) $segment;
+
+            if ($remaining === '') {
+                $wrappedLines[] = '';
+                continue;
+            }
+
+            while ($remaining !== '') {
+                $visibleSegment = mb_strimwidth($remaining, 0, $availableWidth, '', 'UTF-8');
+
+                if ($visibleSegment === '') {
+                    $visibleSegment = mb_substr($remaining, 0, 1);
+                }
+
+                $wrappedLines[] = $visibleSegment;
+                $remaining = mb_substr($remaining, mb_strlen($visibleSegment), null, 'UTF-8');
+            }
+        }
+
+        return $wrappedLines === [] ? [''] : $wrappedLines;
+    }
+
+    private function getWrappedMessageWidth(): int
+    {
+        return max(
+            1,
+            $this->innerWidth - $this->padding->leftPadding - $this->padding->rightPadding,
+        );
     }
 }

@@ -7,6 +7,7 @@ use Sendama\Console\Util\Path;
 
 class FileDialogModal extends Widget
 {
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
     private const string LEAF_ICON = '•';
@@ -20,6 +21,8 @@ class FileDialogModal extends Widget
     protected array $expandedPaths = [];
     protected ?string $selectedPath = null;
     protected array $allowedExtensions = [];
+    protected ?string $lastClickedPath = null;
+    protected float $lastClickedAt = 0.0;
 
     public function __construct()
     {
@@ -43,6 +46,8 @@ class FileDialogModal extends Widget
         $this->entryTree = $this->buildEntryTree($this->workingDirectory);
         $this->expandedPaths = [];
         $this->selectedPath = null;
+        $this->lastClickedPath = null;
+        $this->lastClickedAt = 0.0;
         $this->isVisible = true;
         $this->refreshContent();
         $this->markDirty();
@@ -157,6 +162,43 @@ class FileDialogModal extends Widget
         return $selectedEntry['item']['relativePath'] ?? null;
     }
 
+    public function clickEntryAtPoint(int $x, int $y): ?string
+    {
+        if (!$this->isVisible || !$this->containsPoint($x, $y)) {
+            return null;
+        }
+
+        $entryIndex = $this->resolveContentIndexFromPointY($y);
+        $entry = $this->visibleEntries[$entryIndex] ?? null;
+
+        if (!is_array($entry)) {
+            return null;
+        }
+
+        if ($this->isExpandToggleClick($entry, $x)) {
+            $this->toggleEntryExpansion($entry);
+            $this->lastClickedPath = null;
+            $this->lastClickedAt = 0.0;
+            return null;
+        }
+
+        $path = is_string($entry['path'] ?? null) ? $entry['path'] : null;
+
+        if ($path === null) {
+            return null;
+        }
+
+        $isDoubleClick = $this->registerClickAndCheckDoubleClick($path);
+        $this->selectedPath = $path;
+        $this->refreshContent();
+
+        if (!$isDoubleClick) {
+            return null;
+        }
+
+        return $this->submitSelection();
+    }
+
     public function syncLayout(int $terminalWidth, int $terminalHeight): void
     {
         $desiredWidth = max(
@@ -187,12 +229,22 @@ class FileDialogModal extends Widget
     {
     }
 
+    protected function usesAutomaticVerticalScrolling(): bool
+    {
+        return true;
+    }
+
+    protected function handleScrollbarOffsetChanged(): void
+    {
+        $this->markDirty();
+    }
+
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
         $selectedVisibleIndex = $this->getSelectedVisibleIndex();
-        $selectedLineIndex = $selectedVisibleIndex === null
-            ? null
-            : $this->padding->topPadding + $selectedVisibleIndex;
+        $selectedLineIndex = is_int($selectedVisibleIndex)
+            ? $this->getRenderedLineIndexForContentIndex($selectedVisibleIndex)
+            : null;
 
         if ($lineIndex !== $selectedLineIndex) {
             return parent::decorateContentLine($line, $contentColor, $lineIndex);
@@ -300,6 +352,7 @@ class FileDialogModal extends Widget
         $this->visibleEntries = $this->buildVisibleEntries($this->entryTree);
         $this->syncSelectedPath();
         $this->content = array_map(fn(array $entry) => $this->formatVisibleEntry($entry), $this->visibleEntries);
+        $this->ensureContentLineVisible($this->getSelectedVisibleIndex());
         $this->markDirty();
     }
 
@@ -408,6 +461,46 @@ class FileDialogModal extends Widget
         }
 
         return substr($path, 0, $separatorPosition);
+    }
+
+    private function isExpandToggleClick(array $entry, int $x): bool
+    {
+        if (!($entry['isDirectory'] ?? false)) {
+            return false;
+        }
+
+        $iconColumn = $this->getContentAreaLeft() + (((int) ($entry['depth'] ?? 0)) * 2);
+
+        return $x === $iconColumn;
+    }
+
+    private function toggleEntryExpansion(array $entry): void
+    {
+        $path = $entry['path'] ?? null;
+
+        if (!is_string($path) || $path === '' || !($entry['isDirectory'] ?? false)) {
+            return;
+        }
+
+        if ($entry['isExpanded'] ?? false) {
+            unset($this->expandedPaths[$path]);
+        } else {
+            $this->expandedPaths[$path] = true;
+        }
+
+        $this->refreshContent();
+    }
+
+    private function registerClickAndCheckDoubleClick(string $path): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedPath === $path
+            && ($now - $this->lastClickedAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedPath = $path;
+        $this->lastClickedAt = $now;
+
+        return $isDoubleClick;
     }
 
     private function selectRelativePath(string $relativePath): void

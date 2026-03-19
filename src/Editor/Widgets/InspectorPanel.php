@@ -2,10 +2,16 @@
 
 namespace Sendama\Console\Editor\Widgets;
 
+use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use ReflectionClass;
+use ReflectionNamedType;
+use ReflectionProperty;
+use ReflectionUnionType;
+use Sendama\Engine\IO\Enumerations\Color as EngineColor;
+use Sendama\Console\Editor\PrefabLoader;
 use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -16,18 +22,22 @@ use Sendama\Console\Editor\Widgets\Controls\InputControl;
 use Sendama\Console\Editor\Widgets\Controls\InputControlFactory;
 use Sendama\Console\Editor\Widgets\Controls\NumberInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
+use Sendama\Console\Editor\Widgets\Controls\PrefabReferenceInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\SectionControl;
+use Sendama\Console\Editor\Widgets\Controls\SelectInputControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
 use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
 
 class InspectorPanel extends Widget
 {
+    private const float DOUBLE_CLICK_THRESHOLD_SECONDS = 0.35;
     private const string STATE_CONTROL_SELECTION = 'control_selection';
     private const string STATE_PROPERTY_SELECTION = 'property_selection';
     private const string STATE_CONTROL_EDIT = 'control_edit';
     private const string STATE_PATH_INPUT_ACTION_SELECTION = 'path_input_action_selection';
     private const string STATE_PATH_INPUT_FILE_DIALOG = 'path_input_file_dialog';
+    private const string STATE_PREFAB_REFERENCE_SELECTION = 'prefab_reference_selection';
     private const string SECTION_HEADER_SEQUENCE = "\033[30;47m";
     private const string SECTION_HEADER_SELECTED_SEQUENCE = "\033[30;104m";
     private const string SELECTED_CONTROL_SEQUENCE = "\033[30;46m";
@@ -50,17 +60,17 @@ class InspectorPanel extends Widget
     protected ?int $selectedControlIndex = null;
     protected array $lineKinds = [];
     protected array $lineStates = [];
+    protected array $lineControlIndexes = [];
     protected string $interactionState = self::STATE_CONTROL_SELECTION;
     protected InputControlFactory $inputControlFactory;
-    protected ?PathInputControl $rendererTextureControl = null;
-    protected ?VectorInputControl $rendererOffsetControl = null;
-    protected ?VectorInputControl $rendererSizeControl = null;
-    protected ?PreviewWindowControl $rendererPreviewControl = null;
+    protected array $texturePreviewRegistrations = [];
     protected OptionListModal $pathInputActionModal;
     protected FileDialogModal $fileDialogModal;
     protected OptionListModal $addComponentModal;
     protected OptionListModal $deleteComponentModal;
+    protected OptionListModal $prefabReferenceModal;
     protected ?PathInputControl $activePathInputControl = null;
+    protected ?PrefabReferenceInputControl $activePrefabReferenceControl = null;
     protected array $controlBindings = [];
     protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
@@ -72,8 +82,30 @@ class InspectorPanel extends Widget
     protected ?array $cachedProjectComponentCandidates = null;
     protected bool $isComponentMoveModeActive = false;
     protected ?int $pendingComponentDeletionIndex = null;
+    protected array $prefabReferenceOptions = [];
     protected string $modeHelpLabel = '';
     protected bool $shouldRefreshModalBackground = false;
+    protected ?int $lastClickedControlIndex = null;
+    protected float $lastClickedControlAt = 0.0;
+    private const string GUI_TEXTURE_TYPE = 'Sendama\\Engine\\UI\\GUITexture\\GUITexture';
+    private const array GUI_TEXTURE_COLOR_OPTIONS = [
+        'Black',
+        'Dark Gray',
+        'Blue',
+        'Light Blue',
+        'Green',
+        'Light Green',
+        'Cyan',
+        'Light Cyan',
+        'Red',
+        'Light Red',
+        'Purple',
+        'Light Purple',
+        'Brown',
+        'Yellow',
+        'Light Gray',
+        'White',
+    ];
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -88,6 +120,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal = new FileDialogModal();
         $this->addComponentModal = new OptionListModal(title: 'Add Component');
         $this->deleteComponentModal = new OptionListModal(title: 'Remove Component');
+        $this->prefabReferenceModal = new OptionListModal(title: 'Choose Prefab');
         $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
             ? $workingDirectory
             : (getcwd() ?: '.');
@@ -96,6 +129,36 @@ class InspectorPanel extends Widget
     public function setSceneHierarchy(array $hierarchy): void
     {
         $this->sceneHierarchy = $hierarchy;
+    }
+
+    public function handleMouseClick(int $x, int $y): void
+    {
+        if (!$this->containsPoint($x, $y) || $this->hasActiveModal()) {
+            return;
+        }
+
+        $controlIndex = $this->resolveControlIndexFromPoint($x, $y);
+
+        if (!is_int($controlIndex)) {
+            return;
+        }
+
+        if ($this->interactionState !== self::STATE_CONTROL_SELECTION) {
+            $this->resetInteractionState();
+        }
+
+        $this->selectControlByIndex($controlIndex);
+        $selectedControl = $this->getSelectedControl();
+
+        if (!$selectedControl instanceof InputControl) {
+            return;
+        }
+
+        if (!$this->registerControlClickAndCheckDoubleClick($controlIndex)) {
+            return;
+        }
+
+        $this->activateSelectedControl($selectedControl);
     }
 
     public function inspectTarget(?array $target): void
@@ -110,15 +173,16 @@ class InspectorPanel extends Widget
         $this->focusableControls = [];
         $this->selectedControlIndex = null;
         $this->interactionState = self::STATE_CONTROL_SELECTION;
-        $this->rendererTextureControl = null;
-        $this->rendererOffsetControl = null;
-        $this->rendererSizeControl = null;
-        $this->rendererPreviewControl = null;
+        $this->lastClickedControlIndex = null;
+        $this->lastClickedControlAt = 0.0;
+        $this->texturePreviewRegistrations = [];
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
         $this->addComponentModal->hide();
         $this->deleteComponentModal->hide();
+        $this->prefabReferenceModal->hide();
         $this->activePathInputControl = null;
+        $this->activePrefabReferenceControl = null;
         $this->controlBindings = [];
         $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
@@ -127,6 +191,7 @@ class InspectorPanel extends Widget
         $this->componentMenuDefinitions = [];
         $this->isComponentMoveModeActive = false;
         $this->pendingComponentDeletionIndex = null;
+        $this->prefabReferenceOptions = [];
 
         if ($target === null) {
             $this->content = [];
@@ -162,6 +227,11 @@ class InspectorPanel extends Widget
         $this->refreshContent();
     }
 
+    public function getInspectionTarget(): ?array
+    {
+        return $this->inspectionTarget;
+    }
+
     public function focus(FocusTargetContext $context): void
     {
         parent::focus($context);
@@ -178,6 +248,8 @@ class InspectorPanel extends Widget
     public function blur(FocusTargetContext $context): void
     {
         $this->resetInteractionState();
+        $this->lastClickedControlIndex = null;
+        $this->lastClickedControlAt = 0.0;
         parent::blur($context);
         $this->refreshContent();
     }
@@ -187,7 +259,8 @@ class InspectorPanel extends Widget
         return $this->pathInputActionModal->isVisible()
             || $this->fileDialogModal->isVisible()
             || $this->addComponentModal->isVisible()
-            || $this->deleteComponentModal->isVisible();
+            || $this->deleteComponentModal->isVisible()
+            || $this->prefabReferenceModal->isVisible();
     }
 
     public function isModalDirty(): bool
@@ -195,7 +268,8 @@ class InspectorPanel extends Widget
         return $this->pathInputActionModal->isDirty()
             || $this->fileDialogModal->isDirty()
             || $this->addComponentModal->isDirty()
-            || $this->deleteComponentModal->isDirty();
+            || $this->deleteComponentModal->isDirty()
+            || $this->prefabReferenceModal->isDirty();
     }
 
     public function markModalClean(): void
@@ -204,6 +278,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal->markClean();
         $this->addComponentModal->markClean();
         $this->deleteComponentModal->markClean();
+        $this->prefabReferenceModal->markClean();
     }
 
     public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
@@ -212,6 +287,7 @@ class InspectorPanel extends Widget
         $this->fileDialogModal->syncLayout($terminalWidth, $terminalHeight);
         $this->addComponentModal->syncLayout($terminalWidth, $terminalHeight);
         $this->deleteComponentModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->prefabReferenceModal->syncLayout($terminalWidth, $terminalHeight);
     }
 
     public function renderActiveModal(): void
@@ -231,6 +307,115 @@ class InspectorPanel extends Widget
         if ($this->deleteComponentModal->isVisible()) {
             $this->deleteComponentModal->render();
         }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->prefabReferenceModal->render();
+        }
+    }
+
+    public function handleModalMouseEvent(MouseEvent $mouseEvent): bool
+    {
+        if ($this->addComponentModal->isVisible()) {
+            if ($this->addComponentModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->addComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selection = $this->addComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyAddComponentSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->deleteComponentModal->isVisible()) {
+            if ($this->deleteComponentModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->deleteComponentModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selection = $this->deleteComponentModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyDeleteComponentSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            if ($this->prefabReferenceModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->prefabReferenceModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selection = $this->prefabReferenceModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyPrefabReferenceSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->pathInputActionModal->isVisible()) {
+            if ($this->pathInputActionModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->pathInputActionModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selection = $this->pathInputActionModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyPathInputActionSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->fileDialogModal->isVisible()) {
+            if ($this->fileDialogModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->fileDialogModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selectedPath = $this->fileDialogModal->clickEntryAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selectedPath) && $selectedPath !== '') {
+                $this->applyPathInputFileSelection($selectedPath);
+            }
+
+            return $isWithinModal;
+        }
+
+        return false;
     }
 
     public function consumeHierarchyMutation(): ?array
@@ -386,6 +571,11 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->handlePrefabReferenceModalInput();
+            return;
+        }
+
         if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
             $this->handlePathInputActionInput();
             return;
@@ -424,7 +614,12 @@ class InspectorPanel extends Widget
 
     protected function decorateContentLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
-        $contentIndex = $lineIndex - $this->padding->topPadding;
+        $contentIndex = $this->getContentIndexForLineIndex($lineIndex);
+
+        if (!is_int($contentIndex)) {
+            return parent::decorateContentLine($line, $contentColor, $lineIndex);
+        }
+
         $lineKind = $this->lineKinds[$contentIndex] ?? null;
 
         if ($lineKind === 'section_header') {
@@ -451,7 +646,12 @@ class InspectorPanel extends Widget
 
     private function decorateSectionHeaderLine(string $line, ?Color $contentColor, int $lineIndex): string
     {
-        $contentIndex = $lineIndex - $this->padding->topPadding;
+        $contentIndex = $this->getContentIndexForLineIndex($lineIndex);
+
+        if (!is_int($contentIndex)) {
+            return parent::decorateContentLine($line, $contentColor, $lineIndex);
+        }
+
         $lineState = $this->lineStates[$contentIndex] ?? 'normal';
         $visibleLine = mb_substr($line, 0, $this->width);
         $visibleLength = mb_strlen($visibleLine);
@@ -538,15 +738,21 @@ class InspectorPanel extends Widget
             ['scale'],
         );
 
+        $sizeControl = null;
+
         if (isset($item['size']) && is_array($item['size'])) {
-            $this->addBoundControl(
-                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
-                ['size'],
-            );
+            $sizeControl = new VectorInputControl('Size', $this->resolveInspectableSize($item), 1);
+            $this->addBoundControl($sizeControl, ['size']);
         }
 
-        $this->addControl($this->addSectionHeader('Renderer'));
-        $this->addRendererControls($item);
+        if ($this->isGuiTextureItem($item)) {
+            $this->addControl($this->addSectionHeader('Texture'));
+            $this->addGuiTextureControls($item, $sizeControl instanceof VectorInputControl ? $sizeControl : null);
+        } else {
+            $this->addControl($this->addSectionHeader('Renderer'));
+            $this->addRendererControls($item);
+        }
+
         $this->addScriptComponents($item['components'] ?? []);
     }
 
@@ -583,15 +789,21 @@ class InspectorPanel extends Widget
             ['scale'],
         );
 
+        $sizeControl = null;
+
         if (isset($item['size']) && is_array($item['size'])) {
-            $this->addBoundControl(
-                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
-                ['size'],
-            );
+            $sizeControl = new VectorInputControl('Size', $this->resolveInspectableSize($item), 1);
+            $this->addBoundControl($sizeControl, ['size']);
         }
 
-        $this->addControl($this->addSectionHeader('Renderer'));
-        $this->addRendererControls($item);
+        if ($this->isGuiTextureItem($item)) {
+            $this->addControl($this->addSectionHeader('Texture'));
+            $this->addGuiTextureControls($item, $sizeControl instanceof VectorInputControl ? $sizeControl : null);
+        } else {
+            $this->addControl($this->addSectionHeader('Renderer'));
+            $this->addRendererControls($item);
+        }
+
         $this->addScriptComponents($item['components'] ?? []);
     }
 
@@ -673,29 +885,65 @@ class InspectorPanel extends Widget
         $offset = $this->normalizeVector($texture['position'] ?? null);
         $size = $this->normalizeVector($texture['size'] ?? null);
 
-        $this->rendererTextureControl = new PathInputControl(
+        $textureControl = new PathInputControl(
             'Texture',
             $texturePath,
             $this->resolveAssetsWorkingDirectory(),
             ['texture'],
             1,
         );
-        $this->rendererOffsetControl = new VectorInputControl('Offset', $offset, 1);
-        $this->rendererSizeControl = new VectorInputControl('Size', $size, 1);
-        $this->rendererPreviewControl = new PreviewWindowControl(
+        $offsetControl = new VectorInputControl('Offset', $offset, 1);
+        $sizeControl = new VectorInputControl('Size', $size, 1);
+        $previewControl = new PreviewWindowControl(
             'Preview',
-            $this->buildTexturePreviewLines($texturePath, $offset, $size),
+            $this->buildTexturePreviewLines($texturePath, $offset, $size, true),
             1,
         );
 
-        $this->addBoundControl($this->rendererTextureControl, ['sprite', 'texture', 'path']);
-        $this->addBoundControl($this->rendererOffsetControl, ['sprite', 'texture', 'position']);
-        $this->addBoundControl($this->rendererSizeControl, ['sprite', 'texture', 'size']);
-        $this->addControl($this->rendererPreviewControl);
+        $this->addBoundControl($textureControl, ['sprite', 'texture', 'path']);
+        $this->addBoundControl($offsetControl, ['sprite', 'texture', 'position']);
+        $this->addBoundControl($sizeControl, ['sprite', 'texture', 'size']);
+        $this->addControl($previewControl);
+        $this->registerTexturePreview($textureControl, $sizeControl, $previewControl, $offsetControl, true);
 
         if (array_key_exists('text', $item)) {
             $this->addBoundControl(new TextInputControl('Text', $item['text'], 1), ['text']);
         }
+    }
+
+    private function addGuiTextureControls(array $item, ?VectorInputControl $sizeControl = null): void
+    {
+        $texturePath = is_string($item['texture'] ?? null) && trim($item['texture']) !== ''
+            ? trim((string) $item['texture'])
+            : 'None';
+        $colorOptions = $this->resolveGuiTextureColorOptions();
+        $selectedColor = $this->normalizeGuiTextureColor($item['color'] ?? null);
+        $resolvedSizeControl = $sizeControl ?? new VectorInputControl('Size', $this->normalizeGuiTextureSize($this->normalizeVector($item['size'] ?? null)), 1);
+        $textureControl = new PathInputControl(
+            'Texture',
+            $texturePath,
+            $this->resolveAssetsWorkingDirectory(),
+            ['texture'],
+            1,
+        );
+        $previewControl = new PreviewWindowControl(
+            'Preview',
+            $this->buildTexturePreviewLines($texturePath, ['x' => 0, 'y' => 0], $resolvedSizeControl->getValue(), false),
+            1,
+        );
+
+        $this->addBoundControl($textureControl, ['texture']);
+        $this->addBoundControl(
+            new SelectInputControl(
+                'Color',
+                $colorOptions,
+                in_array($selectedColor, $colorOptions, true) ? $selectedColor : EngineColor::WHITE->getPhoneticName(),
+                1,
+            ),
+            ['color'],
+        );
+        $this->addControl($previewControl);
+        $this->registerTexturePreview($textureControl, $resolvedSizeControl, $previewControl, null, false);
     }
 
     private function addScriptComponents(mixed $components): void
@@ -710,6 +958,9 @@ class InspectorPanel extends Widget
             }
 
             $serializedComponentData = is_array($component['data'] ?? null) ? $component['data'] : null;
+            $componentFieldTypes = is_array($component['__editorFieldTypes'] ?? null)
+                ? $component['__editorFieldTypes']
+                : [];
 
             if (is_array($serializedComponentData)) {
                 $this->addControl(
@@ -724,6 +975,8 @@ class InspectorPanel extends Widget
                 $this->addComponentPropertyControls(
                     $serializedComponentData,
                     ['components', $componentIndex, 'data'],
+                    1,
+                    $componentFieldTypes,
                 );
                 continue;
             }
@@ -751,11 +1004,18 @@ class InspectorPanel extends Widget
             $this->addComponentPropertyControls(
                 $legacyComponentData,
                 ['components', $componentIndex],
+                1,
+                $componentFieldTypes,
             );
         }
     }
 
-    private function addComponentPropertyControls(array $properties, array $basePath, int $indentLevel = 1): void
+    private function addComponentPropertyControls(
+        array $properties,
+        array $basePath,
+        int $indentLevel = 1,
+        array $fieldTypes = [],
+    ): void
     {
         foreach ($properties as $key => $value) {
             if (!is_string($key)) {
@@ -771,19 +1031,62 @@ class InspectorPanel extends Widget
                     $value,
                     [...$basePath, $key],
                     $indentLevel + 1,
+                    is_array($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : [],
                 );
                 continue;
             }
 
             $this->addBoundControl(
-                $this->inputControlFactory->create(
+                $this->buildComponentPropertyControl(
                     $this->humanizeKey($key),
                     $value,
                     $indentLevel,
+                    is_string($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : null,
                 ),
                 [...$basePath, $key],
             );
         }
+    }
+
+    private function buildComponentPropertyControl(
+        string $label,
+        mixed $value,
+        int $indentLevel,
+        ?string $fieldType = null,
+    ): InputControl {
+        if ($this->isPrefabAssignableGameObjectField($fieldType)) {
+            return new PrefabReferenceInputControl(
+                $label,
+                $value,
+                $this->resolvePrefabDisplayLabelsByPath(),
+                $indentLevel,
+            );
+        }
+
+        return $this->inputControlFactory->createForFieldType($label, $value, $fieldType, $indentLevel);
+    }
+
+    private function isPrefabAssignableGameObjectField(?string $fieldType): bool
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return false;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        foreach ($normalizedTypes as $normalizedType) {
+            if (in_array($normalizedType, [
+                'Sendama\\Engine\\Core\\GameObject',
+                'Sendama\\Engine\\Core\\Interfaces\\GameObjectInterface',
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function shouldRenderNestedComponentProperties(mixed $value): bool
@@ -867,6 +1170,7 @@ class InspectorPanel extends Widget
         $content = [];
         $lineKinds = [];
         $lineStates = [];
+        $lineControlIndexes = [];
         $collapsedSectionIndentLevels = [];
 
         foreach ($this->elements as $element) {
@@ -889,10 +1193,14 @@ class InspectorPanel extends Widget
                 continue;
             }
 
+            $controlIndex = array_search($control, $this->focusableControls, true);
+            $lineControlIndex = is_int($controlIndex) ? $controlIndex : null;
+
             foreach ($control->renderLineDefinitions() as $lineDefinition) {
                 $content[] = $lineDefinition['text'] ?? '';
                 $lineKinds[] = $lineDefinition['kind'] ?? 'control';
                 $lineStates[] = $lineDefinition['state'] ?? 'normal';
+                $lineControlIndexes[] = $lineControlIndex;
             }
 
             if ($control instanceof SectionControl && $control->isCollapsed()) {
@@ -903,6 +1211,8 @@ class InspectorPanel extends Widget
         $this->content = $content;
         $this->lineKinds = $lineKinds;
         $this->lineStates = $lineStates;
+        $this->lineControlIndexes = $lineControlIndexes;
+        $this->ensureContentLineVisible($this->resolveSelectedContentIndex());
     }
 
     private function updateHelpInfo(): void
@@ -916,6 +1226,12 @@ class InspectorPanel extends Widget
         if ($this->deleteComponentModal->isVisible()) {
             $this->help = 'Up/Down choose  Enter confirm  Esc cancel';
             $this->modeHelpLabel = 'Mode: Remove Component';
+            return;
+        }
+
+        if ($this->prefabReferenceModal->isVisible()) {
+            $this->help = 'Up/Down choose  Enter assign  Esc cancel';
+            $this->modeHelpLabel = 'Mode: Prefab Picker';
             return;
         }
 
@@ -987,6 +1303,12 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($selectedControl instanceof PrefabReferenceInputControl) {
+            $this->help = 'Up/Down select  Enter choose prefab  Tab next';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
         $this->help = 'Up/Down select  Enter edit  Shift+A add  Tab next';
         $this->modeHelpLabel = 'Mode: Control Select';
     }
@@ -1012,26 +1334,35 @@ class InspectorPanel extends Widget
 
     private function refreshDerivedControls(): void
     {
-        if (
-            !$this->rendererTextureControl instanceof PathInputControl
-            || !$this->rendererOffsetControl instanceof VectorInputControl
-            || !$this->rendererSizeControl instanceof VectorInputControl
-            || !$this->rendererPreviewControl instanceof PreviewWindowControl
-        ) {
-            return;
+        foreach ($this->texturePreviewRegistrations as $registration) {
+            $textureControl = $registration['texture'] ?? null;
+            $sizeControl = $registration['size'] ?? null;
+            $previewControl = $registration['preview'] ?? null;
+            $offsetControl = $registration['offset'] ?? null;
+            $naturalSizeFallback = (bool) ($registration['naturalSizeFallback'] ?? true);
+
+            if (
+                !$textureControl instanceof PathInputControl
+                || !$sizeControl instanceof VectorInputControl
+                || !$previewControl instanceof PreviewWindowControl
+            ) {
+                continue;
+            }
+
+            $texturePath = (string) $textureControl->getValue();
+            $size = $sizeControl->getValue();
+            $offset = $offsetControl instanceof VectorInputControl
+                ? $offsetControl->getValue()
+                : ['x' => 0, 'y' => 0];
+
+            if (!is_array($size) || !is_array($offset)) {
+                continue;
+            }
+
+            $previewControl->setValue(
+                $this->buildTexturePreviewLines($texturePath, $offset, $size, $naturalSizeFallback)
+            );
         }
-
-        $texturePath = (string) $this->rendererTextureControl->getValue();
-        $offset = $this->rendererOffsetControl->getValue();
-        $size = $this->rendererSizeControl->getValue();
-
-        if (!is_array($offset) || !is_array($size)) {
-            return;
-        }
-
-        $this->rendererPreviewControl->setValue(
-            $this->buildTexturePreviewLines($texturePath, $offset, $size)
-        );
     }
 
     private function applyControlSelection(): void
@@ -1162,6 +1493,16 @@ class InspectorPanel extends Widget
             return;
         }
 
+        $this->activateSelectedControl($selectedControl);
+    }
+
+    private function activateSelectedControl(InputControl $selectedControl): void
+    {
+        if ($selectedControl instanceof PrefabReferenceInputControl) {
+            $this->showPrefabReferenceModal($selectedControl);
+            return;
+        }
+
         if ($selectedControl instanceof PathInputControl) {
             $this->showPathInputActionModal($selectedControl);
             return;
@@ -1170,6 +1511,7 @@ class InspectorPanel extends Widget
         if ($selectedControl instanceof CompoundInputControl) {
             if ($selectedControl->beginPropertySelection()) {
                 $this->interactionState = self::STATE_PROPERTY_SELECTION;
+                $this->refreshContent();
             }
 
             return;
@@ -1177,6 +1519,7 @@ class InspectorPanel extends Widget
 
         if ($selectedControl->enterEditMode()) {
             $this->interactionState = self::STATE_CONTROL_EDIT;
+            $this->refreshContent();
         }
     }
 
@@ -1290,6 +1633,7 @@ class InspectorPanel extends Widget
         $this->closePathInputModals();
         $this->closeAddComponentModal();
         $this->closeDeleteComponentModal();
+        $this->closePrefabReferenceModal();
         $selectedControl = $this->getSelectedControl();
 
         if ($selectedControl instanceof CompoundInputControl) {
@@ -1328,22 +1672,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selection = $this->addComponentModal->getSelectedOption();
-
-        if (!is_string($selection) || $selection === '' || $selection === 'Cancel') {
-            $this->closeAddComponentModal();
-            $this->refreshContent();
-            return;
-        }
-
-        $componentDefinition = $this->componentMenuDefinitions[$selection] ?? null;
-
-        if (is_array($componentDefinition)) {
-            $this->appendComponentToInspectionTarget($componentDefinition);
-        }
-
-        $this->closeAddComponentModal();
-        $this->refreshContent();
+        $this->applyAddComponentSelection($this->addComponentModal->getSelectedOption());
     }
 
     private function handleDeleteComponentModalInput(): void
@@ -1368,14 +1697,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selection = $this->deleteComponentModal->getSelectedOption();
-
-        if ($selection === 'Delete' && is_int($this->pendingComponentDeletionIndex)) {
-            $this->removeComponentAtIndex($this->pendingComponentDeletionIndex);
-        }
-
-        $this->closeDeleteComponentModal();
-        $this->refreshContent();
+        $this->applyDeleteComponentSelection($this->deleteComponentModal->getSelectedOption());
     }
 
     private function handlePathInputActionInput(): void
@@ -1401,34 +1723,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selectedOption = $this->pathInputActionModal->getSelectedOption();
-
-        if ($selectedOption === 'Choose file') {
-            $this->pathInputActionModal->hide();
-
-            if ($this->activePathInputControl instanceof PathInputControl) {
-                $this->fileDialogModal->show(
-                    $this->activePathInputControl->getWorkingDirectory(),
-                    (string) $this->activePathInputControl->getValue(),
-                    $this->activePathInputControl->getAllowedExtensions(),
-                );
-                $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
-            }
-
-            return;
-        }
-
-        if ($selectedOption === 'Edit path' && $this->activePathInputControl instanceof PathInputControl) {
-            $this->requestModalBackgroundRefresh();
-            $this->pathInputActionModal->hide();
-
-            if ($this->activePathInputControl->enterEditMode()) {
-                $this->interactionState = self::STATE_CONTROL_EDIT;
-            } else {
-                $this->closePathInputModals();
-                $this->interactionState = self::STATE_CONTROL_SELECTION;
-            }
-        }
+        $this->applyPathInputActionSelection($this->pathInputActionModal->getSelectedOption());
     }
 
     private function handlePathInputFileDialogInput(): void
@@ -1471,17 +1766,7 @@ class InspectorPanel extends Widget
             return;
         }
 
-        $selectedPath = $this->fileDialogModal->submitSelection();
-
-        if ($selectedPath === null || !$this->activePathInputControl instanceof PathInputControl) {
-            return;
-        }
-
-        $this->activePathInputControl->setValueFromRelativePath($selectedPath);
-        $this->applyControlValueToInspectionTarget($this->activePathInputControl);
-        $this->closePathInputModals();
-        $this->interactionState = self::STATE_CONTROL_SELECTION;
-        $this->refreshContent();
+        $this->applyPathInputFileSelection($this->fileDialogModal->submitSelection());
     }
 
     private function showPathInputActionModal(PathInputControl $control): void
@@ -1500,6 +1785,171 @@ class InspectorPanel extends Widget
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
         $this->activePathInputControl = null;
+    }
+
+    private function showPrefabReferenceModal(PrefabReferenceInputControl $control): void
+    {
+        $this->activePrefabReferenceControl = $control;
+        $this->prefabReferenceOptions = $this->resolveAvailablePrefabOptions();
+        $options = ['None', ...array_keys($this->prefabReferenceOptions), 'Cancel'];
+        $selectedIndex = 0;
+        $currentValue = $control->getValue();
+
+        if (is_string($currentValue) && $currentValue !== '') {
+            foreach ($this->prefabReferenceOptions as $label => $definition) {
+                if (($definition['path'] ?? null) === $currentValue) {
+                    $optionIndex = array_search($label, $options, true);
+
+                    if (is_int($optionIndex)) {
+                        $selectedIndex = $optionIndex;
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        $this->prefabReferenceModal->show($options, $selectedIndex, 'Choose Prefab');
+        $this->interactionState = self::STATE_PREFAB_REFERENCE_SELECTION;
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
+    private function handlePrefabReferenceModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->prefabReferenceModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->prefabReferenceModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $this->applyPrefabReferenceSelection($this->prefabReferenceModal->getSelectedOption());
+    }
+
+    private function closePrefabReferenceModal(): void
+    {
+        $this->prefabReferenceModal->hide();
+        $this->activePrefabReferenceControl = null;
+        $this->prefabReferenceOptions = [];
+    }
+
+    private function applyAddComponentSelection(?string $selection): void
+    {
+        if (!is_string($selection) || $selection === '' || $selection === 'Cancel') {
+            $this->closeAddComponentModal();
+            $this->refreshContent();
+            return;
+        }
+
+        $componentDefinition = $this->componentMenuDefinitions[$selection] ?? null;
+
+        if (is_array($componentDefinition)) {
+            $this->appendComponentToInspectionTarget($componentDefinition);
+        }
+
+        $this->closeAddComponentModal();
+        $this->refreshContent();
+    }
+
+    private function applyDeleteComponentSelection(?string $selection): void
+    {
+        if ($selection === 'Delete' && is_int($this->pendingComponentDeletionIndex)) {
+            $this->removeComponentAtIndex($this->pendingComponentDeletionIndex);
+        }
+
+        $this->closeDeleteComponentModal();
+        $this->refreshContent();
+    }
+
+    private function applyPathInputActionSelection(?string $selection): void
+    {
+        if ($selection === 'Choose file') {
+            $this->pathInputActionModal->hide();
+
+            if ($this->activePathInputControl instanceof PathInputControl) {
+                $this->fileDialogModal->show(
+                    $this->activePathInputControl->getWorkingDirectory(),
+                    (string) $this->activePathInputControl->getValue(),
+                    $this->activePathInputControl->getAllowedExtensions(),
+                );
+                $this->interactionState = self::STATE_PATH_INPUT_FILE_DIALOG;
+            }
+
+            return;
+        }
+
+        if ($selection !== 'Edit path' || !$this->activePathInputControl instanceof PathInputControl) {
+            return;
+        }
+
+        $this->requestModalBackgroundRefresh();
+        $this->pathInputActionModal->hide();
+
+        if ($this->activePathInputControl->enterEditMode()) {
+            $this->interactionState = self::STATE_CONTROL_EDIT;
+        } else {
+            $this->closePathInputModals();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+        }
+
+        $this->refreshContent();
+    }
+
+    private function applyPathInputFileSelection(?string $selectedPath): void
+    {
+        if ($selectedPath === null || !$this->activePathInputControl instanceof PathInputControl) {
+            return;
+        }
+
+        $this->activePathInputControl->setValueFromRelativePath($selectedPath);
+        $this->applyControlValueToInspectionTarget($this->activePathInputControl);
+        $this->closePathInputModals();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
+    }
+
+    private function applyPrefabReferenceSelection(?string $selection): void
+    {
+        if (!$this->activePrefabReferenceControl instanceof PrefabReferenceInputControl) {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if ($selection === 'Cancel') {
+            $this->closePrefabReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        $nextValue = $selection === 'None'
+            ? null
+            : ($this->prefabReferenceOptions[$selection]['path'] ?? null);
+
+        $this->activePrefabReferenceControl->setValue($nextValue);
+        $this->applyControlValueToInspectionTarget($this->activePrefabReferenceControl);
+        $this->closePrefabReferenceModal();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
     }
 
     private function requestModalBackgroundRefresh(): void
@@ -1584,6 +2034,28 @@ class InspectorPanel extends Widget
         $candidateClasses = $this->resolveComponentCandidateClasses($currentItem);
         $definitions = $this->loadComponentDefinitionsInIsolatedProcess($candidateClasses, $currentItem);
 
+        $resolvedDefinitionClasses = array_values(array_unique(array_filter(
+            array_map(
+                static fn(array $definition): ?string => is_string($definition['class'] ?? null)
+                    ? $definition['class']
+                    : null,
+                $definitions,
+            ),
+            static fn(?string $class): bool => is_string($class) && $class !== '',
+        )));
+
+        $missingCandidateClasses = array_values(array_filter(
+            $candidateClasses,
+            static fn(string $candidateClass): bool => !in_array($candidateClass, $resolvedDefinitionClasses, true),
+        ));
+
+        if ($missingCandidateClasses !== []) {
+            $definitions = [
+                ...$definitions,
+                ...$this->buildFallbackComponentDefinitions($missingCandidateClasses),
+            ];
+        }
+
         if ($definitions === []) {
             return [];
         }
@@ -1617,6 +2089,7 @@ class InspectorPanel extends Widget
             $resolvedDefinitions[$label] = [
                 'class' => $componentClass,
                 'data' => is_array($definition['data'] ?? null) ? $definition['data'] : [],
+                'fieldTypes' => is_array($definition['fieldTypes'] ?? null) ? $definition['fieldTypes'] : [],
             ];
         }
 
@@ -1640,6 +2113,56 @@ class InspectorPanel extends Widget
         )));
 
         return $candidates;
+    }
+
+    private function buildFallbackComponentDefinitions(array $candidateClasses): array
+    {
+        $autoloadPath = Path::join($this->projectDirectory, 'vendor', 'autoload.php');
+
+        if (is_file($autoloadPath)) {
+            require_once $autoloadPath;
+        }
+
+        $componentBaseClass = 'Sendama\\Engine\\Core\\Component';
+
+        if (!class_exists($componentBaseClass)) {
+            return [];
+        }
+
+        $definitions = [];
+
+        foreach ($candidateClasses as $candidateClass) {
+            if (!is_string($candidateClass) || $candidateClass === '') {
+                continue;
+            }
+
+            if (in_array($candidateClass, ['Sendama\\Engine\\Core\\Transform', 'Sendama\\Engine\\Core\\Rendering\\Renderer'], true)) {
+                continue;
+            }
+
+            if (!class_exists($candidateClass) || !is_a($candidateClass, $componentBaseClass, true)) {
+                continue;
+            }
+
+            try {
+                $reflection = new ReflectionClass($candidateClass);
+
+                if ($reflection->isAbstract()) {
+                    continue;
+                }
+
+                $definitions[] = [
+                    'class' => $candidateClass,
+                    'label' => $this->resolveClassName($candidateClass, $candidateClass),
+                    'data' => $this->extractFallbackSerializableComponentData($reflection),
+                    'fieldTypes' => $this->extractFallbackComponentFieldTypes($reflection),
+                ];
+            } catch (Throwable) {
+                continue;
+            }
+        }
+
+        return $definitions;
     }
 
     private function discoverProjectComponentCandidates(): array
@@ -1932,6 +2455,64 @@ function extract_component_serializable_data(object $component): array
     return $serializedData;
 }
 
+function extract_component_field_types(object $component): array
+{
+    $fieldTypes = [];
+    $reflection = new ReflectionObject($component);
+
+    foreach ($reflection->getProperties() as $property) {
+        $isSerializable = $property->isPublic()
+            || $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') !== [];
+
+        if (!$isSerializable) {
+            continue;
+        }
+
+        if (method_exists($property, 'isVirtual') && $property->isVirtual()) {
+            continue;
+        }
+
+        $resolvedType = resolve_property_type($property);
+
+        if ($resolvedType !== null) {
+            $fieldTypes[$property->getName()] = $resolvedType;
+        }
+    }
+
+    return $fieldTypes;
+}
+
+function resolve_property_type(ReflectionProperty $property): ?string
+{
+    $type = $property->getType();
+
+    if ($type instanceof ReflectionNamedType) {
+        $resolvedType = $type->getName();
+
+        if ($type->allowsNull() && $resolvedType !== 'null') {
+            return $resolvedType . '|null';
+        }
+
+        return $resolvedType;
+    }
+
+    if ($type instanceof ReflectionUnionType) {
+        $resolvedTypes = [];
+
+        foreach ($type->getTypes() as $namedType) {
+            if ($namedType instanceof ReflectionNamedType) {
+                $resolvedTypes[] = $namedType->getName();
+            }
+        }
+
+        $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+        return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+    }
+
+    return null;
+}
+
 function serialize_component_data(string $componentClass, array $item): ?array
 {
     if (
@@ -2006,6 +2587,15 @@ foreach ((array) $candidateClasses as $candidateClass) {
         'class' => $candidateClass,
         'label' => short_class_name($candidateClass),
         'data' => serialize_component_data($candidateClass, is_array($item) ? $item : []) ?? [],
+        'fieldTypes' => is_object($gameObject = build_dummy_game_object(is_array($item) ? $item : []))
+            ? (function () use ($candidateClass, $gameObject): array {
+                try {
+                    return extract_component_field_types(new $candidateClass($gameObject));
+                } catch (Throwable) {
+                    return [];
+                }
+            })()
+            : [],
     ];
 }
 
@@ -2050,6 +2640,136 @@ PHP;
         return is_array($definitions) ? $definitions : [];
     }
 
+    private function extractFallbackSerializableComponentData(ReflectionClass $reflection): array
+    {
+        $data = [];
+        $defaults = $reflection->getDefaultProperties();
+
+        foreach ($reflection->getProperties() as $property) {
+            if (!$this->isSerializableComponentProperty($property) || $property->isStatic()) {
+                continue;
+            }
+
+            $propertyName = $property->getName();
+
+            if (!array_key_exists($propertyName, $defaults)) {
+                continue;
+            }
+
+            $data[$propertyName] = $this->normalizeEditorValue($defaults[$propertyName]);
+        }
+
+        return $data;
+    }
+
+    private function extractFallbackComponentFieldTypes(ReflectionClass $reflection): array
+    {
+        $fieldTypes = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            if (!$this->isSerializableComponentProperty($property) || $property->isStatic()) {
+                continue;
+            }
+
+            $resolvedType = $this->resolveReflectionPropertyType($property);
+
+            if ($resolvedType !== null) {
+                $fieldTypes[$property->getName()] = $resolvedType;
+            }
+        }
+
+        return $fieldTypes;
+    }
+
+    private function isSerializableComponentProperty(ReflectionProperty $property): bool
+    {
+        return $property->isPublic()
+            || $property->getAttributes('Sendama\\Engine\\Core\\Behaviours\\Attributes\\SerializeField') !== [];
+    }
+
+    private function resolveReflectionPropertyType(ReflectionProperty $property): ?string
+    {
+        $type = $property->getType();
+
+        if ($type instanceof ReflectionNamedType) {
+            $resolvedType = $type->getName();
+
+            if ($type->allowsNull() && $resolvedType !== 'null') {
+                return $resolvedType . '|null';
+            }
+
+            return $resolvedType;
+        }
+
+        if ($type instanceof ReflectionUnionType) {
+            $resolvedTypes = [];
+
+            foreach ($type->getTypes() as $namedType) {
+                if ($namedType instanceof ReflectionNamedType) {
+                    $resolvedTypes[] = $namedType->getName();
+                }
+            }
+
+            $resolvedTypes = array_values(array_unique(array_filter($resolvedTypes)));
+
+            return $resolvedTypes !== [] ? implode('|', $resolvedTypes) : null;
+        }
+
+        return null;
+    }
+
+    private function normalizeEditorValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            $normalized = [];
+
+            foreach ($value as $key => $item) {
+                $normalized[$key] = $this->normalizeEditorValue($item);
+            }
+
+            return $normalized;
+        }
+
+        if ($value instanceof \UnitEnum) {
+            return $value instanceof \BackedEnum ? $value->value : $value->name;
+        }
+
+        if (!is_object($value)) {
+            return $value;
+        }
+
+        if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
+            return [
+                'x' => $this->normalizeEditorValue($value->getX()),
+                'y' => $this->normalizeEditorValue($value->getY()),
+            ];
+        }
+
+        if (method_exists($value, 'getName')) {
+            try {
+                return $value->getName();
+            } catch (Throwable) {
+            }
+        }
+
+        if (method_exists($value, '__serialize')) {
+            try {
+                $serialized = $value->__serialize();
+
+                return is_array($serialized)
+                    ? $this->normalizeEditorValue($serialized)
+                    : $this->normalizeEditorValue((array) $serialized);
+            } catch (Throwable) {
+            }
+        }
+
+        if ($value instanceof \Stringable) {
+            return (string) $value;
+        }
+
+        return get_class($value);
+    }
+
     private function buildUniqueComponentMenuLabel(string $baseLabel, string $componentClass, array &$usedLabels): string
     {
         if (!isset($usedLabels[$baseLabel])) {
@@ -2091,6 +2811,10 @@ PHP;
 
         if (array_key_exists('data', $componentDefinition) && is_array($componentDefinition['data'])) {
             $componentEntry['data'] = $componentDefinition['data'];
+        }
+
+        if (array_key_exists('fieldTypes', $componentDefinition) && is_array($componentDefinition['fieldTypes'])) {
+            $componentEntry['__editorFieldTypes'] = $componentDefinition['fieldTypes'];
         }
 
         $inspectionValue['components'][] = $componentEntry;
@@ -2407,16 +3131,57 @@ PHP;
 
         $this->selectedControlIndex = $index;
         $this->applyControlSelection();
+
+        if (!$this->isSelectedComponentHeader($this->getSelectedControl())) {
+            $this->isComponentMoveModeActive = false;
+        }
+
         $this->refreshContent();
     }
 
-    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
+    private function resolveControlIndexFromPoint(int $x, int $y): ?int
     {
-        if ($texturePath === 'None') {
-            return ['[unavailable]'];
+        $contentIndex = $this->resolveContentIndexFromPointY($y);
+
+        if (!is_int($contentIndex)) {
+            return null;
         }
 
-        if ((int) $size['x'] <= 0 || (int) $size['y'] <= 0) {
+        $controlIndex = $this->lineControlIndexes[$contentIndex] ?? null;
+
+        return is_int($controlIndex) ? $controlIndex : null;
+    }
+
+    private function resolveSelectedContentIndex(): ?int
+    {
+        if ($this->selectedControlIndex === null) {
+            return null;
+        }
+
+        foreach ($this->lineControlIndexes as $contentIndex => $controlIndex) {
+            if ($controlIndex === $this->selectedControlIndex) {
+                return $contentIndex;
+            }
+        }
+
+        return null;
+    }
+
+    private function registerControlClickAndCheckDoubleClick(int $controlIndex): bool
+    {
+        $now = microtime(true);
+        $isDoubleClick = $this->lastClickedControlIndex === $controlIndex
+            && ($now - $this->lastClickedControlAt) <= self::DOUBLE_CLICK_THRESHOLD_SECONDS;
+
+        $this->lastClickedControlIndex = $controlIndex;
+        $this->lastClickedControlAt = $now;
+
+        return $isDoubleClick;
+    }
+
+    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size, bool $naturalSizeFallback = true): array
+    {
+        if ($texturePath === 'None') {
             return ['[unavailable]'];
         }
 
@@ -2438,17 +3203,35 @@ PHP;
             return ['[unavailable]'];
         }
 
+        $offsetX = max(0, (int) ($offset['x'] ?? 0));
+        $offsetY = max(0, (int) ($offset['y'] ?? 0));
+        $previewWidth = (int) ($size['x'] ?? 0);
+        $previewHeight = (int) ($size['y'] ?? 0);
+
+        if ($naturalSizeFallback && $previewWidth <= 0) {
+            $previewWidth = $this->resolveTextureRowWidth($textureRows) - $offsetX;
+        }
+
+        if ($naturalSizeFallback && $previewHeight <= 0) {
+            $previewHeight = count($textureRows) - $offsetY;
+        }
+
+        if (!$naturalSizeFallback) {
+            $previewWidth = max(1, $previewWidth);
+            $previewHeight = max(1, $previewHeight);
+        }
+
+        if ($previewWidth <= 0 || $previewHeight <= 0) {
+            return ['[unavailable]'];
+        }
+
         if (count($textureRows) <= 1) {
             $textureRows = $this->expandSingleLineTexture(
                 $textureRows[0] ?? '',
-                (int) $size['x']
+                $previewWidth
             );
         }
 
-        $previewWidth = (int) $size['x'];
-        $previewHeight = (int) $size['y'];
-        $offsetX = max(0, (int) $offset['x']);
-        $offsetY = max(0, (int) $offset['y']);
         $previewLines = [];
 
         for ($rowIndex = 0; $rowIndex < $previewHeight; $rowIndex++) {
@@ -2463,6 +3246,41 @@ PHP;
         }
 
         return $previewLines === [] ? ['[unavailable]'] : $previewLines;
+    }
+
+    private function registerTexturePreview(
+        PathInputControl $textureControl,
+        VectorInputControl $sizeControl,
+        PreviewWindowControl $previewControl,
+        ?VectorInputControl $offsetControl = null,
+        bool $naturalSizeFallback = true,
+    ): void {
+        $this->texturePreviewRegistrations[] = [
+            'texture' => $textureControl,
+            'size' => $sizeControl,
+            'preview' => $previewControl,
+            'offset' => $offsetControl,
+            'naturalSizeFallback' => $naturalSizeFallback,
+        ];
+    }
+
+    private function resolveInspectableSize(array $item): array
+    {
+        $size = $this->normalizeVector($item['size'] ?? null);
+
+        if ($this->isGuiTextureItem($item)) {
+            return $this->normalizeGuiTextureSize($size);
+        }
+
+        return $size;
+    }
+
+    private function normalizeGuiTextureSize(array $size): array
+    {
+        return [
+            'x' => max(1, (int) ($size['x'] ?? 0)),
+            'y' => max(1, (int) ($size['y'] ?? 0)),
+        ];
     }
 
     private function resolveDisplayType(array $target, array $item): string
@@ -2523,6 +3341,176 @@ PHP;
         return null;
     }
 
+    private function isGuiTextureItem(array $item): bool
+    {
+        $type = $item['type'] ?? null;
+
+        if (!is_string($type) || $type === '') {
+            return false;
+        }
+
+        $normalizedType = ltrim($type, '\\');
+        $normalizedType = preg_replace('/::class$/', '', $normalizedType) ?? $normalizedType;
+
+        return $normalizedType === self::GUI_TEXTURE_TYPE;
+    }
+
+    private function resolveGuiTextureColorOptions(): array
+    {
+        return self::GUI_TEXTURE_COLOR_OPTIONS;
+    }
+
+    private function normalizeGuiTextureColor(mixed $value): string
+    {
+        if (enum_exists(EngineColor::class) && $value instanceof EngineColor) {
+            return $value->getPhoneticName();
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return 'White';
+        }
+
+        $normalizedColor = strtoupper(str_replace([' ', '-'], '_', trim($value)));
+
+        if (enum_exists(EngineColor::class)) {
+            foreach (EngineColor::cases() as $color) {
+                $normalizedCaseName = strtoupper($color->name);
+                $normalizedPhoneticName = strtoupper(str_replace([' ', '-'], '_', $color->getPhoneticName()));
+                $normalizedEscapeValue = strtoupper(trim($color->value));
+
+                if (
+                    $normalizedColor === $normalizedCaseName
+                    || $normalizedColor === $normalizedPhoneticName
+                    || $normalizedColor === $normalizedEscapeValue
+                ) {
+                    return $color === EngineColor::RESET
+                        ? 'White'
+                        : $color->getPhoneticName();
+                }
+            }
+        }
+
+        foreach (self::GUI_TEXTURE_COLOR_OPTIONS as $colorLabel) {
+            if (strtoupper(str_replace([' ', '-'], '_', $colorLabel)) === $normalizedColor) {
+                return $colorLabel;
+            }
+        }
+
+        return 'White';
+    }
+
+    private function resolvePrefabDisplayLabelsByPath(): array
+    {
+        $displayLabelsByPath = [];
+
+        foreach ($this->resolveAvailablePrefabOptions() as $prefabOption) {
+            $path = $prefabOption['path'] ?? null;
+            $label = $prefabOption['display'] ?? null;
+
+            if (is_string($path) && $path !== '' && is_string($label) && $label !== '') {
+                $displayLabelsByPath[$path] = $label;
+            }
+        }
+
+        return $displayLabelsByPath;
+    }
+
+    private function resolveAvailablePrefabOptions(): array
+    {
+        $prefabsDirectory = Path::join($this->resolveAssetsWorkingDirectory(), 'Prefabs');
+
+        if (!is_dir($prefabsDirectory)) {
+            return [];
+        }
+
+        $prefabLoader = new PrefabLoader($this->projectDirectory);
+        $prefabOptions = [];
+        $usedLabels = [];
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($prefabsDirectory, RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+
+            $fileName = $file->getFilename();
+
+            if (!is_string($fileName) || !str_ends_with(strtolower($fileName), '.prefab.php')) {
+                continue;
+            }
+
+            $absolutePath = $file->getPathname();
+            $relativePath = $this->buildRelativePrefabPath($absolutePath);
+
+            if ($relativePath === null) {
+                continue;
+            }
+
+            $prefabData = $prefabLoader->load($absolutePath);
+            $displayName = is_array($prefabData) && is_string($prefabData['name'] ?? null) && $prefabData['name'] !== ''
+                ? $prefabData['name']
+                : basename($relativePath);
+            $displayLabel = $this->buildUniquePrefabOptionLabel(
+                $displayName,
+                basename($relativePath),
+                $usedLabels,
+            );
+
+            $prefabOptions[$displayLabel] = [
+                'path' => $relativePath,
+                'display' => $displayLabel,
+                'name' => $displayName,
+            ];
+        }
+
+        ksort($prefabOptions);
+
+        return $prefabOptions;
+    }
+
+    private function buildRelativePrefabPath(string $absolutePath): ?string
+    {
+        $assetsDirectory = $this->resolveAssetsWorkingDirectory();
+        $normalizedAssetsDirectory = rtrim(str_replace('\\', '/', $assetsDirectory), '/');
+        $normalizedAbsolutePath = str_replace('\\', '/', $absolutePath);
+
+        if (!str_starts_with($normalizedAbsolutePath, $normalizedAssetsDirectory . '/')) {
+            return null;
+        }
+
+        return substr($normalizedAbsolutePath, strlen($normalizedAssetsDirectory) + 1) ?: null;
+    }
+
+    private function buildUniquePrefabOptionLabel(string $displayName, string $fileName, array &$usedLabels): string
+    {
+        $label = $displayName;
+
+        if (!isset($usedLabels[$label])) {
+            $usedLabels[$label] = true;
+            return $label;
+        }
+
+        $label = $displayName . ' (' . $fileName . ')';
+
+        if (!isset($usedLabels[$label])) {
+            $usedLabels[$label] = true;
+            return $label;
+        }
+
+        $suffix = 2;
+
+        while (isset($usedLabels[$label . ' #' . $suffix])) {
+            $suffix++;
+        }
+
+        $label .= ' #' . $suffix;
+        $usedLabels[$label] = true;
+
+        return $label;
+    }
+
     private function hasFileExtension(string $path): bool
     {
         return pathinfo($path, PATHINFO_EXTENSION) !== '';
@@ -2576,6 +3564,22 @@ PHP;
         }
 
         return $rows;
+    }
+
+    private function resolveTextureRowWidth(array $textureRows): int
+    {
+        $maxWidth = 0;
+
+        foreach ($textureRows as $textureRow) {
+            $maxWidth = max(
+                $maxWidth,
+                function_exists('mb_strlen')
+                    ? mb_strlen((string) $textureRow, 'UTF-8')
+                    : strlen((string) $textureRow),
+            );
+        }
+
+        return $maxWidth;
     }
 
     private function humanizeKey(string $key): string
@@ -2729,20 +3733,7 @@ PHP;
 
     private function resolveAssetsWorkingDirectory(): string
     {
-        $workingDirectory = $this->projectDirectory;
-        $assetRoots = [
-            $workingDirectory . '/Assets',
-            $workingDirectory . '/assets',
-            $workingDirectory,
-        ];
-
-        foreach ($assetRoots as $assetRoot) {
-            if (is_dir($assetRoot)) {
-                return $assetRoot;
-            }
-        }
-
-        return $workingDirectory;
+        return Path::resolveAssetsDirectory($this->projectDirectory);
     }
 
 }
