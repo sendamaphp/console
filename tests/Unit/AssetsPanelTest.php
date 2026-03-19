@@ -79,6 +79,7 @@ test('assets panel queues the selected asset for inspection', function () {
             'children' => [],
         ],
         'openInMainPanel' => true,
+        'openInTerminalEditor' => false,
     ])
         ->and($panel->consumeInspectionRequest())->toBeNull();
 });
@@ -111,6 +112,7 @@ test('assets panel queues inspection when selection changes', function () {
             'children' => [],
         ],
         'openInMainPanel' => false,
+        'openInTerminalEditor' => false,
     ]);
 });
 
@@ -138,6 +140,38 @@ test('assets panel reports folders as folder type in inspector payload', functio
             'children' => [],
         ],
         'openInMainPanel' => true,
+        'openInTerminalEditor' => false,
+    ]);
+});
+
+test('assets panel marks activated script files for terminal-editor opening', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-assets-panel-' . uniqid();
+    mkdir($workspace . '/Assets/Scripts', 0777, true);
+    file_put_contents($workspace . '/Assets/Scripts/PlayerController.php', '<?php');
+
+    $panel = new AssetsPanel(
+        width: 40,
+        height: 12,
+        assetsDirectoryPath: $workspace . '/Assets',
+    );
+
+    $panel->expandSelection();
+    $panel->moveSelection(1);
+    $panel->activateSelection();
+
+    expect($panel->consumeInspectionRequest())->toBe([
+        'context' => 'asset',
+        'name' => 'PlayerController.php',
+        'type' => 'File',
+        'value' => [
+            'name' => 'PlayerController.php',
+            'path' => $workspace . '/Assets/Scripts/PlayerController.php',
+            'relativePath' => 'Scripts/PlayerController.php',
+            'isDirectory' => false,
+            'children' => [],
+        ],
+        'openInMainPanel' => true,
+        'openInTerminalEditor' => true,
     ]);
 });
 
@@ -342,5 +376,6 @@ test('assets panel activates the selected row on double click', function () {
             'children' => [],
         ],
         'openInMainPanel' => true,
+        'openInTerminalEditor' => false,
     ]);
 });

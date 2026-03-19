@@ -37,6 +37,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
     private const string MOVE_ROW_SEQUENCE = "\033[30;43m";
     private const string MOVE_ROW_FOCUSED_SEQUENCE = "\033[5;30;43m";
     private const string GAME_OBJECT_TYPE = 'Sendama\\Engine\\Core\\GameObject';
+    private const string GUI_TEXTURE_TYPE = 'Sendama\\Engine\\UI\\GUITexture\\GUITexture';
     private const string LABEL_TYPE = 'Sendama\\Engine\\UI\\Label\\Label';
     private const string TEXT_TYPE = 'Sendama\\Engine\\UI\\Text\\Text';
 
@@ -1047,7 +1048,7 @@ class HierarchyPanel extends Widget implements ObservableInterface
 
     private function showAddUiElementModal(): void
     {
-        $this->addUiElementModal->show(['Text', 'Label']);
+        $this->addUiElementModal->show(['Text', 'Label', 'GUITexture']);
         $this->addObjectModal->hide();
         $this->addPlacementModal->hide();
         $this->deleteConfirmModal->hide();
@@ -1250,6 +1251,15 @@ class HierarchyPanel extends Widget implements ObservableInterface
                 'position' => ['x' => 0, 'y' => 0],
                 'size' => ['x' => 1, 'y' => 1],
                 'text' => $instanceName,
+            ],
+            'GUITexture' => [
+                'type' => self::GUI_TEXTURE_TYPE,
+                'name' => $instanceName,
+                'tag' => 'UI',
+                'position' => ['x' => 0, 'y' => 0],
+                'size' => ['x' => 1, 'y' => 1],
+                'texture' => 'None',
+                'color' => 'White',
             ],
             default => [],
         };

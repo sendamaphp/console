@@ -2172,10 +2172,10 @@ class MainPanel extends Widget
             return [];
         }
 
-        $spriteRenderLines = $this->buildSpriteRenderLines($item);
+        $textureRenderLines = $this->buildTextureRenderLines($item);
 
-        if ($spriteRenderLines !== []) {
-            return $spriteRenderLines;
+        if ($textureRenderLines !== []) {
+            return $textureRenderLines;
         }
 
         if (is_string($item['text'] ?? null) && $item['text'] !== '') {
@@ -2286,30 +2286,24 @@ class MainPanel extends Widget
         return max(1, $coordinate) - 1;
     }
 
-    private function buildSpriteRenderLines(array $item): array
+    private function buildTextureRenderLines(array $item): array
     {
-        $sprite = is_array($item['sprite'] ?? null) ? $item['sprite'] : [];
-        $texture = is_array($sprite['texture'] ?? null) ? $sprite['texture'] : [];
-        $texturePath = is_string($texture['path'] ?? null) && $texture['path'] !== ''
-            ? $texture['path']
-            : null;
+        $textureSource = $this->resolveTextureRenderSource($item);
 
-        if ($texturePath === null) {
+        if (!is_array($textureSource)) {
             return [];
         }
 
-        $offset = $this->normalizeVector($texture['position'] ?? null);
-        $size = $this->normalizeVector($texture['size'] ?? null);
-
-        return $this->buildTexturePreviewLines($texturePath, $offset, $size);
+        return $this->buildTexturePreviewLines(
+            $textureSource['path'],
+            $textureSource['offset'],
+            $textureSource['size'],
+            (bool) ($textureSource['naturalSizeFallback'] ?? true),
+        );
     }
 
-    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
+    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size, bool $naturalSizeFallback = true): array
     {
-        if ((int) $size['x'] <= 0 || (int) $size['y'] <= 0) {
-            return [];
-        }
-
         $resolvedTextureFilePath = $this->resolveAssetFilePath($texturePath, 'texture');
 
         if ($resolvedTextureFilePath === null) {
@@ -2328,17 +2322,35 @@ class MainPanel extends Widget
             return [];
         }
 
+        $offsetX = max(0, (int) ($offset['x'] ?? 0));
+        $offsetY = max(0, (int) ($offset['y'] ?? 0));
+        $previewWidth = (int) ($size['x'] ?? 0);
+        $previewHeight = (int) ($size['y'] ?? 0);
+
+        if ($naturalSizeFallback && $previewWidth <= 0) {
+            $previewWidth = $this->resolveTextureRowWidth($textureRows) - $offsetX;
+        }
+
+        if ($naturalSizeFallback && $previewHeight <= 0) {
+            $previewHeight = count($textureRows) - $offsetY;
+        }
+
+        if (!$naturalSizeFallback) {
+            $previewWidth = max(1, $previewWidth);
+            $previewHeight = max(1, $previewHeight);
+        }
+
+        if ($previewWidth <= 0 || $previewHeight <= 0) {
+            return [];
+        }
+
         if (count($textureRows) <= 1) {
             $textureRows = $this->expandSingleLineTexture(
                 $textureRows[0] ?? '',
-                (int) $size['x'],
+                $previewWidth,
             );
         }
 
-        $previewWidth = (int) $size['x'];
-        $previewHeight = (int) $size['y'];
-        $offsetX = max(0, (int) $offset['x']);
-        $offsetY = max(0, (int) $offset['y']);
         $previewLines = [];
 
         for ($rowIndex = 0; $rowIndex < $previewHeight; $rowIndex++) {
@@ -2604,6 +2616,63 @@ class MainPanel extends Widget
         }
 
         return $rows;
+    }
+
+    private function resolveTextureRowWidth(array $textureRows): int
+    {
+        $maxWidth = 0;
+
+        foreach ($textureRows as $textureRow) {
+            $maxWidth = max(
+                $maxWidth,
+                function_exists('mb_strlen')
+                    ? mb_strlen((string) $textureRow, 'UTF-8')
+                    : strlen((string) $textureRow),
+            );
+        }
+
+        return $maxWidth;
+    }
+
+    private function resolveTextureRenderSource(array $item): ?array
+    {
+        $sprite = is_array($item['sprite'] ?? null) ? $item['sprite'] : [];
+        $texture = is_array($sprite['texture'] ?? null) ? $sprite['texture'] : [];
+        $spriteTexturePath = is_string($texture['path'] ?? null) && trim((string) $texture['path']) !== ''
+            ? trim((string) $texture['path'])
+            : null;
+
+        if ($spriteTexturePath !== null && strcasecmp($spriteTexturePath, 'None') !== 0) {
+            return [
+                'path' => $spriteTexturePath,
+                'offset' => $this->normalizeVector($texture['position'] ?? null),
+                'size' => $this->normalizeVector($texture['size'] ?? null),
+                'naturalSizeFallback' => true,
+            ];
+        }
+
+        $directTexturePath = is_string($item['texture'] ?? null) && trim((string) $item['texture']) !== ''
+            ? trim((string) $item['texture'])
+            : null;
+
+        if ($directTexturePath !== null && strcasecmp($directTexturePath, 'None') !== 0) {
+            return [
+                'path' => $directTexturePath,
+                'offset' => ['x' => 0, 'y' => 0],
+                'size' => $this->normalizeTextureElementSize($this->normalizeVector($item['size'] ?? null)),
+                'naturalSizeFallback' => false,
+            ];
+        }
+
+        return null;
+    }
+
+    private function normalizeTextureElementSize(array $size): array
+    {
+        return [
+            'x' => max(1, (int) ($size['x'] ?? 0)),
+            'y' => max(1, (int) ($size['y'] ?? 0)),
+        ];
     }
 
     private function applySceneObjectMutation(string $path, array $value): bool

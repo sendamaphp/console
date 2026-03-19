@@ -399,6 +399,11 @@ PHP
                 'speed' => 3,
                 'spawnOffset' => ['x' => 2, 'y' => 1],
             ],
+            '__editorFieldTypes' => [
+                'enabledInEditor' => 'bool',
+                'speed' => 'int',
+                'spawnOffset' => 'Sendama\\Engine\\Core\\Vector2|array',
+            ],
         ],
     ]);
 });

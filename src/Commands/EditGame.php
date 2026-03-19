@@ -49,6 +49,7 @@ class EditGame extends Command
             : Path::normalize($directory);
 
         $gameSettings = GameSettings::loadFromDirectory($directory);
+
         $editor = new Editor(name: $gameSettings->name, workingDirectory: $directory);
         $editor->run();
 

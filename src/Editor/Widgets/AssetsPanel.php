@@ -145,6 +145,7 @@ class AssetsPanel extends Widget
             'type' => ($selectedAsset['isDirectory'] ?? false) ? 'Folder' : 'File',
             'value' => $selectedAsset,
             'openInMainPanel' => $openInMainPanel,
+            'openInTerminalEditor' => $openInMainPanel && $this->isScriptAsset($selectedAsset),
         ];
     }
 
@@ -451,6 +452,30 @@ class AssetsPanel extends Widget
         $relativePath = substr($path, strlen($this->assetsDirectoryPath));
 
         return ltrim($relativePath ?: basename($path), DIRECTORY_SEPARATOR);
+    }
+
+    private function isScriptAsset(array $asset): bool
+    {
+        if (($asset['isDirectory'] ?? false) === true) {
+            return false;
+        }
+
+        $assetPath = is_string($asset['path'] ?? null)
+            ? $asset['path']
+            : (is_string($asset['relativePath'] ?? null) ? $asset['relativePath'] : null);
+        $relativePath = is_string($asset['relativePath'] ?? null) ? $asset['relativePath'] : '';
+
+        if (!is_string($assetPath) || $assetPath === '') {
+            return false;
+        }
+
+        if (strtolower((string) pathinfo($assetPath, PATHINFO_EXTENSION)) !== 'php') {
+            return false;
+        }
+
+        $normalizedRelativePath = ltrim(str_replace('\\', '/', strtolower($relativePath)), '/');
+
+        return str_starts_with($normalizedRelativePath, 'scripts/');
     }
 
     private function refreshContent(): void

@@ -190,6 +190,43 @@ test('hierarchy panel queues the scene root for inspection', function () {
     ]);
 });
 
+test('hierarchy panel offers gui textures in the ui element creation workflow', function () {
+    $panel = new HierarchyPanel(
+        width: 40,
+        height: 12,
+        sceneName: 'level01',
+        hierarchy: [],
+    );
+
+    $showAddUiElementModal = new ReflectionMethod(HierarchyPanel::class, 'showAddUiElementModal');
+    $showAddUiElementModal->setAccessible(true);
+    $showAddUiElementModal->invoke($panel);
+
+    $addUiElementModal = new ReflectionProperty(HierarchyPanel::class, 'addUiElementModal');
+    $modalOptions = new ReflectionProperty(\Sendama\Console\Editor\Widgets\OptionListModal::class, 'options');
+    $handleAddUiElementSelection = new ReflectionMethod(HierarchyPanel::class, 'handleAddUiElementSelection');
+    $addUiElementModal->setAccessible(true);
+    $modalOptions->setAccessible(true);
+    $handleAddUiElementSelection->setAccessible(true);
+
+    expect($modalOptions->getValue($addUiElementModal->getValue($panel)))->toContain('GUITexture');
+
+    $handleAddUiElementSelection->invoke($panel, 'GUITexture');
+
+    expect($panel->consumeCreationRequest())->toBe([
+        'value' => [
+            'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+            'name' => 'GUITexture #1',
+            'tag' => 'UI',
+            'position' => ['x' => 0, 'y' => 0],
+            'size' => ['x' => 1, 'y' => 1],
+            'texture' => 'None',
+            'color' => 'White',
+        ],
+        'parentPath' => null,
+    ]);
+});
+
 test('hierarchy panel queues default game objects from the add workflow', function () {
     $panel = new HierarchyPanel(
         width: 40,

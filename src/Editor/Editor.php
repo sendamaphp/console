@@ -59,6 +59,9 @@ final class Editor implements ObservableInterface
     use ObservableTrait;
 
     const int FPS = 60;
+    private const float ASSET_WATCH_INTERVAL_SECONDS = 0.5;
+    private const string TMUX_GAME_CHILD_ENV_KEY = 'SENDAMA_TMUX_CHILD';
+    private const int TMUX_PLAY_PANE_PERCENT = 40;
     /**
      * @var bool Whether the editor is currently running.
      */
@@ -152,6 +155,10 @@ final class Editor implements ObservableInterface
     protected ?ProjectNormalizer $projectNormalizer = null;
     protected array $projectDiscrepancies = [];
     protected Snackbar $snackbar;
+    protected ?string $tmuxPlayPaneId = null;
+    protected ?string $tmuxPreviousStatusValue = null;
+    protected array $watchedAssetSnapshot = [];
+    protected float $lastAssetWatchPollAt = 0.0;
 
     /**
      * @param string $name
@@ -179,6 +186,8 @@ final class Editor implements ObservableInterface
             $this->sceneWriter = new SceneWriter();
             $this->prefabWriter = new PrefabWriter();
             $this->initializeWidgets();
+            $this->watchedAssetSnapshot = $this->captureWatchedAssetSnapshot();
+            $this->lastAssetWatchPollAt = microtime(true);
             $this->initializeEditorStates();
             $this->initializeProjectIntegrityCheck();
             $this->splashScreen = new SplashScreen(
@@ -318,6 +327,7 @@ final class Editor implements ObservableInterface
      */
     public function stop(): void
     {
+        $this->stopManagedTmuxPlayPane();
         Console::reset();
 
         Debug::info("Stopping editor");
@@ -344,6 +354,7 @@ final class Editor implements ObservableInterface
      */
     public function finish(): void
     {
+        $this->stopManagedTmuxPlayPane();
         Debug::info("Shutting down editor");
 
         Console::restoreSettings();
@@ -473,6 +484,7 @@ final class Editor implements ObservableInterface
         $this->synchronizeInspectorPrefabChanges();
         $this->synchronizeInspectorAssetChanges();
         $this->synchronizeInspectorPanel();
+        $this->synchronizeWatchedAssetChanges();
 
         $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
     }
@@ -701,8 +713,14 @@ final class Editor implements ObservableInterface
     {
         if ($this->editorState instanceof PlayState) {
             $this->setState($this->editState);
+            $this->stopManagedTmuxPlayPane();
         } else {
             $this->setState($this->playState);
+
+            if ($this->canUseTmuxIntegration() && !$this->startManagedTmuxPlayPaneIfAvailable()) {
+                $this->setState($this->editState);
+                $this->pushNotification('Failed to launch the game pane for play mode.', 'error');
+            }
         }
 
         $this->shouldRefreshBackgroundUnderModal = true;
@@ -1259,9 +1277,14 @@ final class Editor implements ObservableInterface
         } elseif (($selectedItem['context'] ?? null) === 'asset') {
             $asset = is_array($selectedItem['value'] ?? null) ? $selectedItem['value'] : null;
             $openInMainPanel = ($selectedItem['openInMainPanel'] ?? false) === true;
+            $openInTerminalEditor = ($selectedItem['openInTerminalEditor'] ?? false) === true;
             $selectedItem = is_array($asset)
                 ? $this->buildAssetInspectionTarget($asset, $openInMainPanel)
                 : $selectedItem;
+
+            if ($openInTerminalEditor && is_array($asset)) {
+                $this->openAssetInConfiguredEditor($asset);
+            }
 
             if ($openInMainPanel && $this->isEditableSpriteAsset($asset)) {
                 $this->mainPanel->loadSpriteAsset($asset);
@@ -1271,6 +1294,48 @@ final class Editor implements ObservableInterface
         }
 
         $this->inspectorPanel->inspectTarget($selectedItem);
+    }
+
+    private function synchronizeWatchedAssetChanges(bool $force = false): void
+    {
+        if (!isset($this->assetsPanel) || !isset($this->inspectorPanel)) {
+            return;
+        }
+
+        $assetsDirectory = $this->resolveWatchedAssetsDirectory();
+        $now = microtime(true);
+
+        if ($assetsDirectory === null) {
+            $this->watchedAssetSnapshot = [];
+            $this->lastAssetWatchPollAt = $now;
+            return;
+        }
+
+        if (
+            !$force
+            && $this->lastAssetWatchPollAt > 0.0
+            && ($now - $this->lastAssetWatchPollAt) < self::ASSET_WATCH_INTERVAL_SECONDS
+        ) {
+            return;
+        }
+
+        $currentSnapshot = $this->captureWatchedAssetSnapshot($assetsDirectory);
+        $previousSnapshot = $this->watchedAssetSnapshot;
+        $this->watchedAssetSnapshot = $currentSnapshot;
+        $this->lastAssetWatchPollAt = $now;
+
+        if ($previousSnapshot === []) {
+            return;
+        }
+
+        $changedAssetPaths = $this->detectChangedWatchedAssetPaths($previousSnapshot, $currentSnapshot);
+
+        if ($changedAssetPaths === []) {
+            return;
+        }
+
+        $this->assetsPanel->reloadAssets();
+        $this->refreshInspectionAfterWatchedAssetChanges($changedAssetPaths);
     }
 
     private function synchronizeInspectorSceneChanges(): void
@@ -1706,6 +1771,308 @@ final class Editor implements ObservableInterface
         if (($assetSyncRequest['clearInspection'] ?? false) === true) {
             $this->inspectorPanel->inspectTarget(null);
         }
+    }
+
+    private function resolveWatchedAssetsDirectory(): ?string
+    {
+        $assetsDirectory = is_string($this->assetsDirectoryPath) && $this->assetsDirectoryPath !== ''
+            ? $this->resolveAbsolutePath($this->assetsDirectoryPath, $this->workingDirectory)
+            : Path::resolveAssetsDirectory($this->workingDirectory);
+
+        if (!is_string($assetsDirectory) || $assetsDirectory === '' || !is_dir($assetsDirectory)) {
+            return null;
+        }
+
+        return Path::normalize($assetsDirectory);
+    }
+
+    private function captureWatchedAssetSnapshot(?string $assetsDirectory = null): array
+    {
+        $resolvedAssetsDirectory = $assetsDirectory ?? $this->resolveWatchedAssetsDirectory();
+
+        if (!is_string($resolvedAssetsDirectory) || $resolvedAssetsDirectory === '' || !is_dir($resolvedAssetsDirectory)) {
+            return [];
+        }
+
+        clearstatcache();
+
+        $snapshot = [
+            $resolvedAssetsDirectory => $this->buildWatchedAssetSignature($resolvedAssetsDirectory, true),
+        ];
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($resolvedAssetsDirectory, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
+        );
+
+        foreach ($iterator as $entry) {
+            $entryPath = Path::normalize($entry->getPathname());
+            $snapshot[$entryPath] = $this->buildWatchedAssetSignature($entryPath, $entry->isDir());
+        }
+
+        ksort($snapshot);
+
+        return $snapshot;
+    }
+
+    private function buildWatchedAssetSignature(string $path, bool $isDirectory): string
+    {
+        $mtime = @filemtime($path);
+
+        if ($isDirectory) {
+            return 'd:' . ($mtime === false ? 'missing' : (string) $mtime);
+        }
+
+        $size = @filesize($path);
+        $signature = sprintf(
+            'f:%s:%s',
+            $mtime === false ? 'missing' : (string) $mtime,
+            $size === false ? 'missing' : (string) $size,
+        );
+
+        if (str_ends_with(strtolower($path), '.php')) {
+            $hash = @md5_file($path);
+
+            if (is_string($hash) && $hash !== '') {
+                $signature .= ':' . $hash;
+            }
+        }
+
+        return $signature;
+    }
+
+    private function detectChangedWatchedAssetPaths(array $previousSnapshot, array $currentSnapshot): array
+    {
+        $changedPaths = [];
+        $allPaths = array_values(array_unique([
+            ...array_keys($previousSnapshot),
+            ...array_keys($currentSnapshot),
+        ]));
+
+        foreach ($allPaths as $path) {
+            if (($previousSnapshot[$path] ?? null) === ($currentSnapshot[$path] ?? null)) {
+                continue;
+            }
+
+            if (is_string($path) && $path !== '') {
+                $changedPaths[] = $path;
+            }
+        }
+
+        sort($changedPaths);
+
+        return $changedPaths;
+    }
+
+    private function refreshInspectionAfterWatchedAssetChanges(array $changedAssetPaths): void
+    {
+        if (!isset($this->inspectorPanel)) {
+            return;
+        }
+
+        $inspectionTarget = $this->inspectorPanel->getInspectionTarget();
+
+        if (!is_array($inspectionTarget)) {
+            return;
+        }
+
+        $hasChangedPhpAsset = $this->hasChangedPhpAsset($changedAssetPaths);
+
+        switch ($inspectionTarget['context'] ?? null) {
+            case 'hierarchy':
+                if (!$hasChangedPhpAsset || !$this->refreshLoadedSceneComponentMetadata()) {
+                    return;
+                }
+
+                $path = is_string($inspectionTarget['path'] ?? null) ? $inspectionTarget['path'] : null;
+
+                if (!is_string($path) || $path === '') {
+                    return;
+                }
+
+                $value = $this->findHierarchyNodeByPath($path);
+
+                if (!is_array($value)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->hierarchyPanel->selectPath($path);
+                $this->mainPanel->selectSceneObject($path);
+                $this->inspectorPanel->inspectTarget([
+                    'context' => 'hierarchy',
+                    'name' => $value['name'] ?? 'Unnamed Object',
+                    'type' => $this->resolveHierarchyInspectionType($value),
+                    'path' => $path,
+                    'value' => $value,
+                ]);
+                return;
+
+            case 'scene':
+                if (!$hasChangedPhpAsset || !$this->refreshLoadedSceneComponentMetadata()) {
+                    return;
+                }
+
+                $this->hierarchyPanel->selectPath('scene');
+                $this->inspectorPanel->inspectTarget($this->buildSceneInspectionTarget());
+                return;
+
+            case 'prefab':
+                $prefabPath = $this->resolveInspectionAssetAbsolutePath($inspectionTarget);
+
+                if (
+                    !is_string($prefabPath)
+                    || $prefabPath === ''
+                    || (!$hasChangedPhpAsset && !$this->didWatchedAssetChange($prefabPath, $changedAssetPaths))
+                ) {
+                    return;
+                }
+
+                $asset = $this->resolveAssetEntryByAbsolutePath($prefabPath);
+
+                if (!is_array($asset)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $prefabInspectionTarget = $this->buildPrefabInspectionTarget($asset);
+
+                if (!is_array($prefabInspectionTarget)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->inspectorPanel->inspectTarget($prefabInspectionTarget);
+                return;
+
+            case 'asset':
+                $assetPath = $this->resolveInspectionAssetAbsolutePath($inspectionTarget);
+
+                if (
+                    !is_string($assetPath)
+                    || $assetPath === ''
+                    || !$this->didWatchedAssetChange($assetPath, $changedAssetPaths)
+                ) {
+                    return;
+                }
+
+                $asset = $this->resolveAssetEntryByAbsolutePath($assetPath);
+
+                if (!is_array($asset)) {
+                    $this->inspectorPanel->inspectTarget(null);
+                    return;
+                }
+
+                $this->inspectorPanel->inspectTarget($this->buildAssetInspectionTarget($asset));
+                return;
+        }
+    }
+
+    private function hasChangedPhpAsset(array $changedAssetPaths): bool
+    {
+        foreach ($changedAssetPaths as $path) {
+            if (is_string($path) && str_ends_with(strtolower($path), '.php')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function didWatchedAssetChange(string $absolutePath, array $changedAssetPaths): bool
+    {
+        $normalizedPath = Path::normalize($absolutePath);
+
+        foreach ($changedAssetPaths as $changedPath) {
+            if (!is_string($changedPath) || $changedPath === '') {
+                continue;
+            }
+
+            if (Path::normalize($changedPath) === $normalizedPath) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function resolveInspectionAssetAbsolutePath(array $inspectionTarget): ?string
+    {
+        $candidatePath = $inspectionTarget['asset']['path'] ?? $inspectionTarget['value']['path'] ?? null;
+
+        if (!is_string($candidatePath) || $candidatePath === '') {
+            return null;
+        }
+
+        return Path::normalize($candidatePath);
+    }
+
+    private function resolveAssetEntryByAbsolutePath(string $absolutePath): ?array
+    {
+        if (!isset($this->assetsPanel)) {
+            return null;
+        }
+
+        $normalizedAbsolutePath = Path::normalize($absolutePath);
+        $this->assetsPanel->selectAssetByAbsolutePath($normalizedAbsolutePath);
+        $this->assetsPanel->consumeInspectionRequest();
+        $selectedAsset = $this->assetsPanel->getSelectedAssetEntry();
+        $selectedAssetPath = is_string($selectedAsset['path'] ?? null)
+            ? Path::normalize($selectedAsset['path'])
+            : null;
+
+        return $selectedAssetPath === $normalizedAbsolutePath
+            ? $selectedAsset
+            : null;
+    }
+
+    private function refreshLoadedSceneComponentMetadata(): bool
+    {
+        if (
+            !$this->loadedScene instanceof DTOs\SceneDTO
+            || !isset($this->hierarchyPanel)
+            || !isset($this->mainPanel)
+        ) {
+            return false;
+        }
+
+        if (!isset($this->sceneWriter)) {
+            $this->sceneWriter = new SceneWriter();
+        }
+
+        $temporarySceneSeed = tempnam(sys_get_temp_dir(), 'sendama-editor-watch-');
+
+        if (!is_string($temporarySceneSeed) || $temporarySceneSeed === '') {
+            return false;
+        }
+
+        @unlink($temporarySceneSeed);
+        $temporaryScenePath = $temporarySceneSeed . '.scene.php';
+
+        if (file_put_contents($temporaryScenePath, $this->sceneWriter->serialize($this->loadedScene)) === false) {
+            @unlink($temporaryScenePath);
+            return false;
+        }
+
+        try {
+            $refreshedScene = (new SceneLoader($this->workingDirectory))->loadFromPath($temporaryScenePath);
+        } finally {
+            @unlink($temporaryScenePath);
+        }
+
+        if (!$refreshedScene instanceof DTOs\SceneDTO) {
+            return false;
+        }
+
+        $sceneWasDirty = $this->loadedScene->isDirty;
+        $this->loadedScene->hierarchy = $refreshedScene->hierarchy;
+        $this->loadedScene->rawData['hierarchy'] = $this->sceneWriter->snapshot($this->loadedScene)['hierarchy']
+            ?? $this->loadedScene->hierarchy;
+        $this->loadedScene->isDirty = $sceneWasDirty;
+        $this->hierarchyPanel->syncHierarchy($this->loadedScene->hierarchy);
+        $this->mainPanel->setSceneObjects($this->loadedScene->hierarchy);
+        $this->syncScenePanels($sceneWasDirty);
+
+        return true;
     }
 
     private function applyHierarchyMutation(string $path, array $value): bool
@@ -3122,6 +3489,442 @@ final class Editor implements ObservableInterface
         return in_array($extension, ['texture', 'tmap'], true);
     }
 
+    private function openAssetInConfiguredEditor(array $asset): bool
+    {
+        $assetPath = is_string($asset['path'] ?? null) ? $asset['path'] : null;
+
+        if (!is_string($assetPath) || $assetPath === '') {
+            $this->consolePanel->append('[ERROR] - Selected script path could not be resolved.');
+            $this->pushNotification('Selected script path could not be resolved.', 'error');
+            return false;
+        }
+
+        $command = $this->buildExternalEditorCommand($assetPath);
+
+        if ($command === null) {
+            $this->consolePanel->append('[ERROR] - No editor command found. Configure editor.externalEditor or set $VISUAL/$EDITOR.');
+            $this->pushNotification('No editor command found. Configure editor.externalEditor or set $VISUAL/$EDITOR.', 'error');
+            return false;
+        }
+
+        $workingDirectory = dirname($assetPath);
+        $editorMode = $this->resolveExternalEditorMode($command);
+        $shouldBlock = $this->shouldBlockOnExternalEditor($command, $editorMode);
+        $opened = $editorMode === 'terminal'
+            ? (
+                $this->canUseTmuxIntegration()
+                    ? $this->launchCommandInTmuxWindow(
+                        $command,
+                        $workingDirectory,
+                        self::buildTmuxLabel((string) pathinfo($assetPath, PATHINFO_FILENAME), 'sendama-script')
+                    )
+                    : $this->launchForegroundExternalCommand($command, $workingDirectory)
+            )
+            : (
+                $shouldBlock
+                    ? $this->launchForegroundExternalCommand($command, $workingDirectory)
+                    : $this->launchDetachedExternalCommand($command, $workingDirectory)
+            );
+
+        if ($opened) {
+            $this->consolePanel->append('[INFO] - Opened script in editor: ' . ($asset['relativePath'] ?? basename($assetPath)) . '.');
+            return true;
+        }
+
+        $this->consolePanel->append('[ERROR] - Failed to open script in editor.');
+        $this->pushNotification('Failed to open script in editor.', 'error');
+
+        return false;
+    }
+
+    private function buildExternalEditorCommand(string $assetPath): ?string
+    {
+        $configuredEditor = '';
+
+        if (
+            isset($this->settings)
+            && is_string($this->settings->externalEditorCommand)
+            && trim($this->settings->externalEditorCommand) !== ''
+        ) {
+            $configuredEditor = trim($this->settings->externalEditorCommand);
+        } else {
+            $configuredEditor = trim(
+                (string) (
+                    $_ENV['VISUAL']
+                    ?? getenv('VISUAL')
+                    ?? $_ENV['EDITOR']
+                    ?? getenv('EDITOR')
+                    ?? ''
+                )
+            );
+        }
+
+        if ($configuredEditor !== '') {
+            return self::buildEditorCommandFromTemplate($configuredEditor, $assetPath);
+        }
+
+        $fallbackEditor = self::findFirstAvailableCommand(['vim', 'vi', 'nano', 'nvim']);
+
+        if ($fallbackEditor === null) {
+            return null;
+        }
+
+        return $fallbackEditor . ' ' . escapeshellarg($assetPath);
+    }
+
+    private function resolveExternalEditorMode(string $command): string
+    {
+        $configuredMode = isset($this->settings)
+            ? $this->settings->externalEditorMode
+            : EditorSettings::DEFAULT_EXTERNAL_EDITOR_MODE;
+
+        if (in_array($configuredMode, ['terminal', 'gui'], true)) {
+            return $configuredMode;
+        }
+
+        return self::isLikelyGuiEditorCommand($command) ? 'gui' : 'terminal';
+    }
+
+    private function shouldBlockOnExternalEditor(string $command, string $editorMode): bool
+    {
+        if (isset($this->settings) && is_bool($this->settings->externalEditorBlocking)) {
+            return $this->settings->externalEditorBlocking;
+        }
+
+        if ($editorMode === 'terminal') {
+            return true;
+        }
+
+        return preg_match('/(^|\s)(--wait|-w)(\s|$)/', $command) === 1;
+    }
+
+    private function launchForegroundExternalCommand(string $command, string $workingDirectory): bool
+    {
+        $this->suspendTerminalForExternalCommand();
+
+        try {
+            passthru(
+                sprintf(
+                    'cd %s && %s',
+                    escapeshellarg($workingDirectory),
+                    $command,
+                ),
+                $exitCode,
+            );
+        } finally {
+            $this->resumeTerminalAfterExternalCommand();
+        }
+
+        return $exitCode === 0;
+    }
+
+    private function launchDetachedExternalCommand(string $command, string $workingDirectory): bool
+    {
+        exec(
+            sprintf(
+                'sh -lc %s >/dev/null 2>&1 &',
+                escapeshellarg(sprintf(
+                    'cd %s && %s',
+                    escapeshellarg($workingDirectory),
+                    $command,
+                )),
+            ),
+            result_code: $exitCode,
+        );
+
+        return $exitCode === 0;
+    }
+
+    private function suspendTerminalForExternalCommand(): void
+    {
+        Console::disableMouseReporting();
+        Console::cursor()->show();
+        InputManager::disableNonBlockingMode();
+        InputManager::enableEcho();
+    }
+
+    private function resumeTerminalAfterExternalCommand(): void
+    {
+        Console::restoreSettings();
+        $this->refreshTerminalSize(force: true);
+        Console::setName('Sendama Editor | ' . ($this->gameSettings?->name ?? 'Unknown Game'));
+        Console::setSize($this->terminalWidth, $this->terminalHeight);
+        Console::cursor()->hide();
+        Console::enableMouseReporting();
+        InputManager::disableEcho();
+        InputManager::enableNonBlockingMode();
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function startManagedTmuxPlayPaneIfAvailable(): bool
+    {
+        if (!$this->canUseTmuxIntegration()) {
+            return false;
+        }
+
+        $command = $this->buildTmuxPlayCommand();
+
+        if ($command === null) {
+            $this->consolePanel->append('[WARN] - Unable to resolve the Sendama CLI entrypoint for tmux play mode.');
+            return false;
+        }
+
+        $this->stopManagedTmuxPlayPane();
+        $paneCommand = self::buildTmuxSplitPaneCommand($this->workingDirectory, $command);
+        $output = [];
+        $exitCode = 0;
+
+        exec($paneCommand, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            $this->consolePanel->append('[WARN] - Failed to open a tmux pane for play mode.');
+            return false;
+        }
+
+        $paneId = trim(implode("\n", $output));
+
+        if ($paneId === '') {
+            $this->consolePanel->append('[WARN] - Tmux play pane started without returning a pane id.');
+            return false;
+        }
+
+        $this->tmuxPlayPaneId = $paneId;
+        $this->disableTmuxStatusBarForPlayPaneIfNeeded();
+        $this->consolePanel->append('[INFO] - Play mode launched in tmux pane ' . $paneId . '.');
+
+        return true;
+    }
+
+    private function stopManagedTmuxPlayPane(): void
+    {
+        if (is_string($this->tmuxPlayPaneId) && $this->tmuxPlayPaneId !== '' && self::isTmuxInstalled()) {
+            exec(sprintf('tmux kill-pane -t %s 2>/dev/null', escapeshellarg($this->tmuxPlayPaneId)));
+        }
+
+        $this->tmuxPlayPaneId = null;
+        $this->restoreTmuxStatusBarAfterPlayPane();
+    }
+
+    private function disableTmuxStatusBarForPlayPaneIfNeeded(): void
+    {
+        if (
+            !$this->canUseTmuxIntegration()
+            || ($this->gameSettings?->isDebugMode ?? false)
+            || $this->tmuxPreviousStatusValue !== null
+        ) {
+            return;
+        }
+
+        $statusValue = trim((string) shell_exec('tmux show-options -v status 2>/dev/null'));
+
+        if ($statusValue === '') {
+            return;
+        }
+
+        $this->tmuxPreviousStatusValue = $statusValue;
+        exec('tmux set-option status off 2>/dev/null');
+    }
+
+    private function restoreTmuxStatusBarAfterPlayPane(): void
+    {
+        if (
+            !$this->canUseTmuxIntegration()
+            || !is_string($this->tmuxPreviousStatusValue)
+            || $this->tmuxPreviousStatusValue === ''
+        ) {
+            $this->tmuxPreviousStatusValue = null;
+            return;
+        }
+
+        exec(sprintf(
+            'tmux set-option status %s 2>/dev/null',
+            escapeshellarg($this->tmuxPreviousStatusValue),
+        ));
+        $this->tmuxPreviousStatusValue = null;
+    }
+
+    private function buildTmuxPlayCommand(): ?string
+    {
+        $cliEntrypoint = $this->resolveSendamaCliEntrypoint();
+
+        if ($cliEntrypoint === null) {
+            return null;
+        }
+
+        return sprintf(
+            '%s=1 %s %s play --directory %s',
+            self::TMUX_GAME_CHILD_ENV_KEY,
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($cliEntrypoint),
+            escapeshellarg($this->workingDirectory),
+        );
+    }
+
+    private function resolveSendamaCliEntrypoint(): ?string
+    {
+        $candidates = [
+            Path::join(dirname(__DIR__, 2), 'bin', 'sendama'),
+        ];
+        $argvEntrypoint = $_SERVER['argv'][0] ?? null;
+
+        if (is_string($argvEntrypoint) && $argvEntrypoint !== '') {
+            $candidates[] = $this->resolveAbsolutePath($argvEntrypoint, getcwd() ?: $this->workingDirectory);
+        }
+
+        foreach (array_unique($candidates) as $candidate) {
+            if (is_string($candidate) && $candidate !== '' && is_file($candidate)) {
+                return Path::normalize($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private function launchCommandInTmuxWindow(string $command, string $workingDirectory, string $windowName): bool
+    {
+        if (!$this->canUseTmuxIntegration()) {
+            return false;
+        }
+
+        exec(
+            self::buildTmuxNewWindowCommand($windowName, $workingDirectory, $command),
+            result_code: $exitCode,
+        );
+
+        return $exitCode === 0;
+    }
+
+    private function canUseTmuxIntegration(): bool
+    {
+        return self::isTmuxInstalled() && $this->isInsideTmuxSession();
+    }
+
+    private function isInsideTmuxSession(): bool
+    {
+        $tmuxValue = getenv('TMUX');
+
+        return is_string($tmuxValue) && trim($tmuxValue) !== '';
+    }
+
+    private static function isTmuxInstalled(): bool
+    {
+        $tmuxPath = shell_exec('command -v tmux 2>/dev/null');
+
+        return is_string($tmuxPath) && trim($tmuxPath) !== '';
+    }
+
+    private static function findFirstAvailableCommand(array $commands): ?string
+    {
+        foreach ($commands as $command) {
+            if (!is_string($command) || $command === '') {
+                continue;
+            }
+
+            $resolvedCommand = shell_exec('command -v ' . escapeshellarg($command) . ' 2>/dev/null');
+
+            if (is_string($resolvedCommand) && trim($resolvedCommand) !== '') {
+                return $command;
+            }
+        }
+
+        return null;
+    }
+
+    private static function buildEditorCommandFromTemplate(string $commandTemplate, string $assetPath): string
+    {
+        $replacements = [
+            '{path}' => escapeshellarg($assetPath),
+            '{file}' => escapeshellarg($assetPath),
+            '{dir}' => escapeshellarg(dirname($assetPath)),
+            '{name}' => escapeshellarg(basename($assetPath)),
+        ];
+
+        foreach ($replacements as $placeholder => $replacement) {
+            if (str_contains($commandTemplate, $placeholder)) {
+                return strtr($commandTemplate, $replacements);
+            }
+        }
+
+        return $commandTemplate . ' ' . escapeshellarg($assetPath);
+    }
+
+    private static function isLikelyGuiEditorCommand(string $command): bool
+    {
+        $binary = self::extractCommandBinary($command);
+
+        if ($binary === null) {
+            return false;
+        }
+
+        return in_array($binary, [
+            'code',
+            'code-insiders',
+            'codium',
+            'cursor',
+            'fleet',
+            'idea',
+            'phpstorm',
+            'pycharm',
+            'webstorm',
+            'goland',
+            'clion',
+            'rubymine',
+            'zed',
+            'subl',
+            'sublime_text',
+            'mate',
+            'open',
+        ], true);
+    }
+
+    private static function extractCommandBinary(string $command): ?string
+    {
+        $trimmedCommand = ltrim($command);
+
+        if ($trimmedCommand === '') {
+            return null;
+        }
+
+        if (!preg_match('/^([^\s]+)/', $trimmedCommand, $matches)) {
+            return null;
+        }
+
+        return strtolower(basename(trim($matches[1], "'\"")));
+    }
+
+    private static function buildTmuxNewWindowCommand(string $windowName, string $workingDirectory, string $command): string
+    {
+        return sprintf(
+            'tmux new-window -n %s -c %s %s',
+            escapeshellarg($windowName),
+            escapeshellarg($workingDirectory),
+            escapeshellarg($command),
+        );
+    }
+
+    private static function buildTmuxSplitPaneCommand(string $workingDirectory, string $command): string
+    {
+        return sprintf(
+            'tmux split-window -v -d -P -F %s -p %d -c %s %s',
+            escapeshellarg('#{pane_id}'),
+            self::TMUX_PLAY_PANE_PERCENT,
+            escapeshellarg($workingDirectory),
+            escapeshellarg($command),
+        );
+    }
+
+    private static function buildTmuxLabel(string $label, string $fallback): string
+    {
+        $sanitizedLabel = preg_replace('/[^A-Za-z0-9_-]+/', '-', trim($label)) ?? '';
+        $sanitizedLabel = trim($sanitizedLabel, '-_');
+
+        if ($sanitizedLabel === '') {
+            return $fallback;
+        }
+
+        return substr($sanitizedLabel, 0, 30);
+    }
+
     private function saveLoadedScene(): void
     {
         if (!$this->loadedScene instanceof DTOs\SceneDTO) {
@@ -3224,6 +4027,17 @@ final class Editor implements ObservableInterface
             'height' => $this->loadedScene->height,
             'environmentTileMapPath' => $this->loadedScene->environmentTileMapPath,
             'environmentCollisionMapPath' => $this->loadedScene->environmentCollisionMapPath,
+        ];
+    }
+
+    private function buildSceneInspectionTarget(): array
+    {
+        return [
+            'context' => 'scene',
+            'name' => $this->loadedScene?->name ?? 'Scene',
+            'type' => 'Scene',
+            'path' => 'scene',
+            'value' => $this->buildSceneInspectionValue(),
         ];
     }
 

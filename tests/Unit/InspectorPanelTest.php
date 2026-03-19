@@ -425,6 +425,40 @@ test('inspector panel renders hierarchy object controls and renderer preview', f
     }
 });
 
+test('inspector panel renders gui texture controls for gui texture ui elements', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-gui-texture-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/hud.texture', "##\n@@\n");
+
+    $panel = new InspectorPanel(width: 40, height: 18, workingDirectory: $workspace);
+
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'HUD Logo',
+        'type' => 'GUITexture',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+            'name' => 'HUD Logo',
+            'tag' => 'UI',
+            'position' => ['x' => 1, 'y' => 1],
+            'size' => ['x' => 2, 'y' => 2],
+            'texture' => 'Textures/hud',
+            'color' => 'Yellow',
+        ],
+    ]);
+
+    $content = implode("\n", $panel->content);
+
+    expect($content)->toContain('▼ Texture')
+        ->toContain('Texture: Textures/hud')
+        ->toContain('Color: <Yellow>')
+        ->toContain('Preview:')
+        ->toContain('##')
+        ->toContain('@@')
+        ->not->toContain('▼ Renderer');
+});
+
 test('inspector panel enters edit mode when a control is double clicked', function () {
     $panel = new InspectorPanel(width: 48, height: 24);
     $interactionState = new ReflectionProperty(InspectorPanel::class, 'interactionState');

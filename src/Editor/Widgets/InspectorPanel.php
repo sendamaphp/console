@@ -10,6 +10,7 @@ use ReflectionClass;
 use ReflectionNamedType;
 use ReflectionProperty;
 use ReflectionUnionType;
+use Sendama\Engine\IO\Enumerations\Color as EngineColor;
 use Sendama\Console\Editor\PrefabLoader;
 use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
@@ -24,6 +25,7 @@ use Sendama\Console\Editor\Widgets\Controls\PathInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PrefabReferenceInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\SectionControl;
+use Sendama\Console\Editor\Widgets\Controls\SelectInputControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
 use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
 
@@ -61,10 +63,7 @@ class InspectorPanel extends Widget
     protected array $lineControlIndexes = [];
     protected string $interactionState = self::STATE_CONTROL_SELECTION;
     protected InputControlFactory $inputControlFactory;
-    protected ?PathInputControl $rendererTextureControl = null;
-    protected ?VectorInputControl $rendererOffsetControl = null;
-    protected ?VectorInputControl $rendererSizeControl = null;
-    protected ?PreviewWindowControl $rendererPreviewControl = null;
+    protected array $texturePreviewRegistrations = [];
     protected OptionListModal $pathInputActionModal;
     protected FileDialogModal $fileDialogModal;
     protected OptionListModal $addComponentModal;
@@ -88,6 +87,25 @@ class InspectorPanel extends Widget
     protected bool $shouldRefreshModalBackground = false;
     protected ?int $lastClickedControlIndex = null;
     protected float $lastClickedControlAt = 0.0;
+    private const string GUI_TEXTURE_TYPE = 'Sendama\\Engine\\UI\\GUITexture\\GUITexture';
+    private const array GUI_TEXTURE_COLOR_OPTIONS = [
+        'Black',
+        'Dark Gray',
+        'Blue',
+        'Light Blue',
+        'Green',
+        'Light Green',
+        'Cyan',
+        'Light Cyan',
+        'Red',
+        'Light Red',
+        'Purple',
+        'Light Purple',
+        'Brown',
+        'Yellow',
+        'Light Gray',
+        'White',
+    ];
 
     public function __construct(
         array $position = ['x' => 135, 'y' => 1],
@@ -157,10 +175,7 @@ class InspectorPanel extends Widget
         $this->interactionState = self::STATE_CONTROL_SELECTION;
         $this->lastClickedControlIndex = null;
         $this->lastClickedControlAt = 0.0;
-        $this->rendererTextureControl = null;
-        $this->rendererOffsetControl = null;
-        $this->rendererSizeControl = null;
-        $this->rendererPreviewControl = null;
+        $this->texturePreviewRegistrations = [];
         $this->pathInputActionModal->hide();
         $this->fileDialogModal->hide();
         $this->addComponentModal->hide();
@@ -210,6 +225,11 @@ class InspectorPanel extends Widget
         }
 
         $this->refreshContent();
+    }
+
+    public function getInspectionTarget(): ?array
+    {
+        return $this->inspectionTarget;
     }
 
     public function focus(FocusTargetContext $context): void
@@ -718,15 +738,21 @@ class InspectorPanel extends Widget
             ['scale'],
         );
 
+        $sizeControl = null;
+
         if (isset($item['size']) && is_array($item['size'])) {
-            $this->addBoundControl(
-                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
-                ['size'],
-            );
+            $sizeControl = new VectorInputControl('Size', $this->resolveInspectableSize($item), 1);
+            $this->addBoundControl($sizeControl, ['size']);
         }
 
-        $this->addControl($this->addSectionHeader('Renderer'));
-        $this->addRendererControls($item);
+        if ($this->isGuiTextureItem($item)) {
+            $this->addControl($this->addSectionHeader('Texture'));
+            $this->addGuiTextureControls($item, $sizeControl instanceof VectorInputControl ? $sizeControl : null);
+        } else {
+            $this->addControl($this->addSectionHeader('Renderer'));
+            $this->addRendererControls($item);
+        }
+
         $this->addScriptComponents($item['components'] ?? []);
     }
 
@@ -763,15 +789,21 @@ class InspectorPanel extends Widget
             ['scale'],
         );
 
+        $sizeControl = null;
+
         if (isset($item['size']) && is_array($item['size'])) {
-            $this->addBoundControl(
-                new VectorInputControl('Size', $this->normalizeVector($item['size']), 1),
-                ['size'],
-            );
+            $sizeControl = new VectorInputControl('Size', $this->resolveInspectableSize($item), 1);
+            $this->addBoundControl($sizeControl, ['size']);
         }
 
-        $this->addControl($this->addSectionHeader('Renderer'));
-        $this->addRendererControls($item);
+        if ($this->isGuiTextureItem($item)) {
+            $this->addControl($this->addSectionHeader('Texture'));
+            $this->addGuiTextureControls($item, $sizeControl instanceof VectorInputControl ? $sizeControl : null);
+        } else {
+            $this->addControl($this->addSectionHeader('Renderer'));
+            $this->addRendererControls($item);
+        }
+
         $this->addScriptComponents($item['components'] ?? []);
     }
 
@@ -853,29 +885,65 @@ class InspectorPanel extends Widget
         $offset = $this->normalizeVector($texture['position'] ?? null);
         $size = $this->normalizeVector($texture['size'] ?? null);
 
-        $this->rendererTextureControl = new PathInputControl(
+        $textureControl = new PathInputControl(
             'Texture',
             $texturePath,
             $this->resolveAssetsWorkingDirectory(),
             ['texture'],
             1,
         );
-        $this->rendererOffsetControl = new VectorInputControl('Offset', $offset, 1);
-        $this->rendererSizeControl = new VectorInputControl('Size', $size, 1);
-        $this->rendererPreviewControl = new PreviewWindowControl(
+        $offsetControl = new VectorInputControl('Offset', $offset, 1);
+        $sizeControl = new VectorInputControl('Size', $size, 1);
+        $previewControl = new PreviewWindowControl(
             'Preview',
-            $this->buildTexturePreviewLines($texturePath, $offset, $size),
+            $this->buildTexturePreviewLines($texturePath, $offset, $size, true),
             1,
         );
 
-        $this->addBoundControl($this->rendererTextureControl, ['sprite', 'texture', 'path']);
-        $this->addBoundControl($this->rendererOffsetControl, ['sprite', 'texture', 'position']);
-        $this->addBoundControl($this->rendererSizeControl, ['sprite', 'texture', 'size']);
-        $this->addControl($this->rendererPreviewControl);
+        $this->addBoundControl($textureControl, ['sprite', 'texture', 'path']);
+        $this->addBoundControl($offsetControl, ['sprite', 'texture', 'position']);
+        $this->addBoundControl($sizeControl, ['sprite', 'texture', 'size']);
+        $this->addControl($previewControl);
+        $this->registerTexturePreview($textureControl, $sizeControl, $previewControl, $offsetControl, true);
 
         if (array_key_exists('text', $item)) {
             $this->addBoundControl(new TextInputControl('Text', $item['text'], 1), ['text']);
         }
+    }
+
+    private function addGuiTextureControls(array $item, ?VectorInputControl $sizeControl = null): void
+    {
+        $texturePath = is_string($item['texture'] ?? null) && trim($item['texture']) !== ''
+            ? trim((string) $item['texture'])
+            : 'None';
+        $colorOptions = $this->resolveGuiTextureColorOptions();
+        $selectedColor = $this->normalizeGuiTextureColor($item['color'] ?? null);
+        $resolvedSizeControl = $sizeControl ?? new VectorInputControl('Size', $this->normalizeGuiTextureSize($this->normalizeVector($item['size'] ?? null)), 1);
+        $textureControl = new PathInputControl(
+            'Texture',
+            $texturePath,
+            $this->resolveAssetsWorkingDirectory(),
+            ['texture'],
+            1,
+        );
+        $previewControl = new PreviewWindowControl(
+            'Preview',
+            $this->buildTexturePreviewLines($texturePath, ['x' => 0, 'y' => 0], $resolvedSizeControl->getValue(), false),
+            1,
+        );
+
+        $this->addBoundControl($textureControl, ['texture']);
+        $this->addBoundControl(
+            new SelectInputControl(
+                'Color',
+                $colorOptions,
+                in_array($selectedColor, $colorOptions, true) ? $selectedColor : EngineColor::WHITE->getPhoneticName(),
+                1,
+            ),
+            ['color'],
+        );
+        $this->addControl($previewControl);
+        $this->registerTexturePreview($textureControl, $resolvedSizeControl, $previewControl, null, false);
     }
 
     private function addScriptComponents(mixed $components): void
@@ -1266,26 +1334,35 @@ class InspectorPanel extends Widget
 
     private function refreshDerivedControls(): void
     {
-        if (
-            !$this->rendererTextureControl instanceof PathInputControl
-            || !$this->rendererOffsetControl instanceof VectorInputControl
-            || !$this->rendererSizeControl instanceof VectorInputControl
-            || !$this->rendererPreviewControl instanceof PreviewWindowControl
-        ) {
-            return;
+        foreach ($this->texturePreviewRegistrations as $registration) {
+            $textureControl = $registration['texture'] ?? null;
+            $sizeControl = $registration['size'] ?? null;
+            $previewControl = $registration['preview'] ?? null;
+            $offsetControl = $registration['offset'] ?? null;
+            $naturalSizeFallback = (bool) ($registration['naturalSizeFallback'] ?? true);
+
+            if (
+                !$textureControl instanceof PathInputControl
+                || !$sizeControl instanceof VectorInputControl
+                || !$previewControl instanceof PreviewWindowControl
+            ) {
+                continue;
+            }
+
+            $texturePath = (string) $textureControl->getValue();
+            $size = $sizeControl->getValue();
+            $offset = $offsetControl instanceof VectorInputControl
+                ? $offsetControl->getValue()
+                : ['x' => 0, 'y' => 0];
+
+            if (!is_array($size) || !is_array($offset)) {
+                continue;
+            }
+
+            $previewControl->setValue(
+                $this->buildTexturePreviewLines($texturePath, $offset, $size, $naturalSizeFallback)
+            );
         }
-
-        $texturePath = (string) $this->rendererTextureControl->getValue();
-        $offset = $this->rendererOffsetControl->getValue();
-        $size = $this->rendererSizeControl->getValue();
-
-        if (!is_array($offset) || !is_array($size)) {
-            return;
-        }
-
-        $this->rendererPreviewControl->setValue(
-            $this->buildTexturePreviewLines($texturePath, $offset, $size)
-        );
     }
 
     private function applyControlSelection(): void
@@ -3102,13 +3179,9 @@ PHP;
         return $isDoubleClick;
     }
 
-    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size): array
+    private function buildTexturePreviewLines(string $texturePath, array $offset, array $size, bool $naturalSizeFallback = true): array
     {
         if ($texturePath === 'None') {
-            return ['[unavailable]'];
-        }
-
-        if ((int) $size['x'] <= 0 || (int) $size['y'] <= 0) {
             return ['[unavailable]'];
         }
 
@@ -3130,17 +3203,35 @@ PHP;
             return ['[unavailable]'];
         }
 
+        $offsetX = max(0, (int) ($offset['x'] ?? 0));
+        $offsetY = max(0, (int) ($offset['y'] ?? 0));
+        $previewWidth = (int) ($size['x'] ?? 0);
+        $previewHeight = (int) ($size['y'] ?? 0);
+
+        if ($naturalSizeFallback && $previewWidth <= 0) {
+            $previewWidth = $this->resolveTextureRowWidth($textureRows) - $offsetX;
+        }
+
+        if ($naturalSizeFallback && $previewHeight <= 0) {
+            $previewHeight = count($textureRows) - $offsetY;
+        }
+
+        if (!$naturalSizeFallback) {
+            $previewWidth = max(1, $previewWidth);
+            $previewHeight = max(1, $previewHeight);
+        }
+
+        if ($previewWidth <= 0 || $previewHeight <= 0) {
+            return ['[unavailable]'];
+        }
+
         if (count($textureRows) <= 1) {
             $textureRows = $this->expandSingleLineTexture(
                 $textureRows[0] ?? '',
-                (int) $size['x']
+                $previewWidth
             );
         }
 
-        $previewWidth = (int) $size['x'];
-        $previewHeight = (int) $size['y'];
-        $offsetX = max(0, (int) $offset['x']);
-        $offsetY = max(0, (int) $offset['y']);
         $previewLines = [];
 
         for ($rowIndex = 0; $rowIndex < $previewHeight; $rowIndex++) {
@@ -3155,6 +3246,41 @@ PHP;
         }
 
         return $previewLines === [] ? ['[unavailable]'] : $previewLines;
+    }
+
+    private function registerTexturePreview(
+        PathInputControl $textureControl,
+        VectorInputControl $sizeControl,
+        PreviewWindowControl $previewControl,
+        ?VectorInputControl $offsetControl = null,
+        bool $naturalSizeFallback = true,
+    ): void {
+        $this->texturePreviewRegistrations[] = [
+            'texture' => $textureControl,
+            'size' => $sizeControl,
+            'preview' => $previewControl,
+            'offset' => $offsetControl,
+            'naturalSizeFallback' => $naturalSizeFallback,
+        ];
+    }
+
+    private function resolveInspectableSize(array $item): array
+    {
+        $size = $this->normalizeVector($item['size'] ?? null);
+
+        if ($this->isGuiTextureItem($item)) {
+            return $this->normalizeGuiTextureSize($size);
+        }
+
+        return $size;
+    }
+
+    private function normalizeGuiTextureSize(array $size): array
+    {
+        return [
+            'x' => max(1, (int) ($size['x'] ?? 0)),
+            'y' => max(1, (int) ($size['y'] ?? 0)),
+        ];
     }
 
     private function resolveDisplayType(array $target, array $item): string
@@ -3213,6 +3339,64 @@ PHP;
         }
 
         return null;
+    }
+
+    private function isGuiTextureItem(array $item): bool
+    {
+        $type = $item['type'] ?? null;
+
+        if (!is_string($type) || $type === '') {
+            return false;
+        }
+
+        $normalizedType = ltrim($type, '\\');
+        $normalizedType = preg_replace('/::class$/', '', $normalizedType) ?? $normalizedType;
+
+        return $normalizedType === self::GUI_TEXTURE_TYPE;
+    }
+
+    private function resolveGuiTextureColorOptions(): array
+    {
+        return self::GUI_TEXTURE_COLOR_OPTIONS;
+    }
+
+    private function normalizeGuiTextureColor(mixed $value): string
+    {
+        if (enum_exists(EngineColor::class) && $value instanceof EngineColor) {
+            return $value->getPhoneticName();
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return 'White';
+        }
+
+        $normalizedColor = strtoupper(str_replace([' ', '-'], '_', trim($value)));
+
+        if (enum_exists(EngineColor::class)) {
+            foreach (EngineColor::cases() as $color) {
+                $normalizedCaseName = strtoupper($color->name);
+                $normalizedPhoneticName = strtoupper(str_replace([' ', '-'], '_', $color->getPhoneticName()));
+                $normalizedEscapeValue = strtoupper(trim($color->value));
+
+                if (
+                    $normalizedColor === $normalizedCaseName
+                    || $normalizedColor === $normalizedPhoneticName
+                    || $normalizedColor === $normalizedEscapeValue
+                ) {
+                    return $color === EngineColor::RESET
+                        ? 'White'
+                        : $color->getPhoneticName();
+                }
+            }
+        }
+
+        foreach (self::GUI_TEXTURE_COLOR_OPTIONS as $colorLabel) {
+            if (strtoupper(str_replace([' ', '-'], '_', $colorLabel)) === $normalizedColor) {
+                return $colorLabel;
+            }
+        }
+
+        return 'White';
     }
 
     private function resolvePrefabDisplayLabelsByPath(): array
@@ -3380,6 +3564,22 @@ PHP;
         }
 
         return $rows;
+    }
+
+    private function resolveTextureRowWidth(array $textureRows): int
+    {
+        $maxWidth = 0;
+
+        foreach ($textureRows as $textureRow) {
+            $maxWidth = max(
+                $maxWidth,
+                function_exists('mb_strlen')
+                    ? mb_strlen((string) $textureRow, 'UTF-8')
+                    : strlen((string) $textureRow),
+            );
+        }
+
+        return $maxWidth;
     }
 
     private function humanizeKey(string $key): string

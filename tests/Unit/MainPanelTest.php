@@ -152,6 +152,30 @@ test('main panel renders scene objects at their positions on the scene tab', fun
     expect(array_any($panel->content, fn(string $line) => str_contains($line, 'Score: 000')))->toBeTrue();
 });
 
+test('main panel renders gui textures from their texture metadata on the scene tab', function () {
+    $workspace = createMainPanelWorkspace();
+    file_put_contents($workspace . '/Assets/Textures/hud.texture', "HUD\n@@@\n");
+
+    $panel = new MainPanel(
+        width: 40,
+        height: 12,
+        sceneObjects: [
+            [
+                'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+                'name' => 'HUD Logo',
+                'position' => ['x' => 2, 'y' => 1],
+                'size' => ['x' => 3, 'y' => 2],
+                'texture' => 'Textures/hud',
+                'color' => 'Yellow',
+            ],
+        ],
+        workingDirectory: $workspace,
+    );
+
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, 'HUD')))->toBeTrue();
+    expect(array_any($panel->content, fn(string $line) => str_contains($line, '@@@')))->toBeTrue();
+});
+
 test('main panel renders the environment tile map behind scene objects', function () {
     $workspace = createMainPanelWorkspace();
     $panel = new MainPanel(
