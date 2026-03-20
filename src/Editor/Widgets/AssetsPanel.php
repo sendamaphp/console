@@ -5,6 +5,7 @@ namespace Sendama\Console\Editor\Widgets;
 use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Sendama\Console\Debug\Debug;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
 use Sendama\Console\Util\Path;
@@ -22,8 +23,8 @@ class AssetsPanel extends Widget
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
     private const string LEAF_ICON = '•';
-    private const string SELECTED_ROW_SEQUENCE = "\033[30;46m";
-    private const string SELECTED_ROW_FOCUSED_SEQUENCE = "\033[5;30;46m";
+    private const string SELECTED_ROW_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
+    private const string SELECTED_ROW_FOCUSED_SEQUENCE = EditorColorScheme::SELECTED_ROW_FOCUSED_SEQUENCE;
 
     protected array $assetTree = [];
     protected array $visibleAssets = [];

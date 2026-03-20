@@ -351,6 +351,147 @@ PHP
     return $workspace;
 }
 
+function createInspectorCompoundComponentWorkspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-compound-components-' . uniqid();
+    mkdir($workspace . '/Assets/Scripts', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class Range
+    {
+        public function __construct(
+            public int|float $min,
+            public int|float $max,
+            public int|float $step = 1,
+        ) {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+        public function __construct(public ?string $name = null)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?object $sprite = null,
+        ) {
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+    }
+}
+
+namespace Sendama\Engine\Core\Behaviours {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+
+    abstract class Behaviour extends Component
+    {
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+        }
+    }
+}
+
+namespace {
+    require __DIR__ . '/../Assets/Scripts/SchemaProbe.php';
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/Assets/Scripts/SchemaProbe.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Game\Scripts;
+
+use Sendama\Engine\Core\Attributes\Range;
+use Sendama\Engine\Core\Behaviours\Behaviour;
+use Sendama\Engine\Core\GameObject;
+use Sendama\Engine\Core\Vector2;
+
+class CompoundSettings
+{
+    public int $waves = 3;
+    public Vector2 $origin;
+
+    public function __construct()
+    {
+        $this->origin = new Vector2(6, 7);
+    }
+}
+
+class SchemaProbe extends Behaviour
+{
+    #[Range(min: 0, max: 10)]
+    public int $speed = 4;
+
+    /** @var Vector2[] */
+    public array $waypoints = [];
+
+    public CompoundSettings $settings;
+
+    public function __construct(GameObject $gameObject)
+    {
+        parent::__construct($gameObject);
+        $this->waypoints = [
+            new Vector2(1, 2),
+            new Vector2(3, 4),
+        ];
+        $this->settings = new CompoundSettings();
+    }
+}
+PHP
+    );
+
+    return $workspace;
+}
+
 test('inspector panel renders hierarchy object controls and renderer preview', function () {
     $workspace = sys_get_temp_dir() . '/sendama-inspector-panel-' . uniqid();
     mkdir($workspace . '/Assets/Textures', 0777, true);
@@ -457,6 +598,137 @@ test('inspector panel renders gui texture controls for gui texture ui elements',
         ->toContain('##')
         ->toContain('@@')
         ->not->toContain('▼ Renderer');
+});
+
+test('inspector panel filters ui element reference pickers to gui textures when the field is typed as gui texture', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+    $uiElementReferenceOptions = new ReflectionProperty(InspectorPanel::class, 'uiElementReferenceOptions');
+    $uiElementReferenceModal = new ReflectionProperty(InspectorPanel::class, 'uiElementReferenceModal');
+    $uiElementReferenceOptions->setAccessible(true);
+    $uiElementReferenceModal->setAccessible(true);
+
+    $panel->setSceneHierarchy([
+        [
+            'type' => 'Sendama\\Engine\\UI\\Label\\Label',
+            'name' => 'Score',
+            'text' => 'Score: 0',
+        ],
+        [
+            'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+            'name' => 'Heart #1',
+            'texture' => 'Textures/heart.texture',
+        ],
+        [
+            'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+            'name' => 'Heart #2',
+            'texture' => 'Textures/heart.texture',
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Level Manager',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Level Manager',
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\LevelController',
+                    'data' => [
+                        'heart1' => null,
+                    ],
+                    '__editorFieldTypes' => [
+                        'heart1' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture|null',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    selectInspectorControlByLabel($panel, 'Heart1');
+    setInspectorInput('enter');
+    $panel->update();
+
+    /** @var array<string, array{name: string, type: string, display: string}> $options */
+    $options = $uiElementReferenceOptions->getValue($panel);
+    $modal = $uiElementReferenceModal->getValue($panel);
+
+    expect($modal->isVisible())->toBeTrue()
+        ->and(array_values(array_map(
+            static fn(array $option): string => $option['name'],
+            $options,
+        )))->toBe(['Heart #1', 'Heart #2']);
+});
+
+test('inspector panel allows generic ui element fields to pick from all scene ui elements', function () {
+    $panel = new InspectorPanel(width: 48, height: 24);
+    $uiElementReferenceOptions = new ReflectionProperty(InspectorPanel::class, 'uiElementReferenceOptions');
+    $inspectionTarget = new ReflectionProperty(InspectorPanel::class, 'inspectionTarget');
+    $uiElementReferenceOptions->setAccessible(true);
+    $inspectionTarget->setAccessible(true);
+
+    $panel->setSceneHierarchy([
+        [
+            'type' => 'Sendama\\Engine\\UI\\Label\\Label',
+            'name' => 'Score',
+            'text' => 'Score: 0',
+        ],
+        [
+            'type' => 'Sendama\\Engine\\UI\\GUITexture\\GUITexture',
+            'name' => 'Heart #1',
+            'texture' => 'Textures/heart.texture',
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Level Manager',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Level Manager',
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\LevelController',
+                    'data' => [
+                        'statusUi' => null,
+                    ],
+                    '__editorFieldTypes' => [
+                        'statusUi' => 'Sendama\\Engine\\UI\\UIElement|null',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    selectInspectorControlByLabel($panel, 'Status Ui');
+    setInspectorInput('enter');
+    $panel->update();
+
+    /** @var array<string, array{name: string, type: string, display: string}> $options */
+    $options = $uiElementReferenceOptions->getValue($panel);
+    $scoreLabel = array_key_first(array_filter(
+        $options,
+        static fn(array $option): bool => $option['name'] === 'Score',
+    ));
+
+    expect(array_values(array_map(
+        static fn(array $option): string => $option['name'],
+        $options,
+    )))->toBe(['Heart #1', 'Score']);
+
+    expect($scoreLabel)->toBeString();
+
+    $applyUIElementReferenceSelection = new ReflectionMethod(InspectorPanel::class, 'applyUIElementReferenceSelection');
+    $applyUIElementReferenceSelection->setAccessible(true);
+    $applyUIElementReferenceSelection->invoke($panel, $scoreLabel);
+
+    expect($inspectionTarget->getValue($panel)['value']['components'][0]['data']['statusUi'] ?? null)->toBe('Score');
 });
 
 test('inspector panel enters edit mode when a control is double clicked', function () {
@@ -608,10 +880,10 @@ test('inspector panel styles component headers with a white background', functio
     $line = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
     $renderedLine = $decorateContentLine->invoke($panel, $line, null, 3);
 
-    expect($renderedLine)->toContain("\033[30;47m");
+    expect($renderedLine)->toContain("\033[97;100m");
 });
 
-test('inspector panel styles focused section headers with a light blue background', function () {
+test('inspector panel styles focused section headers with the primary accent background', function () {
     $panelWidth = 32;
     $panel = new InspectorPanel(width: $panelWidth, height: 12);
 
@@ -643,7 +915,7 @@ test('inspector panel styles focused section headers with a light blue backgroun
     $line = '|' . str_pad($panel->content[3], $panelWidth - 2) . '|';
     $renderedLine = $decorateContentLine->invoke($panel, $line, null, 3);
 
-    expect($renderedLine)->toContain("\033[30;104m");
+    expect($renderedLine)->toContain("\033[30;101m");
 });
 
 test('inspector panel styles component headers with a warm highlight in component move mode', function () {
@@ -778,14 +1050,14 @@ test('inspector panel cycles focus through controls within the panel', function 
     $typeLine = '|' . str_pad($panel->content[0], $panelWidth - 2) . '|';
     $renderedTypeLine = $decorateContentLine->invoke($panel, $typeLine, null, 0);
 
-    expect($renderedTypeLine)->toContain("\033[30;46m");
+    expect($renderedTypeLine)->toContain("\033[30;101m");
 
     $panel->cycleFocusForward();
 
     $nameLine = '|' . str_pad($panel->content[1], $panelWidth - 2) . '|';
     $renderedNameLine = $decorateContentLine->invoke($panel, $nameLine, null, 1);
 
-    expect($renderedNameLine)->toContain("\033[30;46m");
+    expect($renderedNameLine)->toContain("\033[30;101m");
 });
 
 test('inspector panel cycles focus backward through controls within the panel', function () {
@@ -807,7 +1079,7 @@ test('inspector panel cycles focus backward through controls within the panel', 
     $nameLine = '|' . str_pad($panel->content[1], $panelWidth - 2) . '|';
     $renderedNameLine = $decorateContentLine->invoke($panel, $nameLine, null, 1);
 
-    expect($renderedNameLine)->toContain("\033[30;46m");
+    expect($renderedNameLine)->toContain("\033[30;101m");
 });
 
 test('inspector panel keeps generic asset inspection simple', function () {
@@ -1198,6 +1470,49 @@ PHP
     expect(implode("\n", $panel->content))->toContain('Bullet Prefab: Enemy');
 });
 
+test('inspector panel treats Texture component fields as texture path pickers', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-inspector-texture-reference-' . uniqid();
+    mkdir($workspace . '/Assets/Textures', 0777, true);
+    file_put_contents($workspace . '/Assets/Textures/bullet.texture', "<>\n");
+
+    $panel = new InspectorPanel(width: 48, height: 24, workingDirectory: $workspace);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\Gun',
+                    'data' => [
+                        'bulletTexture' => null,
+                    ],
+                    '__editorFieldTypes' => [
+                        'bulletTexture' => 'Sendama\\Engine\\Core\\Texture|null',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Bullet Texture');
+
+    expect($panel->content)->toContain('  Bullet Texture: None');
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    expect($panel->hasActiveModal())->toBeTrue();
+});
+
 test('inspector panel renders typed Vector2 component fields as compound controls', function () {
     $panel = new InspectorPanel(width: 48, height: 24);
     $panel->inspectTarget([
@@ -1230,6 +1545,165 @@ test('inspector panel renders typed Vector2 component fields as compound control
         ->toContain('  Spawn Offset:')
         ->toContain('    X: 0')
         ->toContain('    Y: 0');
+});
+
+test('inspector panel renders range fields as sliders and nested compound structures as controls', function () {
+    $workspace = createInspectorCompoundComponentWorkspace();
+    $panel = new InspectorPanel(width: 64, height: 32, workingDirectory: $workspace);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\SchemaProbe',
+                    'data' => [
+                        'speed' => 4,
+                        'waypoints' => [
+                            ['x' => 1, 'y' => 2],
+                            ['x' => 3, 'y' => 4],
+                        ],
+                        'settings' => [
+                            'waves' => 3,
+                            'origin' => ['x' => 6, 'y' => 7],
+                        ],
+                    ],
+                    '__editorFieldTypes' => [
+                        'speed' => 'int',
+                        'waypoints' => 'array',
+                        'settings' => 'Sendama\\Game\\Scripts\\CompoundSettings',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    expect($panel->content)->toContain('▼ SchemaProbe')
+        ->toContain('  Speed: [#####-------] 4')
+        ->toContain('  ▼ Waypoints')
+        ->toContain('    Item 1:')
+        ->toContain('      X: 1')
+        ->toContain('      Y: 2')
+        ->toContain('    Item 2:')
+        ->toContain('  ▼ Settings')
+        ->toContain('    Waves: 3')
+        ->toContain('    Origin:')
+        ->toContain('      X: 6')
+        ->toContain('      Y: 7');
+});
+
+test('inspector panel commits slider edits using the default range step', function () {
+    $workspace = createInspectorCompoundComponentWorkspace();
+    $panel = new InspectorPanel(width: 64, height: 32, workingDirectory: $workspace);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\SchemaProbe',
+                    'data' => [
+                        'speed' => 4,
+                        'waypoints' => [],
+                        'settings' => [
+                            'waves' => 3,
+                            'origin' => ['x' => 6, 'y' => 7],
+                        ],
+                    ],
+                    '__editorFieldTypes' => [
+                        'speed' => 'int',
+                        'waypoints' => 'array',
+                        'settings' => 'Sendama\\Game\\Scripts\\CompoundSettings',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Speed');
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    setInspectorInput("\033[C");
+    $panel->update();
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    $mutation = $panel->consumeHierarchyMutation();
+
+    expect($mutation['value']['components'][0]['data']['speed'] ?? null)->toBe(5);
+});
+
+test('inspector panel does not adjust slider edits with up and down keys', function () {
+    $workspace = createInspectorCompoundComponentWorkspace();
+    $panel = new InspectorPanel(width: 64, height: 32, workingDirectory: $workspace);
+    $panel->inspectTarget([
+        'context' => 'hierarchy',
+        'name' => 'Player',
+        'type' => 'GameObject',
+        'path' => 'scene.0',
+        'value' => [
+            'type' => 'Sendama\\Engine\\Core\\GameObject',
+            'name' => 'Player',
+            'tag' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\Scripts\\SchemaProbe',
+                    'data' => [
+                        'speed' => 4,
+                        'waypoints' => [],
+                        'settings' => [
+                            'waves' => 3,
+                            'origin' => ['x' => 6, 'y' => 7],
+                        ],
+                    ],
+                    '__editorFieldTypes' => [
+                        'speed' => 'int',
+                        'waypoints' => 'array',
+                        'settings' => 'Sendama\\Game\\Scripts\\CompoundSettings',
+                    ],
+                ],
+            ],
+        ],
+    ]);
+
+    focusInspectorPanel($panel);
+    selectInspectorControlByLabel($panel, 'Speed');
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    setInspectorInput("\033[A");
+    $panel->update();
+
+    setInspectorInput("\n");
+    $panel->update();
+
+    $mutation = $panel->consumeHierarchyMutation();
+
+    expect($mutation['value']['components'][0]['data']['speed'] ?? null)->toBe(4);
 });
 
 test('inspector panel separates prefab file renames from prefab metadata edits', function () {

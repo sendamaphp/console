@@ -8,6 +8,7 @@ test('snackbar slides in, stays visible, and slides out', function () {
     $snackbar->enqueue('Saved scene level01.scene.php', 'success', 0.5);
 
     expect($snackbar->hasActiveNotice())->toBeTrue();
+    expect($snackbar->y)->toBe(-2);
 
     $initialY = $snackbar->y;
     $initialX = $snackbar->x;
@@ -56,6 +57,24 @@ test('snackbar renders status titles and colorized content', function () {
     expect($output)->toContain('Error')
         ->and($output)->toContain('Failed to save scene.')
         ->and($output)->toContain("\033[30;41m");
+});
+
+test('snackbar renders partially while sliding into view', function () {
+    $snackbar = new Snackbar();
+    $snackbar->syncLayout(80, 24);
+    $snackbar->enqueue('Saved scene level01.scene.php', 'success', 1.0);
+
+    $snackbar->update();
+    $snackbar->update();
+
+    expect($snackbar->y)->toBe(0);
+
+    ob_start();
+    $snackbar->renderAt();
+    $output = ob_get_clean();
+
+    expect($output)->toContain('Saved scene level01.scene.php')
+        ->toContain("\033[30;42m");
 });
 
 test('snackbar does not render while fully off-screen above the viewport', function () {

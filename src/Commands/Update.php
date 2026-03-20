@@ -5,8 +5,8 @@ namespace Sendama\Console\Commands;
 use Sendama\Console\Util\Inspector;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 #[AsCommand(
@@ -17,28 +17,54 @@ class Update extends Command
 {
   public function configure(): void
   {
-    $this->addOption('directory', 'd', InputArgument::OPTIONAL, 'The directory of the game', '.');
+    $this->addOption('directory', ['d', 'dir'], InputOption::VALUE_REQUIRED, 'The directory of the game', '.');
   }
 
   public function execute(InputInterface $input, OutputInterface $output): int
   {
-    write_console_info('Updating the game...');
+    write_console_info('Updating the game...', $output);
     $directory = $input->getOption('directory') ?? '.';
 
     $inspector = new Inspector($input, $output);
     $inspector->validateProjectDirectory($directory);
 
-    # Check if we are in a
-    $updateResult = exec('cd $directory && composer update --ansi');
+    $exitCode = $this->runComposerUpdate((string) $directory);
 
-    if (false === $updateResult ) {
-      write_console_error('Update failed.');
+    if ($exitCode !== 0) {
+      write_console_error('Update failed.', $output);
       return Command::FAILURE;
     }
 
-    $output->writeln($updateResult);
+    write_console_info('Update completed.', $output);
 
     return Command::SUCCESS;
+  }
+
+  protected function runComposerUpdate(string $directory): int
+  {
+    $command = $this->buildComposerUpdateCommand($directory);
+    passthru($command, $exitCode);
+
+    return $exitCode;
+  }
+
+  protected function buildComposerUpdateCommand(string $directory): string
+  {
+    $composerPhar = rtrim($directory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'composer.phar';
+
+    if (is_file($composerPhar)) {
+      return sprintf(
+        '%s %s update --working-dir=%s --ansi',
+        escapeshellarg(PHP_BINARY),
+        escapeshellarg($composerPhar),
+        escapeshellarg($directory),
+      );
+    }
+
+    return sprintf(
+      'composer update --working-dir=%s --ansi',
+      escapeshellarg($directory),
+    );
   }
 
   /**

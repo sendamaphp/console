@@ -6,6 +6,7 @@ use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
 use Atatusoft\Termutil\UI\Windows\Enumerations\HorizontalAlignment;
 use Atatusoft\Termutil\UI\Windows\Window;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\Interfaces\FocusableInterface;
 
@@ -48,7 +49,7 @@ abstract class Widget extends Window implements FocusableInterface
     }
     protected(set) bool $isEnabled = true;
     protected bool $hasFocus = false;
-    protected Color $focusBorderColor = Color::LIGHT_CYAN;
+    protected Color $focusBorderColor = EditorColorScheme::PRIMARY_FOCUS_COLOR;
     protected int $verticalScrollOffset = 0;
     protected bool $isScrollbarDragging = false;
 

@@ -3,12 +3,15 @@
 namespace Sendama\Console\Commands;
 
 use Sendama\Console\Enumerations\LogOption;
+use Sendama\Console\Util\Inspector;
 use Sendama\Console\Util\Path;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Throwable;
 
 #[AsCommand(
     name: 'view:log',
@@ -26,7 +29,7 @@ class ViewLog extends Command
       LogOption::toArray()
     );
 
-    $this->addOption('directory', 'd', InputArgument::OPTIONAL, 'The directory of the game', '.');
+    $this->addOption('directory', ['d', 'dir'], InputOption::VALUE_REQUIRED, 'The directory of the game', '.');
   }
 
   /**
@@ -38,34 +41,123 @@ class ViewLog extends Command
    */
   public function execute(InputInterface $input, OutputInterface $output): int
   {
-    $type = $input->getArgument('type') ?? LogOption::ALL->value;
-    $directory = $input->getOption('directory') ?? '.';
+    $typeValue = strtolower(trim((string) ($input->getArgument('type') ?? LogOption::ALL->value)));
+    $type = LogOption::tryFrom($typeValue);
 
-    if (! is_dir($directory) ) {
-      $output->writeln("<error>Directory $directory not found.</error>");
+    if (!$type instanceof LogOption) {
+      $output->writeln('<error>Invalid log type. Use one of: ' . implode(', ', LogOption::toArray()) . '.</error>');
       return Command::FAILURE;
     }
 
-    $logFilename = Path::join($directory, 'logs', $type . '.log');
+    $directory = $this->resolveAbsoluteDirectory((string) ($input->getOption('directory') ?? '.'));
 
-    $logFilename = str_replace('all.log', '*', $logFilename);
+    try {
+      $inspector = new Inspector($input, $output);
+      $inspector->validateProjectDirectory($directory);
 
-    if (! file_exists($logFilename) && $type !== LogOption::ALL->value) {
-      $output->writeln("<error>Log file $logFilename not found.</error>");
-      return Command::FAILURE;
-    }
+      $logFiles = $this->resolveLogFiles($directory, $type);
 
-    $logCommand = "tail ";
+      if ($logFiles === []) {
+        $output->writeln('<error>No log files found.</error>');
+        return Command::FAILURE;
+      }
 
-    if (shell_exec("which multitail")) {
-      $logCommand = "multitail ";
-    }
+      $exitCode = $this->runLogViewer($logFiles, $type);
 
-    if (false === shell_exec($logCommand . escapeshellarg($logFilename))) {
-      $output->writeln("<error>Failed to open log file $logFilename.</error>");
+      if ($exitCode !== 0) {
+        $output->writeln('<error>Failed to open log viewer.</error>');
+        return Command::FAILURE;
+      }
+    } catch (Throwable $exception) {
+      $output->writeln('<error>' . $exception->getMessage() . '</error>');
       return Command::FAILURE;
     }
 
     return Command::SUCCESS;
+  }
+
+  protected function runLogViewer(array $logFiles, LogOption $type): int
+  {
+    $command = $this->buildLogViewerCommand($logFiles, $type);
+    passthru($command, $exitCode);
+
+    return $exitCode;
+  }
+
+  protected function buildLogViewerCommand(array $logFiles, LogOption $type): string
+  {
+    $escapedLogFiles = implode(' ', array_map(
+      static fn (string $logFile): string => escapeshellarg($logFile),
+      $logFiles,
+    ));
+
+    if ($type === LogOption::ALL && count($logFiles) > 1 && $this->hasMultitail()) {
+      return 'multitail ' . $escapedLogFiles;
+    }
+
+    $tailOptions = $type === LogOption::ALL && count($logFiles) > 1
+      ? '-q -n 50 -f -- '
+      : '-n 50 -f -- ';
+
+    return 'tail ' . $tailOptions . $escapedLogFiles;
+  }
+
+  protected function hasMultitail(): bool
+  {
+    $command = shell_exec('command -v multitail 2>/dev/null');
+
+    return is_string($command) && trim($command) !== '';
+  }
+
+  /**
+   * @return array<string>
+   */
+  private function resolveLogFiles(string $directory, LogOption $type): array
+  {
+    $logsDirectory = Path::join($directory, 'logs');
+
+    if (!is_dir($logsDirectory)) {
+      throw new \RuntimeException("Logs directory $logsDirectory not found.");
+    }
+
+    if ($type === LogOption::ALL) {
+      $logFiles = array_values(array_filter([
+        Path::join($logsDirectory, LogOption::DEBUG->value . '.log'),
+        Path::join($logsDirectory, LogOption::ERROR->value . '.log'),
+      ], 'is_file'));
+
+      if ($logFiles === []) {
+        throw new \RuntimeException("No log files found in $logsDirectory.");
+      }
+
+      return $logFiles;
+    }
+
+    $logFile = Path::join($logsDirectory, $type->value . '.log');
+
+    if (!is_file($logFile)) {
+      throw new \RuntimeException("Log file $logFile not found.");
+    }
+
+    return [$logFile];
+  }
+
+  private function resolveAbsoluteDirectory(string $directory): string
+  {
+    $normalizedDirectory = Path::normalize(trim($directory));
+
+    if ($normalizedDirectory === '' || $normalizedDirectory === '.') {
+      $normalizedDirectory = getcwd() ?: '.';
+    } elseif (!str_starts_with($normalizedDirectory, '/')) {
+      $normalizedDirectory = Path::join(getcwd() ?: '.', $normalizedDirectory);
+    }
+
+    $resolvedDirectory = realpath($normalizedDirectory);
+
+    if (is_string($resolvedDirectory) && $resolvedDirectory !== '') {
+      return Path::normalize($resolvedDirectory);
+    }
+
+    return Path::normalize($normalizedDirectory);
   }
 }

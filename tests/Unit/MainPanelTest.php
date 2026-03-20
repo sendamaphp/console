@@ -102,11 +102,11 @@ test('main panel uses a warm focus color while in play mode', function () {
     $focusBorderColor = new ReflectionProperty(Widget::class, 'focusBorderColor');
     $focusBorderColor->setAccessible(true);
 
-    expect($focusBorderColor->getValue($panel))->toBe(Color::LIGHT_CYAN);
+    expect($focusBorderColor->getValue($panel))->toBe(Color::LIGHT_RED);
 
     $panel->setPlayModeActive(true);
 
-    expect($focusBorderColor->getValue($panel))->toBe(Color::BROWN);
+    expect($focusBorderColor->getValue($panel))->toBe(Color::LIGHT_GREEN);
 });
 
 test('main panel highlights the active tab in the divider', function () {
@@ -751,7 +751,7 @@ test('main panel restores selected renderable scene objects to their normal visi
     $focusedLine = '|' . str_pad($panel->content[2], $panelWidth - 2) . '|';
     $focusedRenderedLine = $decorateSceneLine->invoke($panel, $focusedLine, null, 2);
 
-    expect($focusedRenderedLine)->toContain("\033[5;30;46m");
+    expect($focusedRenderedLine)->toContain("\033[5;30;101m");
 
     $hasFocus->setValue($panel, false);
     $refreshContent->invoke($panel);
@@ -759,8 +759,8 @@ test('main panel restores selected renderable scene objects to their normal visi
     $blurredLine = '|' . str_pad($panel->content[2], $panelWidth - 2) . '|';
     $blurredRenderedLine = $decorateSceneLine->invoke($panel, $blurredLine, null, 2);
 
-    expect($blurredRenderedLine)->not->toContain("\033[5;30;46m");
-    expect($blurredRenderedLine)->not->toContain("\033[30;46m");
+    expect($blurredRenderedLine)->not->toContain("\033[5;30;101m");
+    expect($blurredRenderedLine)->not->toContain("\033[30;101m");
 });
 
 test('main panel projects scene labels using the engine display coordinates', function () {

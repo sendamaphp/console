@@ -4,6 +4,7 @@ namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
 
@@ -39,7 +40,7 @@ class ConsolePanel extends Widget
     protected int $activeTabIndex = 0;
     protected int $activeTabOffset = 0;
     protected int $activeTabLength = 0;
-    protected Color $activeIndicatorColor = Color::LIGHT_CYAN;
+    protected Color $activeIndicatorColor = EditorColorScheme::ACTIVE_INDICATOR_COLOR;
     protected array $activeFiltersByTab = [
         'Debug' => 'DEBUG',
         'Error' => 'ALL',
@@ -516,11 +517,11 @@ class ConsolePanel extends Widget
     private function resolveLogLevelColor(string $level): ?Color
     {
         return match ($level) {
-            'ERROR' => Color::LIGHT_RED,
-            'CRITICAL', 'FATAL' => Color::RED,
-            'INFO' => Color::LIGHT_BLUE,
-            'WARN', 'WARNING' => Color::YELLOW,
-            'DEBUG' => Color::LIGHT_GRAY,
+            'ERROR' => EditorColorScheme::ERROR_COLOR,
+            'CRITICAL', 'FATAL' => EditorColorScheme::FATAL_COLOR,
+            'INFO' => EditorColorScheme::INFO_COLOR,
+            'WARN', 'WARNING' => EditorColorScheme::WARNING_COLOR,
+            'DEBUG' => EditorColorScheme::DEBUG_COLOR,
             default => null,
         };
     }

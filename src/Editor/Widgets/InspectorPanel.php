@@ -11,7 +11,9 @@ use ReflectionNamedType;
 use ReflectionProperty;
 use ReflectionUnionType;
 use Sendama\Engine\IO\Enumerations\Color as EngineColor;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Editor\PrefabLoader;
+use Sendama\Console\Editor\ProjectAutoloadLoader;
 use Throwable;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
@@ -26,7 +28,9 @@ use Sendama\Console\Editor\Widgets\Controls\PrefabReferenceInputControl;
 use Sendama\Console\Editor\Widgets\Controls\PreviewWindowControl;
 use Sendama\Console\Editor\Widgets\Controls\SectionControl;
 use Sendama\Console\Editor\Widgets\Controls\SelectInputControl;
+use Sendama\Console\Editor\Widgets\Controls\SliderInputControl;
 use Sendama\Console\Editor\Widgets\Controls\TextInputControl;
+use Sendama\Console\Editor\Widgets\Controls\UIElementReferenceInputControl;
 use Sendama\Console\Editor\Widgets\Controls\VectorInputControl;
 
 class InspectorPanel extends Widget
@@ -38,12 +42,13 @@ class InspectorPanel extends Widget
     private const string STATE_PATH_INPUT_ACTION_SELECTION = 'path_input_action_selection';
     private const string STATE_PATH_INPUT_FILE_DIALOG = 'path_input_file_dialog';
     private const string STATE_PREFAB_REFERENCE_SELECTION = 'prefab_reference_selection';
-    private const string SECTION_HEADER_SEQUENCE = "\033[30;47m";
-    private const string SECTION_HEADER_SELECTED_SEQUENCE = "\033[30;104m";
-    private const string SELECTED_CONTROL_SEQUENCE = "\033[30;46m";
-    private const string SELECTED_CONTROL_ACTIVE_SEQUENCE = "\033[5;30;46m";
-    private const string EDITING_CONTROL_SEQUENCE = "\033[30;43m";
-    private const string EDITING_CONTROL_ACTIVE_SEQUENCE = "\033[5;30;43m";
+    private const string STATE_UI_ELEMENT_REFERENCE_SELECTION = 'ui_element_reference_selection';
+    private const string SECTION_HEADER_SEQUENCE = EditorColorScheme::SURFACE_SEQUENCE;
+    private const string SECTION_HEADER_SELECTED_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
+    private const string SELECTED_CONTROL_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
+    private const string SELECTED_CONTROL_ACTIVE_SEQUENCE = EditorColorScheme::SELECTED_ROW_FOCUSED_SEQUENCE;
+    private const string EDITING_CONTROL_SEQUENCE = EditorColorScheme::EDITING_SEQUENCE;
+    private const string EDITING_CONTROL_ACTIVE_SEQUENCE = EditorColorScheme::EDITING_FOCUSED_SEQUENCE;
     private const array DEFAULT_COMPONENT_CANDIDATES = [
         'Sendama\\Engine\\Core\\Behaviours\\SimpleQuitListener',
         'Sendama\\Engine\\Core\\Behaviours\\SimpleBackListener',
@@ -69,8 +74,10 @@ class InspectorPanel extends Widget
     protected OptionListModal $addComponentModal;
     protected OptionListModal $deleteComponentModal;
     protected OptionListModal $prefabReferenceModal;
+    protected OptionListModal $uiElementReferenceModal;
     protected ?PathInputControl $activePathInputControl = null;
     protected ?PrefabReferenceInputControl $activePrefabReferenceControl = null;
+    protected ?UIElementReferenceInputControl $activeUIElementReferenceControl = null;
     protected array $controlBindings = [];
     protected array $controlMetadata = [];
     protected ?array $pendingHierarchyMutation = null;
@@ -83,11 +90,15 @@ class InspectorPanel extends Widget
     protected bool $isComponentMoveModeActive = false;
     protected ?int $pendingComponentDeletionIndex = null;
     protected array $prefabReferenceOptions = [];
+    protected array $uiElementReferenceOptions = [];
     protected string $modeHelpLabel = '';
     protected bool $shouldRefreshModalBackground = false;
     protected ?int $lastClickedControlIndex = null;
     protected float $lastClickedControlAt = 0.0;
+    protected array $classImportAliasCache = [];
     private const string GUI_TEXTURE_TYPE = 'Sendama\\Engine\\UI\\GUITexture\\GUITexture';
+    private const string UI_ELEMENT_TYPE = 'Sendama\\Engine\\UI\\UIElement';
+    private const string UI_ELEMENT_INTERFACE_TYPE = 'Sendama\\Engine\\UI\\Interfaces\\UIElementInterface';
     private const array GUI_TEXTURE_COLOR_OPTIONS = [
         'Black',
         'Dark Gray',
@@ -121,6 +132,7 @@ class InspectorPanel extends Widget
         $this->addComponentModal = new OptionListModal(title: 'Add Component');
         $this->deleteComponentModal = new OptionListModal(title: 'Remove Component');
         $this->prefabReferenceModal = new OptionListModal(title: 'Choose Prefab');
+        $this->uiElementReferenceModal = new OptionListModal(title: 'Choose UI Element');
         $this->projectDirectory = is_string($workingDirectory) && $workingDirectory !== ''
             ? $workingDirectory
             : (getcwd() ?: '.');
@@ -181,8 +193,10 @@ class InspectorPanel extends Widget
         $this->addComponentModal->hide();
         $this->deleteComponentModal->hide();
         $this->prefabReferenceModal->hide();
+        $this->uiElementReferenceModal->hide();
         $this->activePathInputControl = null;
         $this->activePrefabReferenceControl = null;
+        $this->activeUIElementReferenceControl = null;
         $this->controlBindings = [];
         $this->controlMetadata = [];
         $this->pendingHierarchyMutation = null;
@@ -192,6 +206,7 @@ class InspectorPanel extends Widget
         $this->isComponentMoveModeActive = false;
         $this->pendingComponentDeletionIndex = null;
         $this->prefabReferenceOptions = [];
+        $this->uiElementReferenceOptions = [];
 
         if ($target === null) {
             $this->content = [];
@@ -260,7 +275,8 @@ class InspectorPanel extends Widget
             || $this->fileDialogModal->isVisible()
             || $this->addComponentModal->isVisible()
             || $this->deleteComponentModal->isVisible()
-            || $this->prefabReferenceModal->isVisible();
+            || $this->prefabReferenceModal->isVisible()
+            || $this->uiElementReferenceModal->isVisible();
     }
 
     public function isModalDirty(): bool
@@ -269,7 +285,8 @@ class InspectorPanel extends Widget
             || $this->fileDialogModal->isDirty()
             || $this->addComponentModal->isDirty()
             || $this->deleteComponentModal->isDirty()
-            || $this->prefabReferenceModal->isDirty();
+            || $this->prefabReferenceModal->isDirty()
+            || $this->uiElementReferenceModal->isDirty();
     }
 
     public function markModalClean(): void
@@ -279,6 +296,7 @@ class InspectorPanel extends Widget
         $this->addComponentModal->markClean();
         $this->deleteComponentModal->markClean();
         $this->prefabReferenceModal->markClean();
+        $this->uiElementReferenceModal->markClean();
     }
 
     public function syncModalLayout(int $terminalWidth, int $terminalHeight): void
@@ -288,6 +306,7 @@ class InspectorPanel extends Widget
         $this->addComponentModal->syncLayout($terminalWidth, $terminalHeight);
         $this->deleteComponentModal->syncLayout($terminalWidth, $terminalHeight);
         $this->prefabReferenceModal->syncLayout($terminalWidth, $terminalHeight);
+        $this->uiElementReferenceModal->syncLayout($terminalWidth, $terminalHeight);
     }
 
     public function renderActiveModal(): void
@@ -310,6 +329,10 @@ class InspectorPanel extends Widget
 
         if ($this->prefabReferenceModal->isVisible()) {
             $this->prefabReferenceModal->render();
+        }
+
+        if ($this->uiElementReferenceModal->isVisible()) {
+            $this->uiElementReferenceModal->render();
         }
     }
 
@@ -370,6 +393,26 @@ class InspectorPanel extends Widget
 
             if (is_string($selection) && $selection !== '') {
                 $this->applyPrefabReferenceSelection($selection);
+            }
+
+            return $isWithinModal;
+        }
+
+        if ($this->uiElementReferenceModal->isVisible()) {
+            if ($this->uiElementReferenceModal->handleScrollbarMouseEvent($mouseEvent)) {
+                return true;
+            }
+
+            $isWithinModal = $this->uiElementReferenceModal->containsPoint($mouseEvent->x, $mouseEvent->y);
+
+            if ($mouseEvent->buttonIndex !== 0 || $mouseEvent->action !== 'Pressed') {
+                return $isWithinModal;
+            }
+
+            $selection = $this->uiElementReferenceModal->clickOptionAtPoint($mouseEvent->x, $mouseEvent->y);
+
+            if (is_string($selection) && $selection !== '') {
+                $this->applyUIElementReferenceSelection($selection);
             }
 
             return $isWithinModal;
@@ -573,6 +616,11 @@ class InspectorPanel extends Widget
 
         if ($this->prefabReferenceModal->isVisible()) {
             $this->handlePrefabReferenceModalInput();
+            return;
+        }
+
+        if ($this->uiElementReferenceModal->isVisible()) {
+            $this->handleUIElementReferenceModalInput();
             return;
         }
 
@@ -961,6 +1009,11 @@ class InspectorPanel extends Widget
             $componentFieldTypes = is_array($component['__editorFieldTypes'] ?? null)
                 ? $component['__editorFieldTypes']
                 : [];
+            $componentFieldSchemas = $this->resolveComponentFieldSchemas(
+                is_string($component['class'] ?? null) ? $component['class'] : null,
+                $componentFieldTypes,
+                $serializedComponentData ?? [],
+            );
 
             if (is_array($serializedComponentData)) {
                 $this->addControl(
@@ -976,7 +1029,7 @@ class InspectorPanel extends Widget
                     $serializedComponentData,
                     ['components', $componentIndex, 'data'],
                     1,
-                    $componentFieldTypes,
+                    $componentFieldSchemas,
                 );
                 continue;
             }
@@ -1005,7 +1058,7 @@ class InspectorPanel extends Widget
                 $legacyComponentData,
                 ['components', $componentIndex],
                 1,
-                $componentFieldTypes,
+                $componentFieldSchemas,
             );
         }
     }
@@ -1014,36 +1067,40 @@ class InspectorPanel extends Widget
         array $properties,
         array $basePath,
         int $indentLevel = 1,
-        array $fieldTypes = [],
+        array $fieldSchemas = [],
     ): void
     {
         foreach ($properties as $key => $value) {
-            if (!is_string($key)) {
-                continue;
-            }
+            $propertySchema = is_array($fieldSchemas[$key] ?? null)
+                ? $fieldSchemas[$key]
+                : [];
+            $label = is_string($key)
+                ? $this->humanizeKey($key)
+                : 'Item ' . (((int) $key) + 1);
 
-            if ($this->shouldRenderNestedComponentProperties($value)) {
+            if ($this->shouldRenderNestedComponentProperties($value, $propertySchema)) {
                 $this->addControl($this->addSectionHeader(
-                    $this->humanizeKey($key),
+                    $label,
                     $indentLevel,
                 ));
                 $this->addComponentPropertyControls(
-                    $value,
+                    is_array($value) ? $value : [],
                     [...$basePath, $key],
                     $indentLevel + 1,
-                    is_array($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : [],
+                    $this->resolveNestedComponentFieldSchemas($propertySchema, $value),
                 );
                 continue;
             }
 
             $this->addBoundControl(
                 $this->buildComponentPropertyControl(
-                    $this->humanizeKey($key),
+                    $label,
                     $value,
                     $indentLevel,
-                    is_string($fieldTypes[$key] ?? null) ? $fieldTypes[$key] : null,
+                    $propertySchema,
                 ),
                 [...$basePath, $key],
+                $this->buildComponentControlMetadata($propertySchema),
             );
         }
     }
@@ -1052,13 +1109,48 @@ class InspectorPanel extends Widget
         string $label,
         mixed $value,
         int $indentLevel,
-        ?string $fieldType = null,
+        array $fieldSchema = [],
     ): InputControl {
+        $fieldType = $this->resolveFieldSchemaType($fieldSchema);
+        $range = is_array($fieldSchema['range'] ?? null) ? $fieldSchema['range'] : null;
+
+        if ($range !== null && $this->isNumericFieldSchema($fieldSchema, $value)) {
+            return new SliderInputControl(
+                $label,
+                $value,
+                $range['min'] ?? 0,
+                $range['max'] ?? 0,
+                $range['step'] ?? 1,
+                $indentLevel,
+            );
+        }
+
         if ($this->isPrefabAssignableGameObjectField($fieldType)) {
             return new PrefabReferenceInputControl(
                 $label,
                 $value,
                 $this->resolvePrefabDisplayLabelsByPath(),
+                $indentLevel,
+            );
+        }
+
+        $uiElementFieldType = $this->resolveAssignableUIElementFieldType($fieldType);
+
+        if (is_string($uiElementFieldType)) {
+            return new UIElementReferenceInputControl(
+                $label,
+                $value,
+                $this->resolveUIElementDisplayLabelsByName($uiElementFieldType),
+                $indentLevel,
+            );
+        }
+
+        if ($this->isTextureAssignableField($fieldType)) {
+            return new PathInputControl(
+                $label,
+                $this->normalizeTextureComponentFieldValue($value),
+                $this->resolveAssetsWorkingDirectory(),
+                ['texture'],
                 $indentLevel,
             );
         }
@@ -1089,17 +1181,576 @@ class InspectorPanel extends Widget
         return false;
     }
 
-    private function shouldRenderNestedComponentProperties(mixed $value): bool
+    private function resolveAssignableUIElementFieldType(?string $fieldType): ?string
     {
-        if (!is_array($value) || $value === []) {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return null;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        foreach ($normalizedTypes as $normalizedType) {
+            if ($normalizedType === '' || $normalizedType === 'null') {
+                continue;
+            }
+
+            if (in_array($normalizedType, [self::UI_ELEMENT_TYPE, self::UI_ELEMENT_INTERFACE_TYPE], true)) {
+                return self::UI_ELEMENT_TYPE;
+            }
+
+            if ($this->isKnownEngineUIElementType($normalizedType)) {
+                return $normalizedType;
+            }
+
+            if ((class_exists($normalizedType) || interface_exists($normalizedType)) && is_a($normalizedType, self::UI_ELEMENT_TYPE, true)) {
+                return $normalizedType;
+            }
+        }
+
+        return null;
+    }
+
+    private function isTextureAssignableField(?string $fieldType): bool
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
             return false;
         }
 
-        if ($this->isVectorValue($value) || $this->isScalarListValue($value)) {
+        $normalizedTypes = array_map(
+            static fn(string $type): string => ltrim(trim($type), '\\'),
+            explode('|', $fieldType),
+        );
+
+        return in_array('Sendama\\Engine\\Core\\Texture', $normalizedTypes, true);
+    }
+
+    private function shouldRenderNestedComponentProperties(mixed $value, array $fieldSchema = []): bool
+    {
+        $hasNestedSchema = is_array($fieldSchema['properties'] ?? null)
+            || is_array($fieldSchema['item'] ?? null);
+
+        if (!is_array($value)) {
+            return false;
+        }
+
+        if ($value === []) {
+            return $hasNestedSchema;
+        }
+
+        if ($this->isVectorValue($value)) {
+            return false;
+        }
+
+        if (array_is_list($value)) {
+            return true;
+        }
+
+        return $hasNestedSchema || !$this->isScalarListValue($value);
+    }
+
+    private function resolveComponentFieldSchemas(
+        ?string $componentClass,
+        array $fieldTypes,
+        array $properties,
+    ): array {
+        $schemas = [];
+        $reflection = $this->reflectProjectClass($componentClass);
+
+        foreach ($properties as $propertyName => $propertyValue) {
+            $fallbackType = is_string($fieldTypes[$propertyName] ?? null)
+                ? $fieldTypes[$propertyName]
+                : null;
+
+            if (
+                $reflection instanceof ReflectionClass
+                && is_string($propertyName)
+                && $reflection->hasProperty($propertyName)
+            ) {
+                try {
+                    $property = $reflection->getProperty($propertyName);
+                    $schemas[$propertyName] = $this->resolveComponentPropertyFieldSchema(
+                        $property,
+                        $propertyValue,
+                        $fallbackType,
+                    );
+                    continue;
+                } catch (Throwable) {
+                }
+            }
+
+            $schemas[$propertyName] = $this->buildComponentFieldSchema($fallbackType, $propertyValue);
+        }
+
+        return $schemas;
+    }
+
+    private function resolveComponentPropertyFieldSchema(
+        ReflectionProperty $property,
+        mixed $currentValue,
+        ?string $fallbackType = null,
+    ): array {
+        $resolvedType = $this->resolveReflectionPropertyType($property) ?? $fallbackType;
+        $schema = $this->buildComponentFieldSchema(
+            $resolvedType,
+            $currentValue,
+            $property->getDeclaringClass(),
+        );
+        $range = $this->resolveRangeAttributeMetadata($property);
+
+        if ($range !== null) {
+            $schema['range'] = $range;
+        }
+
+        $collectionItemType = $this->resolveCollectionItemFieldType($property);
+
+        if ($collectionItemType !== null) {
+            $schema['item'] = $this->buildComponentFieldSchema(
+                $collectionItemType,
+                $this->resolveRepresentativeCollectionValue($currentValue),
+                $property->getDeclaringClass(),
+            );
+        }
+
+        return $schema;
+    }
+
+    private function buildComponentFieldSchema(
+        ?string $fieldType,
+        mixed $currentValue,
+        ?ReflectionClass $scope = null,
+    ): array {
+        $schema = [];
+
+        if (is_string($fieldType) && trim($fieldType) !== '') {
+            $schema['type'] = $fieldType;
+        }
+
+        $primaryType = $this->resolvePrimaryFieldTypeName($fieldType);
+
+        if ($primaryType !== null && $this->isCompoundStructureType($primaryType)) {
+            $schema['properties'] = $this->resolveCompoundStructureFieldSchemas(
+                $primaryType,
+                is_array($currentValue) ? $currentValue : [],
+            );
+        }
+
+        if (
+            !isset($schema['item'])
+            && is_array($currentValue)
+            && array_is_list($currentValue)
+            && $currentValue !== []
+        ) {
+            $schema['item'] = $this->buildComponentFieldSchema(
+                null,
+                $this->resolveRepresentativeCollectionValue($currentValue),
+                $scope,
+            );
+        }
+
+        return $schema;
+    }
+
+    private function resolveNestedComponentFieldSchemas(array $fieldSchema, mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        if (array_is_list($value)) {
+            $itemSchema = is_array($fieldSchema['item'] ?? null)
+                ? $fieldSchema['item']
+                : [];
+
+            if ($itemSchema === []) {
+                return [];
+            }
+
+            $schemas = [];
+
+            foreach (array_keys($value) as $index) {
+                $schemas[$index] = $itemSchema;
+            }
+
+            return $schemas;
+        }
+
+        return is_array($fieldSchema['properties'] ?? null)
+            ? $fieldSchema['properties']
+            : [];
+    }
+
+    private function buildComponentControlMetadata(array $fieldSchema): array
+    {
+        if ($fieldSchema === []) {
+            return [];
+        }
+
+        $metadata = [
+            'fieldSchema' => $fieldSchema,
+        ];
+        $fieldType = $this->resolveFieldSchemaType($fieldSchema);
+
+        if ($fieldType !== null) {
+            $metadata['fieldType'] = $fieldType;
+        }
+
+        return $metadata;
+    }
+
+    private function resolveFieldSchemaType(array $fieldSchema): ?string
+    {
+        $fieldType = $fieldSchema['type'] ?? null;
+
+        return is_string($fieldType) && trim($fieldType) !== ''
+            ? $fieldType
+            : null;
+    }
+
+    private function isNumericFieldSchema(array $fieldSchema, mixed $value): bool
+    {
+        if (is_int($value) || is_float($value)) {
+            return true;
+        }
+
+        $fieldType = $this->resolveFieldSchemaType($fieldSchema);
+
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return false;
+        }
+
+        $normalizedTypes = array_map(
+            static fn(string $type): string => strtolower(trim($type)),
+            explode('|', $fieldType),
+        );
+
+        return in_array('int', $normalizedTypes, true) || in_array('float', $normalizedTypes, true);
+    }
+
+    private function resolveRepresentativeCollectionValue(mixed $value): mixed
+    {
+        if (!is_array($value) || $value === []) {
+            return null;
+        }
+
+        foreach ($value as $item) {
+            return $item;
+        }
+
+        return null;
+    }
+
+    private function resolvePrimaryFieldTypeName(?string $fieldType): ?string
+    {
+        if (!is_string($fieldType) || trim($fieldType) === '') {
+            return null;
+        }
+
+        foreach (explode('|', $fieldType) as $candidateType) {
+            $normalizedType = ltrim(trim($candidateType), '\\');
+
+            if ($normalizedType === '' || strtolower($normalizedType) === 'null') {
+                continue;
+            }
+
+            return $normalizedType;
+        }
+
+        return null;
+    }
+
+    private function resolveCompoundStructureFieldSchemas(string $typeName, array $currentValue): array
+    {
+        $reflection = $this->reflectProjectClass($typeName);
+
+        if (!$reflection instanceof ReflectionClass) {
+            return [];
+        }
+
+        $schemas = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            if (
+                $property->isStatic()
+                || !$this->isSerializableComponentProperty($property)
+                || (method_exists($property, 'isVirtual') && $property->isVirtual())
+            ) {
+                continue;
+            }
+
+            $propertyName = $property->getName();
+            $schemas[$propertyName] = $this->resolveComponentPropertyFieldSchema(
+                $property,
+                $currentValue[$propertyName] ?? null,
+            );
+        }
+
+        return $schemas;
+    }
+
+    private function isCompoundStructureType(string $typeName): bool
+    {
+        $normalizedType = ltrim(trim($typeName), '\\');
+
+        if ($normalizedType === '' || $this->isBuiltinTypeName($normalizedType)) {
+            return false;
+        }
+
+        if (
+            enum_exists($normalizedType)
+            || interface_exists($normalizedType)
+            || !class_exists($normalizedType)
+        ) {
+            return false;
+        }
+
+        if (in_array($normalizedType, [
+            'Sendama\\Engine\\Core\\GameObject',
+            self::UI_ELEMENT_TYPE,
+            self::UI_ELEMENT_INTERFACE_TYPE,
+            'Sendama\\Engine\\Core\\Vector2',
+            'Sendama\\Engine\\Core\\Rect',
+            'Sendama\\Engine\\Core\\Texture',
+            'Sendama\\Engine\\Core\\Sprite',
+        ], true)) {
+            return false;
+        }
+
+        if (
+            is_a($normalizedType, 'Sendama\\Engine\\Core\\Component', true)
+            || is_a($normalizedType, 'Sendama\\Engine\\Core\\GameObject', true)
+            || is_a($normalizedType, self::UI_ELEMENT_TYPE, true)
+        ) {
             return false;
         }
 
         return true;
+    }
+
+    private function isBuiltinTypeName(string $typeName): bool
+    {
+        return in_array(strtolower($typeName), [
+            'array',
+            'bool',
+            'callable',
+            'false',
+            'float',
+            'int',
+            'iterable',
+            'mixed',
+            'never',
+            'null',
+            'object',
+            'self',
+            'static',
+            'string',
+            'true',
+        ], true);
+    }
+
+    private function resolveCollectionItemFieldType(ReflectionProperty $property): ?string
+    {
+        $docComment = $property->getDocComment();
+
+        if (!is_string($docComment) || $docComment === '') {
+            return null;
+        }
+
+        if (preg_match('/@var\s+([^\s]+)/', $docComment, $matches) !== 1) {
+            return null;
+        }
+
+        $typeExpression = trim($matches[1]);
+        $collectionItemType = $this->extractCollectionItemTypeExpression($typeExpression);
+
+        if ($collectionItemType === null) {
+            return null;
+        }
+
+        return $this->resolveDocblockTypeReference(
+            $property->getDeclaringClass(),
+            $collectionItemType,
+        );
+    }
+
+    private function extractCollectionItemTypeExpression(string $typeExpression): ?string
+    {
+        $normalizedExpression = trim($typeExpression);
+
+        if ($normalizedExpression === '') {
+            return null;
+        }
+
+        $unionMembers = array_values(array_filter(array_map('trim', explode('|', $normalizedExpression))));
+
+        foreach ($unionMembers as $unionMember) {
+            if (strtolower($unionMember) === 'null') {
+                continue;
+            }
+
+            if (preg_match('/^(.+)\[\]$/', $unionMember, $matches) === 1) {
+                return trim($matches[1]);
+            }
+
+            if (preg_match('/^(?:array|list)<(.+)>$/', $unionMember, $matches) === 1) {
+                $innerType = trim($matches[1]);
+                $segments = array_values(array_filter(array_map('trim', explode(',', $innerType))));
+
+                return $segments === [] ? null : end($segments);
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveDocblockTypeReference(ReflectionClass $scope, string $typeReference): ?string
+    {
+        $normalizedTypeReference = trim($typeReference);
+
+        if ($normalizedTypeReference === '') {
+            return null;
+        }
+
+        if ($normalizedTypeReference[0] === '\\') {
+            return ltrim($normalizedTypeReference, '\\');
+        }
+
+        if ($this->isBuiltinTypeName($normalizedTypeReference)) {
+            return strtolower($normalizedTypeReference);
+        }
+
+        if (str_contains($normalizedTypeReference, '\\')) {
+            return ltrim($normalizedTypeReference, '\\');
+        }
+
+        $importAliases = $this->resolveClassImportAliases($scope);
+        $normalizedAlias = strtolower($normalizedTypeReference);
+
+        if (isset($importAliases[$normalizedAlias])) {
+            return $importAliases[$normalizedAlias];
+        }
+
+        $namespace = $scope->getNamespaceName();
+
+        return $namespace !== ''
+            ? $namespace . '\\' . $normalizedTypeReference
+            : $normalizedTypeReference;
+    }
+
+    private function resolveClassImportAliases(ReflectionClass $scope): array
+    {
+        $scopeName = $scope->getName();
+
+        if (array_key_exists($scopeName, $this->classImportAliasCache)) {
+            return $this->classImportAliasCache[$scopeName];
+        }
+
+        $fileName = $scope->getFileName();
+
+        if (!is_string($fileName) || !is_file($fileName)) {
+            return $this->classImportAliasCache[$scopeName] = [];
+        }
+
+        $source = file_get_contents($fileName);
+
+        if (!is_string($source) || $source === '') {
+            return $this->classImportAliasCache[$scopeName] = [];
+        }
+
+        $aliases = [];
+
+        if (preg_match_all('/^\s*use\s+([^;]+);/mi', $source, $matches) === 1 || count($matches[1] ?? []) > 0) {
+            foreach ($matches[1] as $importClause) {
+                if (!is_string($importClause) || str_contains($importClause, '{')) {
+                    continue;
+                }
+
+                $normalizedClause = trim($importClause);
+                $alias = basename(str_replace('\\', '/', $normalizedClause));
+                $typeReference = $normalizedClause;
+
+                if (preg_match('/^(.+)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/i', $normalizedClause, $aliasMatches) === 1) {
+                    $typeReference = trim($aliasMatches[1]);
+                    $alias = trim($aliasMatches[2]);
+                }
+
+                $aliases[strtolower($alias)] = ltrim($typeReference, '\\');
+            }
+        }
+
+        return $this->classImportAliasCache[$scopeName] = $aliases;
+    }
+
+    private function resolveRangeAttributeMetadata(ReflectionProperty $property): ?array
+    {
+        $attributes = $property->getAttributes('Sendama\\Engine\\Core\\Attributes\\Range');
+
+        if ($attributes === []) {
+            return null;
+        }
+
+        try {
+            $attribute = $attributes[0]->newInstance();
+            $minimum = $attribute->min ?? null;
+            $maximum = $attribute->max ?? null;
+            $step = $attribute->step ?? 1;
+        } catch (Throwable) {
+            return null;
+        }
+
+        if (!is_int($minimum) && !is_float($minimum)) {
+            return null;
+        }
+
+        if (!is_int($maximum) && !is_float($maximum)) {
+            return null;
+        }
+
+        if (!is_int($step) && !is_float($step)) {
+            $step = 1;
+        }
+
+        if ($step == 0) {
+            $step = 1;
+        }
+
+        if ($minimum > $maximum) {
+            [$minimum, $maximum] = [$maximum, $minimum];
+        }
+
+        return [
+            'min' => $minimum,
+            'max' => $maximum,
+            'step' => abs($step),
+        ];
+    }
+
+    private function reflectProjectClass(?string $className): ?ReflectionClass
+    {
+        if (!is_string($className) || trim($className) === '') {
+            return null;
+        }
+
+        $this->ensureProjectAutoloadLoaded();
+        $normalizedClassName = ltrim(trim($className), '\\');
+
+        if (!class_exists($normalizedClassName)) {
+            return null;
+        }
+
+        try {
+            return new ReflectionClass($normalizedClassName);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private function ensureProjectAutoloadLoaded(): void
+    {
+        $autoloadPath = Path::join($this->projectDirectory, 'vendor', 'autoload.php');
+        ProjectAutoloadLoader::load($autoloadPath);
     }
 
     private function isVectorValue(array $value): bool
@@ -1195,6 +1846,7 @@ class InspectorPanel extends Widget
 
             $controlIndex = array_search($control, $this->focusableControls, true);
             $lineControlIndex = is_int($controlIndex) ? $controlIndex : null;
+            $control->setAvailableWidth($this->resolveControlRenderWidth());
 
             foreach ($control->renderLineDefinitions() as $lineDefinition) {
                 $content[] = $lineDefinition['text'] ?? '';
@@ -1235,6 +1887,12 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($this->uiElementReferenceModal->isVisible()) {
+            $this->help = 'Up/Down choose  Enter assign  Esc cancel';
+            $this->modeHelpLabel = 'Mode: UI Element Picker';
+            return;
+        }
+
         if ($this->interactionState === self::STATE_PATH_INPUT_ACTION_SELECTION) {
             $this->help = 'Up/Down choose  Enter select  Esc cancel';
             $this->modeHelpLabel = 'Mode: Path Action';
@@ -1247,9 +1905,21 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($this->interactionState === self::STATE_UI_ELEMENT_REFERENCE_SELECTION) {
+            $this->help = 'Up/Down choose  Enter assign  Esc cancel';
+            $this->modeHelpLabel = 'Mode: UI Element Assign';
+            return;
+        }
+
         $selectedControl = $this->getSelectedControl();
 
         if ($this->interactionState === self::STATE_CONTROL_EDIT) {
+            if ($selectedControl instanceof SliderInputControl) {
+                $this->help = 'Left/Right adjust  Enter save  Esc cancel';
+                $this->modeHelpLabel = 'Mode: Slider Edit';
+                return;
+            }
+
             if ($selectedControl instanceof NumberInputControl) {
                 $this->help = 'Type edit  Up/Down adjust  Left/Right move  Enter save  Esc cancel';
                 $this->modeHelpLabel = 'Mode: Number Edit';
@@ -1309,8 +1979,25 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($selectedControl instanceof UIElementReferenceInputControl) {
+            $this->help = 'Up/Down select  Enter choose UI element  Tab next';
+            $this->modeHelpLabel = 'Mode: Control Select';
+            return;
+        }
+
         $this->help = 'Up/Down select  Enter edit  Shift+A add  Tab next';
         $this->modeHelpLabel = 'Mode: Control Select';
+    }
+
+    private function resolveControlRenderWidth(): int
+    {
+        return max(
+            0,
+            $this->innerWidth
+            - max(0, $this->padding->leftPadding)
+            - max(0, $this->padding->rightPadding)
+            - 1,
+        );
     }
 
     private function buildSplitHelpBorder(string $leftLabel, string $rightLabel): string
@@ -1503,6 +2190,11 @@ class InspectorPanel extends Widget
             return;
         }
 
+        if ($selectedControl instanceof UIElementReferenceInputControl) {
+            $this->showUIElementReferenceModal($selectedControl);
+            return;
+        }
+
         if ($selectedControl instanceof PathInputControl) {
             $this->showPathInputActionModal($selectedControl);
             return;
@@ -1578,11 +2270,19 @@ class InspectorPanel extends Widget
             return;
         }
 
-        if (Input::isKeyPressed(KeyCode::UP) && $selectedControl->increment()) {
+        if (
+            !$selectedControl instanceof SliderInputControl
+            && Input::isKeyPressed(KeyCode::UP)
+            && $selectedControl->increment()
+        ) {
             return;
         }
 
-        if (Input::isKeyPressed(KeyCode::DOWN) && $selectedControl->decrement()) {
+        if (
+            !$selectedControl instanceof SliderInputControl
+            && Input::isKeyPressed(KeyCode::DOWN)
+            && $selectedControl->decrement()
+        ) {
             return;
         }
 
@@ -1634,6 +2334,7 @@ class InspectorPanel extends Widget
         $this->closeAddComponentModal();
         $this->closeDeleteComponentModal();
         $this->closePrefabReferenceModal();
+        $this->closeUIElementReferenceModal();
         $selectedControl = $this->getSelectedControl();
 
         if ($selectedControl instanceof CompoundInputControl) {
@@ -1817,6 +2518,41 @@ class InspectorPanel extends Widget
         $this->syncModalLayout($terminalWidth, $terminalHeight);
     }
 
+    private function showUIElementReferenceModal(UIElementReferenceInputControl $control): void
+    {
+        $this->activeUIElementReferenceControl = $control;
+        $fieldType = $this->resolveSelectedControlAssignableUIElementType($control);
+        $this->uiElementReferenceOptions = $this->resolveAvailableUIElementReferenceOptions($fieldType);
+        $options = ['None', ...array_keys($this->uiElementReferenceOptions), 'Cancel'];
+        $selectedIndex = 0;
+        $currentValue = $control->getValue();
+
+        if (is_string($currentValue) && $currentValue !== '') {
+            foreach ($this->uiElementReferenceOptions as $label => $definition) {
+                if (($definition['name'] ?? null) === $currentValue) {
+                    $optionIndex = array_search($label, $options, true);
+
+                    if (is_int($optionIndex)) {
+                        $selectedIndex = $optionIndex;
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        $modalTitle = $fieldType === null || $fieldType === self::UI_ELEMENT_TYPE
+            ? 'Choose UI Element'
+            : 'Choose ' . $this->shortTypeName($fieldType);
+
+        $this->uiElementReferenceModal->show($options, $selectedIndex, $modalTitle);
+        $this->interactionState = self::STATE_UI_ELEMENT_REFERENCE_SELECTION;
+        $terminalSize = get_max_terminal_size();
+        $terminalWidth = $terminalSize['width'] ?? DEFAULT_TERMINAL_WIDTH;
+        $terminalHeight = $terminalSize['height'] ?? DEFAULT_TERMINAL_HEIGHT;
+        $this->syncModalLayout($terminalWidth, $terminalHeight);
+    }
+
     private function handlePrefabReferenceModalInput(): void
     {
         if (Input::isKeyDown(KeyCode::ESCAPE)) {
@@ -1843,11 +2579,44 @@ class InspectorPanel extends Widget
         $this->applyPrefabReferenceSelection($this->prefabReferenceModal->getSelectedOption());
     }
 
+    private function handleUIElementReferenceModalInput(): void
+    {
+        if (Input::isKeyDown(KeyCode::ESCAPE)) {
+            $this->closeUIElementReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::UP)) {
+            $this->uiElementReferenceModal->moveSelection(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(KeyCode::DOWN)) {
+            $this->uiElementReferenceModal->moveSelection(1);
+            return;
+        }
+
+        if (!Input::isKeyDown(KeyCode::ENTER)) {
+            return;
+        }
+
+        $this->applyUIElementReferenceSelection($this->uiElementReferenceModal->getSelectedOption());
+    }
+
     private function closePrefabReferenceModal(): void
     {
         $this->prefabReferenceModal->hide();
         $this->activePrefabReferenceControl = null;
         $this->prefabReferenceOptions = [];
+    }
+
+    private function closeUIElementReferenceModal(): void
+    {
+        $this->uiElementReferenceModal->hide();
+        $this->activeUIElementReferenceControl = null;
+        $this->uiElementReferenceOptions = [];
     }
 
     private function applyAddComponentSelection(?string $selection): void
@@ -1948,6 +2717,33 @@ class InspectorPanel extends Widget
         $this->activePrefabReferenceControl->setValue($nextValue);
         $this->applyControlValueToInspectionTarget($this->activePrefabReferenceControl);
         $this->closePrefabReferenceModal();
+        $this->interactionState = self::STATE_CONTROL_SELECTION;
+        $this->refreshContent();
+    }
+
+    private function applyUIElementReferenceSelection(?string $selection): void
+    {
+        if (!$this->activeUIElementReferenceControl instanceof UIElementReferenceInputControl) {
+            $this->closeUIElementReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        if ($selection === 'Cancel') {
+            $this->closeUIElementReferenceModal();
+            $this->interactionState = self::STATE_CONTROL_SELECTION;
+            $this->refreshContent();
+            return;
+        }
+
+        $nextValue = $selection === 'None'
+            ? null
+            : ($this->uiElementReferenceOptions[$selection]['name'] ?? null);
+
+        $this->activeUIElementReferenceControl->setValue($nextValue);
+        $this->applyControlValueToInspectionTarget($this->activeUIElementReferenceControl);
+        $this->closeUIElementReferenceModal();
         $this->interactionState = self::STATE_CONTROL_SELECTION;
         $this->refreshContent();
     }
@@ -2118,10 +2914,7 @@ class InspectorPanel extends Widget
     private function buildFallbackComponentDefinitions(array $candidateClasses): array
     {
         $autoloadPath = Path::join($this->projectDirectory, 'vendor', 'autoload.php');
-
-        if (is_file($autoloadPath)) {
-            require_once $autoloadPath;
-        }
+        ProjectAutoloadLoader::load($autoloadPath);
 
         $componentBaseClass = 'Sendama\\Engine\\Core\\Component';
 
@@ -2362,6 +3155,81 @@ function normalize_editor_value(mixed $value): mixed
         return $value;
     }
 
+    if (is_a($value, '\Sendama\Engine\Core\Sprite')) {
+        $normalizedSprite = [];
+        $texture = method_exists($value, 'getTexture')
+            ? $value->getTexture()
+            : (property_exists($value, 'texture') ? $value->texture : null);
+        $rect = method_exists($value, 'getRect')
+            ? $value->getRect()
+            : (property_exists($value, 'rect') ? $value->rect : null);
+        $pivot = method_exists($value, 'getPivot')
+            ? $value->getPivot()
+            : (property_exists($value, 'pivot') ? $value->pivot : null);
+
+        if ($texture !== null) {
+            $normalizedSprite['texture'] = normalize_editor_value($texture);
+        }
+
+        if ($rect !== null) {
+            $normalizedSprite['rect'] = normalize_editor_value($rect);
+        }
+
+        if ($pivot !== null) {
+            $normalizedSprite['pivot'] = normalize_editor_value($pivot);
+        }
+
+        if ($normalizedSprite !== []) {
+            return $normalizedSprite;
+        }
+    }
+
+    if (is_a($value, '\Sendama\Engine\Core\Texture')) {
+        $path = method_exists($value, 'getPath')
+            ? $value->getPath()
+            : (property_exists($value, 'path') ? $value->path : null);
+        $path = is_string($path) ? trim($path) : '';
+
+        if ($path !== '') {
+            $normalizedTexture = ['path' => $path];
+            $requestedWidth = method_exists($value, 'getRequestedWidth') ? $value->getRequestedWidth() : null;
+            $requestedHeight = method_exists($value, 'getRequestedHeight') ? $value->getRequestedHeight() : null;
+            $color = method_exists($value, 'getColor') ? $value->getColor() : null;
+
+            if (is_int($requestedWidth) && $requestedWidth > 0) {
+                $normalizedTexture['width'] = $requestedWidth;
+            }
+
+            if (is_int($requestedHeight) && $requestedHeight > 0) {
+                $normalizedTexture['height'] = $requestedHeight;
+            }
+
+            if ($color !== null) {
+                $normalizedTexture['color'] = normalize_editor_value($color);
+            }
+
+            return count($normalizedTexture) === 1
+                ? $normalizedTexture['path']
+                : $normalizedTexture;
+        }
+    }
+
+    if (
+        (is_a($value, '\Sendama\Engine\Core\Rect')
+            || (method_exists($value, 'getWidth') && method_exists($value, 'getHeight')))
+        && method_exists($value, 'getX')
+        && method_exists($value, 'getY')
+        && method_exists($value, 'getWidth')
+        && method_exists($value, 'getHeight')
+    ) {
+        return [
+            'x' => normalize_editor_value($value->getX()),
+            'y' => normalize_editor_value($value->getY()),
+            'width' => normalize_editor_value($value->getWidth()),
+            'height' => normalize_editor_value($value->getHeight()),
+        ];
+    }
+
     if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
         return [
             'x' => normalize_editor_value($value->getX()),
@@ -2387,11 +3255,56 @@ function normalize_editor_value(mixed $value): mixed
         }
     }
 
+    $compoundValue = extract_compound_editor_value($value);
+
+    if (is_array($compoundValue)) {
+        return $compoundValue;
+    }
+
     if ($value instanceof Stringable) {
         return (string) $value;
     }
 
     return get_class($value);
+}
+
+function extract_compound_editor_value(object $value): ?array
+{
+    $valueClass = $value::class;
+
+    if (
+        is_a($valueClass, '\Sendama\Engine\Core\Component', true)
+        || is_a($valueClass, '\Sendama\Engine\Core\GameObject', true)
+        || is_a($valueClass, '\Sendama\Engine\UI\UIElement', true)
+    ) {
+        return null;
+    }
+
+    try {
+        $reflection = new ReflectionObject($value);
+    } catch (Throwable) {
+        return null;
+    }
+
+    $normalized = [];
+
+    foreach ($reflection->getProperties() as $property) {
+        if (
+            $property->isStatic()
+            || (!$property->isPublic() && $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') === [])
+            || (method_exists($property, 'isVirtual') && $property->isVirtual())
+        ) {
+            continue;
+        }
+
+        try {
+            $normalized[$property->getName()] = normalize_editor_value($property->getValue($value));
+        } catch (Throwable) {
+            continue;
+        }
+    }
+
+    return $normalized !== [] ? $normalized : null;
 }
 
 function build_vector(mixed $value, array $default = ['x' => 0, 'y' => 0]): ?object
@@ -2551,7 +3464,7 @@ function short_class_name(string $classReference): string
 }
 
 if (is_file($autoloadPath)) {
-    require $autoloadPath;
+    @require $autoloadPath;
 }
 
 $definitions = [];
@@ -2738,6 +3651,81 @@ PHP;
             return $value;
         }
 
+        if (is_a($value, '\Sendama\Engine\Core\Sprite')) {
+            $normalizedSprite = [];
+            $texture = method_exists($value, 'getTexture')
+                ? $value->getTexture()
+                : (property_exists($value, 'texture') ? $value->texture : null);
+            $rect = method_exists($value, 'getRect')
+                ? $value->getRect()
+                : (property_exists($value, 'rect') ? $value->rect : null);
+            $pivot = method_exists($value, 'getPivot')
+                ? $value->getPivot()
+                : (property_exists($value, 'pivot') ? $value->pivot : null);
+
+            if ($texture !== null) {
+                $normalizedSprite['texture'] = $this->normalizeEditorValue($texture);
+            }
+
+            if ($rect !== null) {
+                $normalizedSprite['rect'] = $this->normalizeEditorValue($rect);
+            }
+
+            if ($pivot !== null) {
+                $normalizedSprite['pivot'] = $this->normalizeEditorValue($pivot);
+            }
+
+            if ($normalizedSprite !== []) {
+                return $normalizedSprite;
+            }
+        }
+
+        if (is_a($value, '\Sendama\Engine\Core\Texture')) {
+            $path = method_exists($value, 'getPath')
+                ? $value->getPath()
+                : (property_exists($value, 'path') ? $value->path : null);
+            $path = is_string($path) ? trim($path) : '';
+
+            if ($path !== '') {
+                $normalizedTexture = ['path' => $path];
+                $requestedWidth = method_exists($value, 'getRequestedWidth') ? $value->getRequestedWidth() : null;
+                $requestedHeight = method_exists($value, 'getRequestedHeight') ? $value->getRequestedHeight() : null;
+                $color = method_exists($value, 'getColor') ? $value->getColor() : null;
+
+                if (is_int($requestedWidth) && $requestedWidth > 0) {
+                    $normalizedTexture['width'] = $requestedWidth;
+                }
+
+                if (is_int($requestedHeight) && $requestedHeight > 0) {
+                    $normalizedTexture['height'] = $requestedHeight;
+                }
+
+                if ($color !== null) {
+                    $normalizedTexture['color'] = $this->normalizeEditorValue($color);
+                }
+
+                return count($normalizedTexture) === 1
+                    ? $normalizedTexture['path']
+                    : $normalizedTexture;
+            }
+        }
+
+        if (
+            (is_a($value, '\Sendama\Engine\Core\Rect')
+                || (method_exists($value, 'getWidth') && method_exists($value, 'getHeight')))
+            && method_exists($value, 'getX')
+            && method_exists($value, 'getY')
+            && method_exists($value, 'getWidth')
+            && method_exists($value, 'getHeight')
+        ) {
+            return [
+                'x' => $this->normalizeEditorValue($value->getX()),
+                'y' => $this->normalizeEditorValue($value->getY()),
+                'width' => $this->normalizeEditorValue($value->getWidth()),
+                'height' => $this->normalizeEditorValue($value->getHeight()),
+            ];
+        }
+
         if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
             return [
                 'x' => $this->normalizeEditorValue($value->getX()),
@@ -2763,11 +3751,83 @@ PHP;
             }
         }
 
+        $compoundValue = $this->extractCompoundEditorValue($value);
+
+        if (is_array($compoundValue)) {
+            return $compoundValue;
+        }
+
         if ($value instanceof \Stringable) {
             return (string) $value;
         }
 
         return get_class($value);
+    }
+
+    private function extractCompoundEditorValue(object $value): ?array
+    {
+        $valueClass = $value::class;
+
+        if (
+            is_a($valueClass, 'Sendama\\Engine\\Core\\Component', true)
+            || is_a($valueClass, 'Sendama\\Engine\\Core\\GameObject', true)
+            || is_a($valueClass, self::UI_ELEMENT_TYPE, true)
+        ) {
+            return null;
+        }
+
+        try {
+            $reflection = new ReflectionObject($value);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $normalized = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            if (
+                $property->isStatic()
+                || (!$property->isPublic() && $property->getAttributes('Sendama\\Engine\\Core\\Behaviours\\Attributes\\SerializeField') === [])
+                || (method_exists($property, 'isVirtual') && $property->isVirtual())
+            ) {
+                continue;
+            }
+
+            try {
+                $normalized[$property->getName()] = $this->normalizeEditorValue($property->getValue($value));
+            } catch (Throwable) {
+                continue;
+            }
+        }
+
+        return $normalized !== [] ? $normalized : null;
+    }
+
+    private function normalizeTextureComponentFieldValue(mixed $value): string
+    {
+        if (is_string($value)) {
+            $normalizedValue = trim($value);
+
+            return $normalizedValue !== '' ? $normalizedValue : 'None';
+        }
+
+        if (is_array($value)) {
+            $path = $value['path'] ?? null;
+
+            return is_string($path) && trim($path) !== ''
+                ? trim($path)
+                : 'None';
+        }
+
+        if (is_object($value)) {
+            $path = $value->path ?? null;
+
+            return is_string($path) && trim($path) !== ''
+                ? trim($path)
+                : 'None';
+        }
+
+        return 'None';
     }
 
     private function buildUniqueComponentMenuLabel(string $baseLabel, string $componentClass, array &$usedLabels): string
@@ -3468,6 +4528,222 @@ PHP;
         ksort($prefabOptions);
 
         return $prefabOptions;
+    }
+
+    private function resolveUIElementDisplayLabelsByName(?string $fieldType = null): array
+    {
+        $displayLabelsByName = [];
+
+        foreach ($this->resolveAvailableUIElementReferenceOptions($fieldType) as $uiElementOption) {
+            $name = $uiElementOption['name'] ?? null;
+            $label = $uiElementOption['display'] ?? null;
+
+            if (is_string($name) && $name !== '' && is_string($label) && $label !== '') {
+                $displayLabelsByName[$name] = $label;
+            }
+        }
+
+        return $displayLabelsByName;
+    }
+
+    private function resolveAvailableUIElementReferenceOptions(?string $fieldType = null): array
+    {
+        if ($this->sceneHierarchy === []) {
+            return [];
+        }
+
+        $normalizedFieldType = is_string($fieldType) ? $fieldType : self::UI_ELEMENT_TYPE;
+        $options = [];
+        $usedLabels = [];
+
+        $this->collectAvailableUIElementReferenceOptions(
+            $this->sceneHierarchy,
+            $normalizedFieldType,
+            $options,
+            $usedLabels,
+        );
+
+        ksort($options);
+
+        return $options;
+    }
+
+    private function collectAvailableUIElementReferenceOptions(
+        array $hierarchy,
+        string $fieldType,
+        array &$options,
+        array &$usedLabels,
+    ): void {
+        foreach ($hierarchy as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $itemType = is_string($item['type'] ?? null)
+                ? ltrim(trim((string) $item['type']), '\\')
+                : null;
+            $itemName = is_string($item['name'] ?? null)
+                ? trim((string) $item['name'])
+                : '';
+
+            if (
+                is_string($itemType)
+                && $itemName !== ''
+                && $this->isAssignableSceneUIElementType($itemType, $fieldType)
+            ) {
+                $labelBase = sprintf('%s (%s)', $itemName, $this->shortTypeName($itemType));
+                $label = $this->buildUniqueReferenceOptionLabel($labelBase, $usedLabels);
+
+                $options[$label] = [
+                    'name' => $itemName,
+                    'type' => $itemType,
+                    'display' => $label,
+                ];
+            }
+
+            $children = $item['children'] ?? null;
+
+            if (is_array($children) && $children !== []) {
+                $this->collectAvailableUIElementReferenceOptions($children, $fieldType, $options, $usedLabels);
+            }
+        }
+    }
+
+    private function resolveSelectedControlAssignableUIElementType(InputControl $control): ?string
+    {
+        $controlMetadata = $this->getSelectedControlMetadata($control);
+        $fieldTypeFromMetadata = is_string($controlMetadata['fieldType'] ?? null)
+            ? $controlMetadata['fieldType']
+            : $this->resolveFieldSchemaType(
+                is_array($controlMetadata['fieldSchema'] ?? null)
+                    ? $controlMetadata['fieldSchema']
+                    : [],
+            );
+
+        if (is_string($fieldTypeFromMetadata) && trim($fieldTypeFromMetadata) !== '') {
+            return $this->resolveAssignableUIElementFieldType($fieldTypeFromMetadata) ?? self::UI_ELEMENT_TYPE;
+        }
+
+        $controlPath = $this->controlBindings[spl_object_id($control)] ?? null;
+
+        if (!is_array($controlPath) || $controlPath === []) {
+            return self::UI_ELEMENT_TYPE;
+        }
+
+        $fieldTypes = $this->resolveCurrentInspectionComponentFieldTypes();
+        $resolvedFieldType = $this->resolveFieldTypeForControlPath($fieldTypes, $controlPath);
+
+        return $this->resolveAssignableUIElementFieldType($resolvedFieldType) ?? self::UI_ELEMENT_TYPE;
+    }
+
+    private function resolveCurrentInspectionComponentFieldTypes(): array
+    {
+        if (!is_array($this->inspectionTarget)) {
+            return [];
+        }
+
+        $value = $this->inspectionTarget['value'] ?? null;
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $components = $value['components'] ?? null;
+
+        if (!is_array($components)) {
+            return [];
+        }
+
+        $fieldTypes = [
+            'components' => [],
+        ];
+
+        foreach ($components as $index => $component) {
+            if (!is_array($component)) {
+                continue;
+            }
+
+            $fieldTypes['components'][$index] = [
+                'data' => is_array($component['__editorFieldTypes'] ?? null)
+                    ? $component['__editorFieldTypes']
+                    : [],
+            ];
+        }
+
+        return $fieldTypes;
+    }
+
+    private function resolveFieldTypeForControlPath(array $fieldTypes, array $controlPath): ?string
+    {
+        $current = $fieldTypes;
+
+        foreach ($controlPath as $segment) {
+            if (is_array($current) && array_key_exists($segment, $current)) {
+                $current = $current[$segment];
+                continue;
+            }
+
+            return null;
+        }
+
+        return is_string($current) ? $current : null;
+    }
+
+    private function isAssignableSceneUIElementType(string $itemType, string $fieldType): bool
+    {
+        if ($fieldType === self::UI_ELEMENT_TYPE || $fieldType === self::UI_ELEMENT_INTERFACE_TYPE) {
+            if ($this->isKnownEngineUIElementType($itemType)) {
+                return true;
+            }
+        }
+
+        if ($itemType === $fieldType) {
+            return true;
+        }
+
+        if (!(class_exists($itemType) || interface_exists($itemType))) {
+            return false;
+        }
+
+        if ($fieldType === self::UI_ELEMENT_TYPE || $fieldType === self::UI_ELEMENT_INTERFACE_TYPE) {
+            return is_a($itemType, self::UI_ELEMENT_TYPE, true);
+        }
+
+        return is_a($itemType, $fieldType, true);
+    }
+
+    private function isKnownEngineUIElementType(string $type): bool
+    {
+        $normalizedType = ltrim(trim($type), '\\');
+
+        if ($normalizedType === '' || str_contains($normalizedType, '\\Interfaces\\')) {
+            return false;
+        }
+
+        return str_starts_with($normalizedType, 'Sendama\\Engine\\UI\\');
+    }
+
+    private function buildUniqueReferenceOptionLabel(string $baseLabel, array &$usedLabels): string
+    {
+        $label = $baseLabel;
+        $suffix = 2;
+
+        while (isset($usedLabels[$label])) {
+            $label = sprintf('%s #%d', $baseLabel, $suffix);
+            $suffix++;
+        }
+
+        $usedLabels[$label] = true;
+
+        return $label;
+    }
+
+    private function shortTypeName(string $type): string
+    {
+        $normalizedType = ltrim(trim($type), '\\');
+        $segments = explode('\\', $normalizedType);
+
+        return $segments[array_key_last($segments)] ?? $normalizedType;
     }
 
     private function buildRelativePrefabPath(string $absolutePath): ?string
