@@ -4,6 +4,7 @@ namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\Events\MouseEvent;
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Editor\FocusTargetContext;
 use Sendama\Console\Editor\IO\Enumerations\KeyCode;
 use Sendama\Console\Editor\IO\Input;
@@ -18,19 +19,19 @@ class MainPanel extends Widget
     private const string SCENE_VIEW_MODE_SELECT = 'select';
     private const string SCENE_VIEW_MODE_MOVE = 'move';
     private const string SCENE_VIEW_MODE_PAN = 'pan';
-    private const string SCENE_SELECTION_SEQUENCE = "\033[30;46m";
-    private const string SCENE_SELECTION_FOCUSED_SEQUENCE = "\033[5;30;46m";
-    private const string SCENE_MOVE_SEQUENCE = "\033[30;43m";
-    private const string SCENE_MOVE_FOCUSED_SEQUENCE = "\033[5;30;43m";
-    private const string SCENE_PAN_SEQUENCE = "\033[30;44m";
-    private const string SCENE_PAN_FOCUSED_SEQUENCE = "\033[5;30;44m";
-    private const string SPRITE_CURSOR_SEQUENCE = "\033[30;47m";
-    private const string SPRITE_CURSOR_FOCUSED_SEQUENCE = "\033[5;30;47m";
+    private const string SCENE_SELECTION_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
+    private const string SCENE_SELECTION_FOCUSED_SEQUENCE = EditorColorScheme::SELECTED_ROW_FOCUSED_SEQUENCE;
+    private const string SCENE_MOVE_SEQUENCE = EditorColorScheme::EDITING_SEQUENCE;
+    private const string SCENE_MOVE_FOCUSED_SEQUENCE = EditorColorScheme::EDITING_FOCUSED_SEQUENCE;
+    private const string SCENE_PAN_SEQUENCE = EditorColorScheme::SURFACE_SEQUENCE;
+    private const string SCENE_PAN_FOCUSED_SEQUENCE = EditorColorScheme::SURFACE_FOCUSED_SEQUENCE;
+    private const string SPRITE_CURSOR_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
+    private const string SPRITE_CURSOR_FOCUSED_SEQUENCE = EditorColorScheme::SELECTED_ROW_FOCUSED_SEQUENCE;
     private const string GAME_IDLE_PATTERN_CHARACTER = '/';
     private const string GAME_IDLE_PROMPT = 'Shift+5 to Play';
     private const string SCENE_PLACEHOLDER_CHARACTER = 'x';
-    private const Color DEFAULT_FOCUS_COLOR = Color::LIGHT_CYAN;
-    private const Color PLAY_MODE_FOCUS_COLOR = Color::BROWN;
+    private const Color DEFAULT_FOCUS_COLOR = EditorColorScheme::PRIMARY_FOCUS_COLOR;
+    private const Color PLAY_MODE_FOCUS_COLOR = EditorColorScheme::PLAY_MODE_FOCUS_COLOR;
     private const string SPRITE_MODAL_CREATE = 'create_asset';
     private const string SPRITE_MODAL_DELETE = 'delete_asset';
     private const string SPRITE_MODAL_CHARACTER = 'character_picker';
@@ -111,7 +112,7 @@ class MainPanel extends Widget
     protected int $activeTabIndex = 0;
     protected int $activeTabOffset = 0;
     protected int $activeTabLength = 0;
-    protected Color $activeIndicatorColor = Color::LIGHT_CYAN;
+    protected Color $activeIndicatorColor = EditorColorScheme::ACTIVE_INDICATOR_COLOR;
     protected bool $isPlayModeActive = false;
     protected array $gameIdleContentIndexes = [];
     protected ?int $gameIdlePromptContentIndex = null;
@@ -741,12 +742,12 @@ class MainPanel extends Widget
             $character = mb_substr($middle, $index, 1);
 
             if ($isPromptLine && $index >= $promptStart && $index < $promptEnd) {
-                $output .= $this->wrapWithColor($character, Color::LIGHT_GRAY);
+                $output .= $this->wrapWithColor($character, EditorColorScheme::PRIMARY_FOCUS_COLOR);
                 continue;
             }
 
             if ($character === self::GAME_IDLE_PATTERN_CHARACTER) {
-                $output .= $this->wrapWithColor($character, Color::BLUE);
+                $output .= $this->wrapWithColor($character, EditorColorScheme::MUTED_COLOR);
                 continue;
             }
 

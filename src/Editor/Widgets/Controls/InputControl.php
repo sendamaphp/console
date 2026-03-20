@@ -6,6 +6,7 @@ abstract class InputControl
 {
     protected bool $hasFocus = false;
     protected bool $isEditing = false;
+    protected ?int $availableWidth = null;
 
     public function __construct(
         protected string $label,
@@ -118,6 +119,13 @@ abstract class InputControl
     {
     }
 
+    public function setAvailableWidth(?int $availableWidth): void
+    {
+        $this->availableWidth = $availableWidth !== null
+            ? max(0, $availableWidth)
+            : null;
+    }
+
     abstract public function renderLines(): array;
 
     public function renderLineDefinitions(): array
@@ -133,6 +141,16 @@ abstract class InputControl
     protected function indentation(int $offset = 0): string
     {
         return str_repeat('  ', max(0, $this->indentLevel + $offset));
+    }
+
+    protected function getAvailableWidth(): ?int
+    {
+        return $this->availableWidth;
+    }
+
+    protected function getDisplayWidth(string $content): int
+    {
+        return mb_strwidth($content, 'UTF-8');
     }
 
     protected function formatScalarValue(mixed $value): string

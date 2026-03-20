@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\EditorColorScheme;
 
 final class Snackbar extends Widget
 {
@@ -84,7 +85,7 @@ final class Snackbar extends Widget
         $rightMargin = $leftMargin + $this->width - 1;
         $bottomMargin = $topMargin + $this->height - 1;
 
-        if ($leftMargin > $this->terminalWidth || $rightMargin < 1 || $topMargin < 1 || $topMargin > $this->terminalHeight || $bottomMargin < 1) {
+        if ($leftMargin > $this->terminalWidth || $rightMargin < 1 || $topMargin > $this->terminalHeight || $bottomMargin < 1) {
             return;
         }
 
@@ -307,20 +308,20 @@ final class Snackbar extends Widget
     private function resolveStatusColor(): Color
     {
         return match ($this->currentNotice['status'] ?? 'info') {
-            'success' => Color::LIGHT_GREEN,
-            'error' => Color::LIGHT_RED,
-            'warn' => Color::YELLOW,
-            default => Color::LIGHT_BLUE,
+            'success' => EditorColorScheme::SUCCESS_COLOR,
+            'error' => EditorColorScheme::ERROR_COLOR,
+            'warn' => EditorColorScheme::WARNING_COLOR,
+            default => EditorColorScheme::INFO_COLOR,
         };
     }
 
     private function resolveStatusSequence(): string
     {
         return match ($this->currentNotice['status'] ?? 'info') {
-            'success' => "\033[30;42m",
-            'error' => "\033[30;41m",
-            'warn' => "\033[30;43m",
-            default => "\033[30;44m",
+            'success' => EditorColorScheme::SUCCESS_SEQUENCE,
+            'error' => EditorColorScheme::ERROR_SEQUENCE,
+            'warn' => EditorColorScheme::WARNING_SEQUENCE,
+            default => EditorColorScheme::INFO_SEQUENCE,
         };
     }
 
@@ -336,7 +337,7 @@ final class Snackbar extends Widget
 
     private function resolveHiddenY(): int
     {
-        return 0;
+        return 1 - $this->height;
     }
 
     private function moveToY(int $y): void

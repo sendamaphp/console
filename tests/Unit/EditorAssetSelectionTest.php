@@ -7,6 +7,8 @@ use Sendama\Console\Editor\DTOs\SceneDTO;
 use Sendama\Console\Editor\PrefabWriter;
 use Sendama\Console\Editor\IO\InputManager;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
+use Sendama\Console\Editor\Widgets\CommandHelpModal;
+use Sendama\Console\Editor\Widgets\CommandLineModal;
 use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
@@ -805,6 +807,8 @@ function createEditorForAssetSelection(string $workspace): array
     $editorReflection->getProperty('consolePanel')->setValue($editor, $consolePanel);
     $editorReflection->getProperty('inspectorPanel')->setValue($editor, $inspectorPanel);
     $editorReflection->getProperty('panelListModal')->setValue($editor, new PanelListModal());
+    $editorReflection->getProperty('commandLineModal')->setValue($editor, new CommandLineModal());
+    $editorReflection->getProperty('commandHelpModal')->setValue($editor, new CommandHelpModal());
     $editorReflection->getProperty('snackbar')->setValue($editor, new Snackbar());
     $editorReflection->getProperty('panels')->setValue($editor, new ItemList(\Sendama\Console\Editor\Widgets\Widget::class, [
         $hierarchyPanel,
@@ -857,6 +861,8 @@ function createEditorForPrefabExport(string $workspace): array
     $editorReflection->getProperty('inspectorPanel')->setValue($editor, $inspectorPanel);
     $editorReflection->getProperty('consolePanel')->setValue($editor, $consolePanel);
     $editorReflection->getProperty('prefabWriter')->setValue($editor, new PrefabWriter());
+    $editorReflection->getProperty('commandLineModal')->setValue($editor, new CommandLineModal());
+    $editorReflection->getProperty('commandHelpModal')->setValue($editor, new CommandHelpModal());
     $editorReflection->getProperty('snackbar')->setValue($editor, new Snackbar());
     $editorReflection->getProperty('focusedPanel')->setValue($editor, $hierarchyPanel);
 

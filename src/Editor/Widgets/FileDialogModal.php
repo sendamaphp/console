@@ -3,6 +3,7 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\EditorColorScheme;
 use Sendama\Console\Util\Path;
 
 class FileDialogModal extends Widget
@@ -11,7 +12,7 @@ class FileDialogModal extends Widget
     private const string COLLAPSED_ICON = '►';
     private const string EXPANDED_ICON = '▼';
     private const string LEAF_ICON = '•';
-    private const string SELECTED_ROW_SEQUENCE = "\033[30;46m";
+    private const string SELECTED_ROW_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
 
     protected bool $isVisible = false;
     protected bool $isDirty = false;

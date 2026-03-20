@@ -7,6 +7,8 @@ use Sendama\Console\Editor\EditorSceneSettings;
 use Sendama\Console\Editor\SceneLoader;
 use Sendama\Console\Editor\SceneWriter;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
+use Sendama\Console\Editor\Widgets\CommandHelpModal;
+use Sendama\Console\Editor\Widgets\CommandLineModal;
 use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
@@ -232,6 +234,8 @@ function createEditorForFileWatch(string $workspace): array
     $editorReflection->getProperty('consolePanel')->setValue($editor, $consolePanel);
     $editorReflection->getProperty('inspectorPanel')->setValue($editor, $inspectorPanel);
     $editorReflection->getProperty('panelListModal')->setValue($editor, new PanelListModal());
+    $editorReflection->getProperty('commandLineModal')->setValue($editor, new CommandLineModal());
+    $editorReflection->getProperty('commandHelpModal')->setValue($editor, new CommandHelpModal());
     $editorReflection->getProperty('snackbar')->setValue($editor, new Snackbar());
     $editorReflection->getProperty('panels')->setValue($editor, new ItemList(Widget::class, [
         $hierarchyPanel,

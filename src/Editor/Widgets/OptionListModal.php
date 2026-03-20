@@ -3,10 +3,11 @@
 namespace Sendama\Console\Editor\Widgets;
 
 use Atatusoft\Termutil\IO\Enumerations\Color;
+use Sendama\Console\Editor\EditorColorScheme;
 
 class OptionListModal extends Widget
 {
-    private const string SELECTED_ROW_SEQUENCE = "\033[30;46m";
+    private const string SELECTED_ROW_SEQUENCE = EditorColorScheme::SELECTED_ROW_SEQUENCE;
 
     protected bool $isVisible = false;
     protected bool $isDirty = false;

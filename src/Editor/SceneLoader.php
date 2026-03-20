@@ -256,6 +256,81 @@ function normalize_editor_value(mixed $value): mixed
         return $value;
     }
 
+    if (is_a($value, '\Sendama\Engine\Core\Sprite')) {
+        $normalizedSprite = [];
+        $texture = method_exists($value, 'getTexture')
+            ? $value->getTexture()
+            : (property_exists($value, 'texture') ? $value->texture : null);
+        $rect = method_exists($value, 'getRect')
+            ? $value->getRect()
+            : (property_exists($value, 'rect') ? $value->rect : null);
+        $pivot = method_exists($value, 'getPivot')
+            ? $value->getPivot()
+            : (property_exists($value, 'pivot') ? $value->pivot : null);
+
+        if ($texture !== null) {
+            $normalizedSprite['texture'] = normalize_editor_value($texture);
+        }
+
+        if ($rect !== null) {
+            $normalizedSprite['rect'] = normalize_editor_value($rect);
+        }
+
+        if ($pivot !== null) {
+            $normalizedSprite['pivot'] = normalize_editor_value($pivot);
+        }
+
+        if ($normalizedSprite !== []) {
+            return $normalizedSprite;
+        }
+    }
+
+    if (is_a($value, '\Sendama\Engine\Core\Texture')) {
+        $path = method_exists($value, 'getPath')
+            ? $value->getPath()
+            : (property_exists($value, 'path') ? $value->path : null);
+        $path = is_string($path) ? trim($path) : '';
+
+        if ($path !== '') {
+            $normalizedTexture = ['path' => $path];
+            $requestedWidth = method_exists($value, 'getRequestedWidth') ? $value->getRequestedWidth() : null;
+            $requestedHeight = method_exists($value, 'getRequestedHeight') ? $value->getRequestedHeight() : null;
+            $color = method_exists($value, 'getColor') ? $value->getColor() : null;
+
+            if (is_int($requestedWidth) && $requestedWidth > 0) {
+                $normalizedTexture['width'] = $requestedWidth;
+            }
+
+            if (is_int($requestedHeight) && $requestedHeight > 0) {
+                $normalizedTexture['height'] = $requestedHeight;
+            }
+
+            if ($color !== null) {
+                $normalizedTexture['color'] = normalize_editor_value($color);
+            }
+
+            return count($normalizedTexture) === 1
+                ? $normalizedTexture['path']
+                : $normalizedTexture;
+        }
+    }
+
+    if (
+        (is_a($value, '\Sendama\Engine\Core\Rect')
+            || (method_exists($value, 'getWidth') && method_exists($value, 'getHeight')))
+        && method_exists($value, 'getX')
+        && method_exists($value, 'getY')
+        && method_exists($value, 'getWidth')
+        && method_exists($value, 'getHeight')
+    ) {
+        return [
+            'x' => normalize_editor_value($value->getX()),
+            'y' => normalize_editor_value($value->getY()),
+            'width' => normalize_editor_value($value->getWidth()),
+            'height' => normalize_editor_value($value->getHeight()),
+        ];
+    }
+
     if (method_exists($value, 'getX') && method_exists($value, 'getY')) {
         return [
             'x' => normalize_editor_value($value->getX()),
@@ -283,11 +358,56 @@ function normalize_editor_value(mixed $value): mixed
         }
     }
 
+    $compoundValue = extract_compound_editor_value($value);
+
+    if (is_array($compoundValue)) {
+        return $compoundValue;
+    }
+
     if ($value instanceof Stringable) {
         return (string) $value;
     }
 
     return get_class($value);
+}
+
+function extract_compound_editor_value(object $value): ?array
+{
+    $valueClass = $value::class;
+
+    if (
+        is_a($valueClass, '\Sendama\Engine\Core\Component', true)
+        || is_a($valueClass, '\Sendama\Engine\Core\GameObject', true)
+        || is_a($valueClass, '\Sendama\Engine\UI\UIElement', true)
+    ) {
+        return null;
+    }
+
+    try {
+        $reflection = new \ReflectionObject($value);
+    } catch (Throwable) {
+        return null;
+    }
+
+    $normalized = [];
+
+    foreach ($reflection->getProperties() as $property) {
+        if (
+            $property->isStatic()
+            || (!$property->isPublic() && $property->getAttributes('Sendama\Engine\Core\Behaviours\Attributes\SerializeField') === [])
+            || (method_exists($property, 'isVirtual') && $property->isVirtual())
+        ) {
+            continue;
+        }
+
+        try {
+            $normalized[$property->getName()] = normalize_editor_value($property->getValue($value));
+        } catch (Throwable) {
+            continue;
+        }
+    }
+
+    return $normalized !== [] ? $normalized : null;
 }
 
 function build_vector(mixed $value, array $default = ['x' => 0, 'y' => 0]): ?object
@@ -686,7 +806,7 @@ ob_start();
 
 try {
     if ($autoloadPath !== '' && is_file($autoloadPath)) {
-        require $autoloadPath;
+        @require $autoloadPath;
     }
 
     $sceneData = require $scenePath;

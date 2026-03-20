@@ -643,6 +643,305 @@ PHP
     ]);
 });
 
+test('scene loader preserves native engine object defaults for typed component fields', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-native-fields-' . uniqid();
+    mkdir($workspace . '/assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core\Behaviours\Attributes {
+    #[\Attribute(\Attribute::TARGET_PROPERTY)]
+    class SerializeField
+    {
+    }
+}
+
+namespace Sendama\Engine\Core {
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class Texture
+    {
+        public function __construct(public string $path)
+        {
+        }
+    }
+
+    class Sprite
+    {
+        public function __construct(
+            public Texture $texture,
+            public array $rect,
+            public array $pivot = ['x' => 0, 'y' => 0],
+        ) {
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?object $sprite = null,
+        ) {
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+    }
+}
+
+namespace Sendama\Game {
+    use Sendama\Engine\Core\Behaviours\Attributes\SerializeField;
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+    use Sendama\Engine\Core\Sprite;
+    use Sendama\Engine\Core\Texture;
+
+    class WeaponConfig extends Component
+    {
+        #[SerializeField]
+        protected ?Texture $bulletTexture = null;
+
+        #[SerializeField]
+        protected ?Sprite $aimSprite = null;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+            $this->bulletTexture = new Texture('Textures/bullet.texture');
+            $this->aimSprite = new Sprite(
+                new Texture('Textures/bullet.texture'),
+                ['x' => 1, 'y' => 2, 'width' => 3, 'height' => 4],
+                ['x' => 0, 'y' => 1],
+            );
+        }
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+use Sendama\Engine\Core\GameObject;
+
+return [
+    'hierarchy' => [
+        [
+            'type' => GameObject::class,
+            'name' => 'Player',
+            'position' => ['x' => 4, 'y' => 12],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => 'Sendama\\Game\\WeaponConfig',
+                    'data' => [],
+                ],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull();
+    expect($scene->hierarchy[0]['components'])->toBe([
+        [
+            'class' => 'Sendama\\Game\\WeaponConfig',
+            'data' => [
+                'bulletTexture' => 'Textures/bullet.texture',
+                'aimSprite' => [
+                    'texture' => 'Textures/bullet.texture',
+                    'rect' => [
+                        'x' => 1,
+                        'y' => 2,
+                        'width' => 3,
+                        'height' => 4,
+                    ],
+                    'pivot' => [
+                        'x' => 0,
+                        'y' => 1,
+                    ],
+                ],
+            ],
+            '__editorFieldTypes' => [
+                'bulletTexture' => 'Sendama\\Engine\\Core\\Texture|null',
+                'aimSprite' => 'Sendama\\Engine\\Core\\Sprite|null',
+            ],
+        ],
+        ]);
+});
+
+test('scene loader preserves compound structure defaults for typed component fields', function () {
+    $workspace = sys_get_temp_dir() . '/sendama-scene-loader-compound-fields-' . uniqid();
+    mkdir($workspace . '/assets/Scenes', 0777, true);
+    mkdir($workspace . '/vendor', 0777, true);
+
+    file_put_contents(
+        $workspace . '/vendor/autoload.php',
+        <<<'PHP'
+<?php
+
+namespace Sendama\Engine\Core {
+    class Vector2
+    {
+        public function __construct(private int $x = 0, private int $y = 0)
+        {
+        }
+
+        public function getX(): int
+        {
+            return $this->x;
+        }
+
+        public function getY(): int
+        {
+            return $this->y;
+        }
+    }
+
+    class GameObject
+    {
+        public function __construct(
+            private string $name,
+            private ?string $tag = null,
+            private Vector2 $position = new Vector2(),
+            private Vector2 $rotation = new Vector2(),
+            private Vector2 $scale = new Vector2(1, 1),
+            private ?object $sprite = null,
+        ) {
+        }
+    }
+
+    abstract class Component
+    {
+        public function __construct(private readonly GameObject $gameObject)
+        {
+        }
+    }
+}
+
+namespace Sendama\Game\Scripts {
+    use Sendama\Engine\Core\Component;
+    use Sendama\Engine\Core\GameObject;
+    use Sendama\Engine\Core\Vector2;
+
+    class CompoundSettings
+    {
+        public int $waves = 3;
+        public Vector2 $origin;
+
+        public function __construct()
+        {
+            $this->origin = new Vector2(6, 7);
+        }
+    }
+
+    class SchemaProbe extends Component
+    {
+        public int $speed = 4;
+
+        /** @var Vector2[] */
+        public array $waypoints = [];
+
+        public CompoundSettings $settings;
+
+        public function __construct(GameObject $gameObject)
+        {
+            parent::__construct($gameObject);
+            $this->waypoints = [
+                new Vector2(1, 2),
+                new Vector2(3, 4),
+            ];
+            $this->settings = new CompoundSettings();
+        }
+    }
+}
+PHP
+    );
+
+    file_put_contents(
+        $workspace . '/assets/Scenes/level01.scene.php',
+        <<<'PHP'
+<?php
+
+return [
+    'name' => 'level01',
+    'width' => 80,
+    'height' => 25,
+    'hierarchy' => [
+        [
+            'type' => \Sendama\Engine\Core\GameObject::class,
+            'name' => 'Controller',
+            'tag' => 'Manager',
+            'position' => ['x' => 0, 'y' => 0],
+            'rotation' => ['x' => 0, 'y' => 0],
+            'scale' => ['x' => 1, 'y' => 1],
+            'components' => [
+                [
+                    'class' => \Sendama\Game\Scripts\SchemaProbe::class,
+                ],
+            ],
+        ],
+    ],
+];
+PHP
+    );
+
+    $loader = new SceneLoader($workspace);
+    $scene = $loader->load(new EditorSceneSettings(active: 0, loaded: ['level01']));
+
+    expect($scene)->not->toBeNull()
+        ->and($scene->hierarchy[0]['components'][0]['data'] ?? null)->toBe([
+            'speed' => 4,
+            'waypoints' => [
+                ['x' => 1, 'y' => 2],
+                ['x' => 3, 'y' => 4],
+            ],
+            'settings' => [
+                'waves' => 3,
+                'origin' => ['x' => 6, 'y' => 7],
+            ],
+        ])
+        ->and($scene->hierarchy[0]['components'][0]['__editorFieldTypes'] ?? null)->toBe([
+            'speed' => 'int',
+            'waypoints' => 'array',
+            'settings' => 'Sendama\\Game\\Scripts\\CompoundSettings',
+        ]);
+});
+
 test('scene loader annotates GameObject component fields for prefab assignment', function () {
     $workspace = sys_get_temp_dir() . '/sendama-scene-loader-prefab-field-' . uniqid();
     mkdir($workspace . '/Assets/Scenes', 0777, true);

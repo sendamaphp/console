@@ -28,6 +28,8 @@ use Sendama\Console\Editor\States\ModalState;
 use Sendama\Console\Editor\States\PlayState;
 use Sendama\Console\Editor\States\ProjectBrowserState;
 use Sendama\Console\Editor\Widgets\AssetsPanel;
+use Sendama\Console\Editor\Widgets\CommandHelpModal;
+use Sendama\Console\Editor\Widgets\CommandLineModal;
 use Sendama\Console\Editor\Widgets\ConsolePanel;
 use Sendama\Console\Editor\Widgets\HierarchyPanel;
 use Sendama\Console\Editor\Widgets\InspectorPanel;
@@ -148,6 +150,8 @@ final class Editor implements ObservableInterface
     protected int $terminalHeight = DEFAULT_TERMINAL_HEIGHT;
     protected PanelListModal $panelListModal;
     protected ?OptionListModal $projectNormalizationModal = null;
+    protected CommandLineModal $commandLineModal;
+    protected CommandHelpModal $commandHelpModal;
     protected bool $shouldRefreshBackgroundUnderModal = false;
     protected bool $didRenderOverlayLastFrame = false;
     protected SceneWriter $sceneWriter;
@@ -460,7 +464,11 @@ final class Editor implements ObservableInterface
         $this->editorState->update();
         $this->handlePanelKeyboardWorkflow();
 
-        if ($this->panelListModal->isVisible()) {
+        if (
+            $this->panelListModal->isVisible()
+            || $this->commandLineModal->isVisible()
+            || $this->commandHelpModal->isVisible()
+        ) {
             $this->notify(new EditorEvent(EventType::EDITOR_UPDATED->value, $this));
             return;
         }
@@ -534,6 +542,54 @@ final class Editor implements ObservableInterface
                 }
 
                 $this->panelListModal->markClean();
+                $this->snackbar->markClean();
+                $this->shouldRefreshBackgroundUnderModal = false;
+            }
+
+            $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+            return;
+        }
+
+        if ($this->commandLineModal->isVisible()) {
+            $this->didRenderOverlayLastFrame = true;
+            $this->commandLineModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
+                $this->renderEditorFrame();
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->commandLineModal->isDirty() || $shouldRefreshForSnackbar) {
+                $this->commandLineModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
+                $this->commandLineModal->markClean();
+                $this->snackbar->markClean();
+                $this->shouldRefreshBackgroundUnderModal = false;
+            }
+
+            $this->notify(new EditorEvent(EventType::EDITOR_RENDERED->value, $this));
+            return;
+        }
+
+        if ($this->commandHelpModal->isVisible()) {
+            $this->didRenderOverlayLastFrame = true;
+            $this->commandHelpModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+
+            if ($this->shouldRefreshBackgroundUnderModal || $shouldRefreshForSnackbar) {
+                $this->renderEditorFrame();
+            }
+
+            if ($this->shouldRefreshBackgroundUnderModal || $this->commandHelpModal->isDirty() || $shouldRefreshForSnackbar) {
+                $this->commandHelpModal->render();
+
+                if ($hasActiveSnackbar) {
+                    $this->snackbar->render();
+                }
+
+                $this->commandHelpModal->markClean();
                 $this->snackbar->markClean();
                 $this->shouldRefreshBackgroundUnderModal = false;
             }
@@ -771,6 +827,8 @@ final class Editor implements ObservableInterface
     {
         $this->panels = new ItemList(Widget::class);
         $this->panelListModal = new PanelListModal();
+        $this->commandLineModal = new CommandLineModal();
+        $this->commandHelpModal = new CommandHelpModal();
         $this->hierarchyPanel = new HierarchyPanel(
             sceneName: $this->loadedScene?->name ?? 'Scene',
             isSceneDirty: $this->loadedScene?->isDirty ?? false,
@@ -828,6 +886,10 @@ final class Editor implements ObservableInterface
 
         if ($this->panelListModal->isVisible()) {
             $this->handlePanelListModalMouseEvent($mouseEvent);
+            return;
+        }
+
+        if ($this->commandLineModal->isVisible() || $this->commandHelpModal->isVisible()) {
             return;
         }
 
@@ -966,6 +1028,16 @@ final class Editor implements ObservableInterface
             return;
         }
 
+        if ($this->commandHelpModal->isVisible()) {
+            $this->handleCommandHelpModalInput();
+            return;
+        }
+
+        if ($this->commandLineModal->isVisible()) {
+            $this->handleCommandLineModalInput();
+            return;
+        }
+
         if ($this->panelListModal->isVisible()) {
             $this->handlePanelListModalInput();
             return;
@@ -977,6 +1049,11 @@ final class Editor implements ObservableInterface
         }
 
         if ($this->focusedPanel?->hasActiveModal()) {
+            return;
+        }
+
+        if (Input::getCurrentInput() === ':') {
+            $this->showCommandLineModal();
             return;
         }
 
@@ -1037,6 +1114,8 @@ final class Editor implements ObservableInterface
         if (
             $this->projectNormalizationModal?->isVisible()
             || $this->panelListModal->isVisible()
+            || $this->commandLineModal->isVisible()
+            || $this->commandHelpModal->isVisible()
             || $this->focusedPanel?->hasActiveModal()
         ) {
             $this->shouldRefreshBackgroundUnderModal = true;
@@ -1073,6 +1152,8 @@ final class Editor implements ObservableInterface
 
         $this->panelListModal->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->projectNormalizationModal?->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->commandLineModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->commandHelpModal->syncLayout($this->terminalWidth, $this->terminalHeight);
         $this->focusedPanel?->syncModalLayout($this->terminalWidth, $this->terminalHeight);
         $this->snackbar->syncLayout($this->terminalWidth, $this->terminalHeight);
     }
@@ -1257,6 +1338,122 @@ final class Editor implements ObservableInterface
             $panel = $panels[$selectedIndex];
             $this->setFocusedPanel($panel);
         }
+    }
+
+    private function showCommandLineModal(): void
+    {
+        $this->commandLineModal->show();
+        $this->commandLineModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function hideCommandLineModal(): void
+    {
+        $this->commandLineModal->hide();
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function handleCommandLineModalInput(): void
+    {
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::ESCAPE)) {
+            $this->hideCommandLineModal();
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::ENTER)) {
+            $command = $this->commandLineModal->submit();
+            $this->hideCommandLineModal();
+            $this->executeEditorCommand($command);
+            return;
+        }
+
+        if (Input::isKeyPressed(IO\Enumerations\KeyCode::BACKSPACE)) {
+            $this->commandLineModal->deleteBackward();
+            return;
+        }
+
+        if (Input::isKeyPressed(IO\Enumerations\KeyCode::LEFT)) {
+            $this->commandLineModal->moveCursorLeft();
+            return;
+        }
+
+        if (Input::isKeyPressed(IO\Enumerations\KeyCode::RIGHT)) {
+            $this->commandLineModal->moveCursorRight();
+            return;
+        }
+
+        $this->commandLineModal->handleInput(Input::getCurrentInput());
+    }
+
+    private function executeEditorCommand(string $command): void
+    {
+        $normalizedCommand = strtolower(trim($command));
+
+        if ($normalizedCommand === '') {
+            return;
+        }
+
+        if (in_array($normalizedCommand, ['help', 'h'], true)) {
+            $this->showCommandHelpModal();
+            return;
+        }
+
+        $this->pushNotification(sprintf('Unknown command: %s', $command), 'error');
+    }
+
+    private function showCommandHelpModal(): void
+    {
+        $this->commandHelpModal->show($this->buildEditorCheatsheetLines());
+        $this->commandHelpModal->syncLayout($this->terminalWidth, $this->terminalHeight);
+        $this->shouldRefreshBackgroundUnderModal = true;
+    }
+
+    private function handleCommandHelpModalInput(): void
+    {
+        if (
+            Input::isKeyDown(IO\Enumerations\KeyCode::ESCAPE)
+            || Input::isKeyDown(IO\Enumerations\KeyCode::ENTER)
+        ) {
+            $this->commandHelpModal->hide();
+            $this->shouldRefreshBackgroundUnderModal = true;
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::UP)) {
+            $this->commandHelpModal->scroll(-1);
+            return;
+        }
+
+        if (Input::isKeyDown(IO\Enumerations\KeyCode::DOWN)) {
+            $this->commandHelpModal->scroll(1);
+        }
+    }
+
+    private function buildEditorCheatsheetLines(): array
+    {
+        return [
+            'Type :help to open this cheatsheet.',
+            '',
+            'Global',
+            '  Ctrl+S save the current scene',
+            '  Shift+5 start or stop play mode',
+            '  ! open the panel switcher',
+            '  : open the command line',
+            '',
+            'Navigation',
+            '  Shift+Arrows move focus between panels',
+            '  Tab / Shift+Tab cycle within the focused panel',
+            '  Esc closes the active modal or edit mode',
+            '',
+            'Inspector',
+            '  Enter edit or choose the selected property',
+            '  Shift+A add a component',
+            '  Shift+W reorder components when available',
+            '',
+            'Assets and Scene',
+            '  Enter opens the selected asset or inspects the selected object',
+            '  Arrow keys move through lists and scene selections',
+        ];
     }
 
     private function synchronizeInspectorPanel(): void
